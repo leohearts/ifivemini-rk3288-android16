@@ -21,4 +21,4 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-2026-
 ## Known issues
 - Rare hard hang (screen freezes, USB gone); root cause not found. The release kernel writes a periodic dmesg dump to the kpanic partition for post-mortem.
 - Native HWC2 port (drmhwc2) does not initialise on this VOP; the release uses the patched HWC1 through hwc2on1adapter.
-- Android 11 / 12 packages are not rebuilt in this release.
+- Android 11 / 12 packages are not included in this release. They also works but not better than A16.
