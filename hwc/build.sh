@@ -3,8 +3,8 @@
 # Flags mirror Android.mk with: TARGET_BOARD_PLATFORM=rk3288, TARGET_BOARD_PLATFORM_PRODUCT=tablet,
 # TARGET_BOARD_PLATFORM_GPU=mali-t760, TARGET_RK_GRALLOC_VERSION=4, PLATFORM_SDK_VERSION=30, HWC2 off.
 set -euo pipefail
-H=/run/media/leohearts/Data/rk3288-a11/hwc
-SRC=${SRC:-$H/src005}
+H=$(cd "$(dirname "$0")" && pwd)
+SRC=${SRC:-$H/src-a16}
 OUT=${OUT:-$H/out}
 NDK=${NDK:-/home/leohearts/Android/Sdk/ndk/25.0.8775105}
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64
@@ -13,9 +13,9 @@ CXX=$TC/bin/clang++
 CC=$TC/bin/clang
 TARGET=armv7a-linux-androideabi30
 HDR=$H/hdr
-V=$HDR/vndk30
-VENDOR_LIB=/run/media/leohearts/Data/rk3288-a11/super2/work/tree5/vendor/lib
-SYSLIB=$H/gsilib
+V=${VNDK30:-$HDR/vndk30}   # release asset hwc-hdr-vndk30.tar.zst extracted here
+VENDOR_LIB=$H/libs   # libdrm/librga/libsync_vendor from the vendor image, the rest from the GSI system image
+SYSLIB=$H/libs
 OBJ=$OUT/obj
 mkdir -p "$OBJ"
 
@@ -25,7 +25,7 @@ INCS=(
   -nostdinc++ -isystem $V/external/libcxx/include -isystem $V/external/libcxxabi/include
   -I$SRC
   -I$SRC/../hdr/libgralloc/src -I$HDR/libgralloc -I$HDR/librga/include -I$HDR/librga
-  -I$H/shim
+  -I$H/hdr2
   -I$HDR/rkhw -I$HDR/rkdrm
   -I$HDR/aosp/external/tinyxml2
   -I$HDR/aosp/external/libdrm -I$HDR/aosp/external/libdrm/include/drm -I$HDR/aosp/external/libdrm/include
