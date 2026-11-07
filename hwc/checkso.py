@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Check NEEDED subset + undefined symbol resolution of a built .so against vendor+GSI libs."""
 import subprocess, sys, os, re
-H='/run/media/leohearts/Data/rk3288-a11/hwc'
+H=os.path.dirname(os.path.abspath(__file__))
 so=sys.argv[1] if len(sys.argv)>1 else H+'/out/hwcomposer.rk30board.so'
-orig='/run/media/leohearts/Data/rk3288-a11/super2/work/tree5/vendor/lib/hw/hwcomposer.rk30board.so'
-dirs=[ H+'/vendorlib', H+'/gsilib', '/home/leohearts/Android/Sdk/ndk/25.0.8775105/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/30']
+orig=sys.argv[2] if len(sys.argv)>2 else os.path.join(H,'..','vendor-changes','lib','hw','hwcomposer.rk30board.so')
+NDK=os.environ.get('NDK', os.path.expanduser('~/Android/Sdk/ndk/25.0.8775105'))
+dirs=[ H+'/libs', NDK+'/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/30']
 def run(*a): return subprocess.check_output(a,text=True)
 def needed(p): return re.findall(r'NEEDED.*\[(.*)\]', run('readelf','-d',p))
 def undef(p):

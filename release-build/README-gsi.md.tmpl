@@ -1,16 +1,16 @@
 # iFive mini 4S — Android 16 GSI release {{DATE}}
 
 Partition map: GSI layout (system 3072 MiB @ 296 MiB, metadata 16 MiB @ 3368 MiB, userdata @ 3448 MiB).
-Super image: td16j (HWC2 candidate). Kernel: rl5bj (logdump-enabled release config).
+Super image: Android 16 GSI (TrebleDroid a64_bvS) + Tinker Board vendor partition with the patched HWC and charging service. Kernel: 4.19 release config.
 
 ## Contents
 - `images/resource.img` (RSCE, GSI blkdevparts), `images/kernel.img` (KRNL), `images/ramdisk.img` (KRNL)
 - `images/super.img` (liblp, system/vendor/odm/product), `images/metadata.img`, `images/userdata-head-zero.img`
 - `loader/RK3288UbootLoader_V2.30.10.bin`
-- `flash.sh` (LAYOUT=gsi, LBAs SUPER 0x92000, META 0x692000, UD 0x6ba000), `SHA256SUMS`, `BUILD-INFO.txt`
+- `flash.sh` (LAYOUT=gsi, LBAs SUPER 0x92000, META 0x692000, UD 0x6ba000), `tools/rkdeveloptool`, `SHA256SUMS` (images/*.img and loader/*.bin only), `BUILD-INFO.txt`
 
 ## Flashing
-Requires rkdeveloptool on Linux. Erases system and all user data.
+Linux x86_64 with libusb-1.0; rkdeveloptool is bundled (set RKDEVELOPTOOL to use another). Erases system and all user data.
 1. Put the tablet in Rockchip maskrom (USB 2207:320a). Owner-entered; for this build, `adb reboot loader` from a running system is the stated route (owner note; see Known issues).
 2. `./flash.sh --dry-run` (no device touched), then `./flash.sh --yes`.
 3. Script verifies SHA-256, writes each image, reads back and compares, then resets. First boot takes several minutes.

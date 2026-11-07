@@ -6,9 +6,9 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-2026-
 
 ## Layout
 - `kernel/` — Linux 4.19 tree with all board changes (touch, bcmdhd Wi-Fi, audio, camera, RC5T619 charging policy + JEITA, lsm330, `rk_wdt_backstop` watchdog/logdump driver). Git history of this tree was lost; the tree is complete.
-- `kernel-configs/` — `gsi-release.config` (A12/A16, BPF_JIT_ALWAYS_ON=y), `a11-release.config`, `dev.config`.
+- `kernel-configs/` — `gsi-release.config` (the release kernel, BPF_JIT_ALWAYS_ON=y), `dev.config` (debug: watchdog, logdump).
 - `hwc/` — Rockchip drm_hwcomposer 0.66: `src005` base, `src-a16` patched, `hwc-ifive.patch` (skip-layer mix policy + fence fix), `build.sh` (NDK r25), `checkso.py`, headers (`hdr/vndk30` prebuilt libs are a release asset).
-- `vendor-changes/` — files changed inside the A11 vendor image: `init.rk3288.rc` (charging service), `chgpolicy.sh`, Rockchip Power HAL + manifest, patched HWC `.so`.
+- `vendor-changes/` — files changed inside the Tinker Board vendor image: `init.rk3288.rc` (charging service), `chgpolicy.sh`, Rockchip Power HAL + manifest, patched HWC `.so`.
 - `release-build/` — packaging (`make-release.sh`, `guard-release.py`, `flash.sh.src`), release DTS and resource images, stock loader, `mkkrnl.py`, `resource_tool`, `dtc`, rkdeveloptool src.rpm.
 - `scripts/` — developer flashing helpers and the kpanic ring parser.
 - `reports/` — `FINAL-REPORT-2026-11-07.md` (Chinese, full write-up) and working notes.
@@ -21,4 +21,16 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-2026-
 ## Known issues
 - Rare hard hang (screen freezes, USB gone); root cause not found. The release kernel writes a periodic dmesg dump to the kpanic partition for post-mortem.
 - Native HWC2 port (drmhwc2) does not initialise on this VOP; the release uses the patched HWC1 through hwc2on1adapter.
-- Android 11 / 12 packages are not included in this release. They also works but not better than A16.
+
+## Building
+
+Requirements: Linux x86_64, `python3`, `zip`/`unzip`, `dtc`, and a 4.19 kernel toolchain (arm-linux-gnueabihf).
+
+```sh
+./build-kernel.sh                          # -> out/kernel-gsi-release/kernel.img
+./release-build/build-resource.sh          # -> release-build/resource-release-gsi.img (device tree + logos)
+./release-build/make-release.sh <inputs>   # -> release/ifive-mini4s-android16-gsi-<date>.zip
+```
+
+`<inputs>` holds `super.img`, `ramdisk.img`, `metadata.img`, `userdata-head-zero.img` and an optional `rkdeveloptool`; the release zip contains the same files for reference.
+`make-release.sh` runs `mkkrnl.py verify` on the kernel and ramdisk, runs `guard-release.py` against the partition layout, and checks the zip with `unzip -t`.
