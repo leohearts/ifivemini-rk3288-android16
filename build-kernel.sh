@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the 4.19 kernel for the iFive mini 4S and pack it into a Rockchip KRNL image (kernel.img).
-# Usage: ./build-kernel.sh [gsi-release|a11-release|dev]   (default gsi-release)
+# Usage: ./build-kernel.sh [gsi-release|dev]   (default gsi-release)
 # Needs: an arm cross gcc (Fedora: gcc-arm-linux-gnu + binutils-arm-linux-gnu -> CROSS_COMPILE=arm-linux-gnu-;
 #        Debian: gcc-arm-linux-gnueabi -> CROSS_COMPILE=arm-linux-gnueabi-), bc, bison, flex, lz4, libssl-dev, python3.
 set -euo pipefail
@@ -14,4 +14,4 @@ make -C "$HERE/kernel" O="$O" olddefconfig
 # CC on the command line bypasses scripts/gcc-wrapper.py, which turns newer-gcc warnings into errors.
 make -C "$HERE/kernel" O="$O" -j"$(nproc)" CC="${CROSS_COMPILE}gcc" zImage rk3288-ifive-mini4s.dtb
 python3 "$HERE/release-build/tools/mkkrnl.py" pack "$O/arch/arm/boot/zImage" "$O/kernel.img"
-echo "kernel: $O/kernel.img"; echo "dtb:    $O/arch/arm/boot/dts/rk3288-ifive-mini4s.dtb (-> resource.img via release-build/build-res-release.sh)"
+echo "kernel: $O/kernel.img"; echo "dtb:    $O/arch/arm/boot/dts/rk3288-ifive-mini4s.dtb (-> resource.img via release-build/build-resource.sh)"

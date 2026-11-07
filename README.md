@@ -24,7 +24,7 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-2026-
 
 ## Building
 
-Requirements: Linux x86_64, `python3`, `zip`/`unzip`, `dtc`, and a 4.19 kernel toolchain (arm-linux-gnueabihf).
+Requirements: Linux x86_64, `python3`, `zip`/`unzip`, `dtc`, `bc`, `bison`, `flex`, `lz4`, `libssl-dev`, and an arm cross compiler. Fedora: `gcc-arm-linux-gnu` + `binutils-arm-linux-gnu` (default `CROSS_COMPILE=arm-linux-gnu-`); Debian: `gcc-arm-linux-gnueabi` (set `CROSS_COMPILE=arm-linux-gnueabi-`).
 
 ```sh
 ./build-kernel.sh                          # -> out/kernel-gsi-release/kernel.img
