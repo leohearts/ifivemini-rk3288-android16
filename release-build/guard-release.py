@@ -6,8 +6,9 @@
 #    where LBA = MiB*2048 - 0x2000 (partition start MiB, minus the 0x2000-sector offset used by flash.sh).
 import os, re, subprocess, sys, tempfile
 
-RT = "/run/media/leohearts/Data/rk3288-a11/release/build/tools/resource_tool"
-DTC = "/run/media/leohearts/Data/rk3288-a11/release/build/tools/dtc"
+HERE = os.path.dirname(os.path.abspath(__file__))
+RT = os.path.join(HERE, "tools", "resource_tool")
+DTC = os.path.join(HERE, "tools", "dtc")
 
 
 def fail(msg):

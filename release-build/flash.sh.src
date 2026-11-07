@@ -16,7 +16,8 @@
 # Every write is read back and compared; any mismatch stops the script.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-RK=${RKDEVELOPTOOL:-rkdeveloptool}
+RK=${RKDEVELOPTOOL:-$(cd "$(dirname "$0")" && pwd)/tools/rkdeveloptool}
+[ -x "$RK" ] || RK=rkdeveloptool
 DRY=0; RESET=1; FORCE=0; WAIT=120; YES=0
 usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
 while [ $# -gt 0 ]; do
@@ -54,7 +55,7 @@ for f in $FILES; do
   [ -f "$f" ] || die "missing $f"
   grep -q "  $f\$" SHA256SUMS || die "$f is not listed in SHA256SUMS"
 done
-echo "== verifying SHA-256 of all images"
+echo "== verifying SHA-256 of images and loader (SHA256SUMS lists only images/*.img and loader/*.bin)"
 sha256sum -c SHA256SUMS || die "checksum mismatch: nothing was written"
 magic() { od -An -tx1 -N4 "$1" | tr -d ' \n'; }
 offmagic() { od -An -tx1 -j"$2" -N4 "$1" | tr -d ' \n'; }  # file offset
