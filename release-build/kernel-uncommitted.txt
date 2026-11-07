@@ -1,0 +1,6 @@
+ M arch/arm/kernel/reboot.c
+ M drivers/media/i2c/gc2145.c
+ M drivers/media/platform/rockchip/isp1/isp_params.c
+ M drivers/media/platform/rockchip/isp1/rkisp1.c
+ M drivers/mfd/rn5t618.c
+ M kernel/reboot.c

@@ -1,0 +1,25 @@
+# iFive mini 4S — Android 16 GSI release {{DATE}}
+
+Partition map: GSI layout (system 3072 MiB @ 296 MiB, metadata 16 MiB @ 3368 MiB, userdata @ 3448 MiB).
+Super image: td16j (HWC2 candidate). Kernel: rl5bj (logdump-enabled release config).
+
+## Contents
+- `images/resource.img` (RSCE, GSI blkdevparts), `images/kernel.img` (KRNL), `images/ramdisk.img` (KRNL)
+- `images/super.img` (liblp, system/vendor/odm/product), `images/metadata.img`, `images/userdata-head-zero.img`
+- `loader/RK3288UbootLoader_V2.30.10.bin`
+- `flash.sh` (LAYOUT=gsi, LBAs SUPER 0x92000, META 0x692000, UD 0x6ba000), `SHA256SUMS`, `BUILD-INFO.txt`
+
+## Flashing
+Requires rkdeveloptool on Linux. Erases system and all user data.
+1. Put the tablet in Rockchip maskrom (USB 2207:320a). Owner-entered; for this build, `adb reboot loader` from a running system is the stated route (owner note; see Known issues).
+2. `./flash.sh --dry-run` (no device touched), then `./flash.sh --yes`.
+3. Script verifies SHA-256, writes each image, reads back and compares, then resets. First boot takes several minutes.
+
+## Charging policy
+- Powered-off tablet on charger: `reboot -p` with the charger attached was tested; the panel stayed dark, USB charging was observed, and Android did not boot on its own.
+- Charge-boost switch (`persist.vendor.chg.boost`) is NOT verified on device in this build.
+
+## Known issues
+- Hard hang: on first boot after a data wipe the device hangs at about 86–110 s. Root cause unknown.
+- Hardware watchdog verified: a hard hang resets in about 10–16 s and returns to maskrom via the loader flag.
+- HWC2 (td16j) boots and was measured, but the soak test is not finished.

@@ -1,0 +1,7 @@
+ arch/arm/kernel/reboot.c                          |   2 +
+ drivers/media/i2c/gc2145.c                        | 145 +++++++++++++++++++---
+ drivers/media/platform/rockchip/isp1/isp_params.c |  12 +-
+ drivers/media/platform/rockchip/isp1/rkisp1.c     | 121 ++++++++++++++++++
+ drivers/mfd/rn5t618.c                             |  21 +++-
+ kernel/reboot.c                                   |   2 +
+ 6 files changed, 284 insertions(+), 19 deletions(-)

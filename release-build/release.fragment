@@ -1,0 +1,27 @@
+# Release fragment for the iFive mini 4S Android 11 kernel (applied over the cif5 .config).
+# Timed reset / rockusb-return machinery
+# RK_WDT_BACKSTOP stays =y but is inert: the release bootargs carry rkwdt=0 and no rkdeadline, so no watchdog is armed and no timer thread exists.
+# What remains is the root-only /sys/module/rk_wdt_backstop/parameters/reset_loader trigger (the only verified software path back into download mode).
+# CONFIG_RK_PANIC_TO_LOADER is not set
+# CONFIG_RK_PROBE_POINTS is not set
+# CONFIG_RK_LOGDUMP is not set
+# Debug options with a runtime or size cost
+# CONFIG_DEBUG_INFO is not set
+# CONFIG_SOFTLOCKUP_DETECTOR is not set
+# CONFIG_HARDLOCKUP_DETECTOR is not set
+# CONFIG_HARDLOCKUP_DETECTOR_OTHER_CPU is not set
+# CONFIG_LOCKUP_DETECTOR is not set
+# DETECT_HUNG_TASK stays =y: it changes struct task_struct, i.e. every exported-symbol CRC (vendor bcmdhd.ko would stop loading).
+# Its panic action is removed and the timeout lengthened instead.
+# CONFIG_BOOTPARAM_HUNG_TASK_PANIC is not set
+CONFIG_DEFAULT_HUNG_TASK_TIMEOUT=120
+# CONFIG_PANIC_ON_OOPS is not set
+CONFIG_PANIC_ON_OOPS_VALUE=0
+CONFIG_PANIC_TIMEOUT=5
+# SCHEDSTATS stays =y: it changes struct sched_entity/task_struct (module_layout CRC), same reason as DETECT_HUNG_TASK. Runtime cost is a static key, off unless schedstats=enable.
+# CONFIG_SCHED_STACK_END_CHECK is not set
+# DEBUG_LIST stays =y: vendor bcmdhd.ko (4.19.232) imports __list_add_valid/__list_del_entry_valid, which are only exported when it is set.
+# CONFIG_BUG_ON_DATA_CORRUPTION is not set
+# BPF_JIT_ALWAYS_ON is OFF in the Android 11 kernel (rl5): with it ON the Android 11 userspace hangs.
+# Only the Android 12 and Android 16 kernel (rl5b, kernel-release-rl5b.krnl) sets CONFIG_BPF_JIT_ALWAYS_ON=y (Android 16 needs it).
+# CONFIG_BPF_JIT_ALWAYS_ON is not set

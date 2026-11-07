@@ -1,0 +1,3 @@
+source: https://github.com/rockchip-linux/rkbin (master, fetched 2026-11-07)
+components: bin/rk32/rk3288_ddr_400MHz_v1.12.bin 6e9241e0..., rk3288_miniloader_v2.63.bin af23cd72..., RKBOOT/RK3288MINIALL.ini
+built: tools/boot_merger 1.38 (rkbin/tools/boot_merger f8e1a2d0...) RKBOOT/RK3288MINIALL.ini

@@ -1,0 +1,176 @@
+config ARCH_ROCKCHIP
+	bool "Rockchip RK2928 and RK3xxx SOCs"
+	depends on ARCH_MULTI_V7
+	select PINCTRL
+	select PINCTRL_ROCKCHIP
+	select ARCH_HAS_RESET_CONTROLLER
+	select ARM_AMBA
+	select ARM_GIC
+	select CACHE_L2X0 if (CPU_RK30XX || CPU_RK3188)
+	select GPIOLIB
+	select HAVE_ARM_ARCH_TIMER
+	select HAVE_ARM_SCU if SMP
+	select HAVE_ARM_TWD if SMP && (CPU_RK30XX || CPU_RK3188)
+	select DW_APB_TIMER_OF if CPU_RK30XX
+	select REGULATOR if PM
+	select ROCKCHIP_TIMER
+	select ARM_GLOBAL_TIMER if (CPU_RK30XX || CPU_RK3188)
+	select CLKSRC_ARM_GLOBAL_TIMER_SCHED_CLOCK if (CPU_RK30XX || CPU_RK3188)
+	select ZONE_DMA if ARM_LPAE
+	select PM
+	help
+	  Support for Rockchip's Cortex-A9 Single-to-Quad-Core-SoCs
+	  containing the RK2928, RK30xx and RK31xx series.
+
+config RK_PROBE_DECOMP
+	bool "PROBE A: write rockusb flag and CRU reset at decompressor entry (debug only)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Bisection probe. Enters a spin loop after a CRU global soft reset
+	  with the loader flag set. Board re-enumerates as rockusb 2207:0011
+	  only if U-Boot jumped into this zImage. Never a production setting.
+
+config RK_PROBE_KERNEL_ENTRY
+	bool "PROBE C: write rockusb flag and CRU reset at ENTRY(stext) (debug only)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Bisection probe. Runs in arch/arm/kernel/head.S right after
+	  safe_svcmode_maskall, with the MMU still off (physical addresses).
+	  Writes the loader flag, issues a CRU global soft reset, then spins.
+	  Never a production setting.
+
+config RK_PROBE_SETUP_ARCH
+	bool "PROBE D: write rockusb flag and CRU reset at end of setup_arch (debug only)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Bisection probe. Runs at the end of setup_arch(), after paging_init()
+	  and init_early(), with the MMU and kernel mappings live. Maps PMU and
+	  CRU with ioremap(), writes the loader flag, issues a CRU global soft
+	  reset, then spins. Never a production setting.
+
+config RK_PROBE_FDT_MAGIC
+	bool "PROBE E1: checkpoint at stext only if r2 holds a valid FDT magic (debug only)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Bisection probe. Same location as PROBE C (ENTRY(stext) after
+	  safe_svcmode_maskall). Reads the 32-bit word at the address in r2
+	  (little-endian); if it equals 0xedfe0dd0 (FDT magic) it writes the
+	  loader flag and issues a CRU global soft reset, otherwise it spins.
+	  Never a production setting.
+
+config RK_PROBE_PRE_MMU
+	bool "PROBE E2: write rockusb flag and CRU reset just before MMU enable (debug only)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Bisection probe. Runs in __turn_mmu_on (.idmap.text) immediately
+	  before the SCTLR write that turns the MMU on, so the MMU is still
+	  off and physical addresses are used. Writes the loader flag, issues
+	  a CRU global soft reset, then spins. Never a production setting.
+
+config RK_PROBE_AFTER_MM
+	bool "PROBE F3: write rockusb flag and CRU reset after mm_init() in start_kernel (debug only)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Bisection probe. Runs in start_kernel() right after mm_init(), when
+	  vmalloc is ready. Maps PMU and CRU with ioremap(), writes the loader
+	  flag, issues a CRU global soft reset, then spins. If either mapping
+	  fails, boot continues. Never a production setting.
+
+config RK_PROBE_EARLY_IOREMAP
+	bool "PROBE F1: write rockusb flag and CRU reset after early_ioremap_init() (debug only)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Bisection probe. Runs in setup_arch() right after early_ioremap_init(),
+	  maps PMU and CRU with early_ioremap(), writes the loader flag, issues a
+	  CRU global soft reset, then spins. If either mapping fails, boot
+	  continues. Never a production setting.
+
+config RK_PROBE_PRE_PAGING
+	bool "PROBE F2: write rockusb flag and CRU reset before paging_init() (debug only)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Bisection probe. Runs in setup_arch() before early_ioremap_reset() and
+	  paging_init(), maps PMU and CRU with early_ioremap(), writes the loader
+	  flag, issues a CRU global soft reset, then spins. If either mapping
+	  fails, boot continues. Never a production setting.
+
+config RK_PROBE_POINTS
+	bool "Numbered checkpoint probes selected by rkprobe= (debug only)"
+	depends on ARCH_ROCKCHIP
+	default n
+	help
+	  Bisection probes. rk_probe_point(n) is compiled into start_kernel(),
+	  kernel_init_freeable(), do_initcalls() and kernel_init(). With
+	  "rkprobe=N" on the command line, the kernel writes the rockusb loader
+	  flag, issues a CRU global soft reset and spins at checkpoint N.
+	  Never a production setting.
+
+config RK_PANIC_TO_LOADER
+	bool "Write the rockusb loader flag on panic so the board returns to USB"
+	depends on ARCH_ROCKCHIP
+	default n
+	help
+	  Registers a panic notifier (highest priority) that writes
+	  0x5242C301 to PMU_SYS_REG0 (0xFF730094). panic() then reboots
+	  through the restart path, and the boot ROM re-enters rockusb
+	  instead of booting this kernel again. Diagnostic builds only.
+
+config RK_WDT_GUARD
+	bool "Arm the RK3288 watchdog in the decompressor and set rockusb loader flag"
+	depends on ARCH_ROCKCHIP
+	help
+	  Ungate the RK3288 watchdog pclk (SGRF_SOC_CON0 bit6/bit1) and start
+	  the always-on (PMU domain) watchdog in the first instructions of the
+	  decompressor stub (top=15), then set the PMU loader reboot flag so
+	  that the reset it issues re-enters the rockusb USB download mode
+	  instead of booting normally.
+
+	  The timeout is 2^(top+16) / pclk_wdt, with pclk_wdt =
+	  pclk_pd_alive = gpll / DIV(CLKSEL_CON(33)[12:8]). It is NOT a fixed
+	  89s: 89s is what you get if pclk_wdt happens to be 24MHz.
+
+	  Nothing in the kernel feeds this watchdog and the DTB wdt node is
+	  left disabled, so it expires unless the board is reset first. This
+	  is meant for unattended boards that must stay recoverable after a
+	  kernel hang. Say N unless you know exactly what you are doing.
+
+config RK_WDT_GUARD_EMU
+	bool "Relocate the RK_WDT_GUARD registers into QEMU virt RAM (EMULATION ONLY)"
+	depends on RK_WDT_GUARD
+	help
+	  QEMU's "-M virt" machine has no RK3288 PMU/alive register block:
+	  0xff800000 and 0xff730000 are not mapped, so a guest that executes
+	  the RK_WDT_GUARD stores in the decompressor takes an external abort
+	  before it can print anything.
+
+	  This option (and only this option) moves those stores - and the
+	  ioremap() base used by drivers/soc/rockchip/rk_wdt_guard.c - to plain
+	  RAM inside the virt machine:
+
+		0x4ff80000  watchdog TORR/CRR/CR   (was 0xff800000)
+		0x4ff73000  PMU loader flag        (was 0xff730000)
+
+	  Nothing then acts as a real watchdog: the writes are just observable
+	  memory traffic, which is exactly what an emulation harness needs in
+	  order to timestamp arming, petting and the expiry that a host-side
+	  supervisor turns into a reset. There is no hardware behind these
+	  addresses, so feeding them does not keep anything alive.
+
+	  EMULATION ONLY. On a real RK3288 this points the decompressor at DRAM
+	  and the SoC watchdog is never armed, so the board loses the reset-to-
+	  rockusb safety net. It MUST be off in every real-hardware build.
+
+config RK_WDT_BACKSTOP
+	bool "RK3288 hardware watchdog backstop (hard-hang -> system reset)"
+	depends on ARCH_ROCKCHIP
+	default n
+	help
+	  Arm the SoC watchdog (0xff800000) from start_kernel() right after
+	  time_init(), ungate its pclk via SGRF_SOC_CON0 bit6 (write-mask bit22),
+	  and kick it from an SCHED_FIFO kthread every second. A hard hang that
+	  stops the kthread turns into a system reset after the timeout, which
+	  keeps DRAM (ramoops console log survives).
+
+	  Timeout = (2^(16+TOP)-1) / pclk_wdt, pclk_wdt = pclk_pd_alive (unmeasured).
+	  Boot parameters: rkwdt=0 disables, rkwdt_top=N sets TOP (0..15, default
+	  13), rkwdt_test=1 spins with IRQs off and no kicks at checkpoint 1.
