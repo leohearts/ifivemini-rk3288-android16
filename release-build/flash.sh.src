@@ -1,0 +1,199 @@
+#!/bin/bash
+# flash.sh - flash the iFive mini 4S release with rkdeveloptool (Linux).
+#
+# The tablet must be in Rockchip USB download mode (USB id 2207:320a). Everything is
+# written in ONE session; do not power-cycle in between.
+#
+#   ./flash.sh [--dry-run] [--no-reset] [--force] [--wait SECONDS] [--yes]
+#
+#   --dry-run   verify every image, then print every command that would run; touches no device
+#   --no-reset  do not reset the tablet after the last verified write
+#   --force     continue when a pre-write probe does not see the expected magic (see README)
+#   --wait N    wait up to N seconds for 2207:320a (default 120)
+#   --yes       do not ask for the "erase all user data" confirmation
+#
+# RKDEVELOPTOOL=/path/to/rkdeveloptool overrides the tool (default: rkdeveloptool in PATH).
+# Every write is read back and compared; any mismatch stops the script.
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+RK=${RKDEVELOPTOOL:-rkdeveloptool}
+DRY=0; RESET=1; FORCE=0; WAIT=120; YES=0
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1; shift ;;
+    --no-reset) RESET=0; shift ;;
+    --force) FORCE=1; shift ;;
+    --yes) YES=1; shift ;;
+    --wait) [ $# -ge 2 ] || usage; WAIT=$2; shift 2 ;;
+    -h|--help) usage ;;
+    *) usage ;;
+  esac
+done
+die() { echo "STOP: $*" >&2; exit "${2:-3}"; }
+
+# ---- manifest: image file, LBA (rkdeveloptool numbering = raw eMMC sector - 0x2000), required magic ----
+# LAYOUT selects the partition map the images were built for (set by make-release.sh): a11 | gsi.
+# META_LBA / UD_LBA are filled in per layout; guard-release.py checks them against the resource blkdevparts.
+LAYOUT=@LAYOUT@
+LOADER=loader/RK3288UbootLoader_V2.30.10.bin
+SUPER=images/super.img;          SUPER_LBA=0x92000   # system partition (0x92000..META), raw liblp image
+META=images/metadata.img;        META_LBA=@META_LBA@ # metadata partition, empty freshly formatted ext4, 16 MiB
+UDZERO=images/userdata-head-zero.img; UD_LBA=@UD_LBA@ # userdata head, 1 MiB of zeros -> /data is re-created at first boot
+RES=images/resource.img;         RES_LBA=0x6000      # "RSCE" resource container (DTB + logos)
+KRN=images/kernel.img;           KRN_LBA=0xE000      # "KRNL" container
+RD=images/ramdisk.img;           RD_LBA=0x16000      # "KRNL" container
+CH=16777216                                          # super is written in 16 MiB pieces
+FILES="$LOADER $SUPER $META $UDZERO $RES $KRN $RD"
+
+cd "$HERE" || die "cannot cd to $HERE"
+
+# ---- 1. verify every file before anything touches the tablet ----
+[ -f SHA256SUMS ] || die "SHA256SUMS missing"
+for f in $FILES; do
+  [ -f "$f" ] || die "missing $f"
+  grep -q "  $f\$" SHA256SUMS || die "$f is not listed in SHA256SUMS"
+done
+echo "== verifying SHA-256 of all images"
+sha256sum -c SHA256SUMS || die "checksum mismatch: nothing was written"
+magic() { od -An -tx1 -N4 "$1" | tr -d ' \n'; }
+offmagic() { od -An -tx1 -j"$2" -N4 "$1" | tr -d ' \n'; }  # file offset
+case $LAYOUT in a11|gsi) : ;; *) die "unknown LAYOUT $LAYOUT" ;; esac
+[ "$(magic $RES)" = 52534345 ] || die "$RES is not an RSCE container"
+[ "$(magic $KRN)" = 4b524e4c ] || die "$KRN is not a KRNL container"
+[ "$(magic $RD)" = 4b524e4c ] || die "$RD is not a KRNL container"
+[ "$(offmagic $SUPER 4096)" = 67446c61 ] || die "$SUPER has no liblp magic at offset 4096"
+for f in $FILES; do
+  [ "$(magic $f)" != ed26ff3a ] || die "$f is an Android sparse image; this script needs raw images"
+done
+case $LAYOUT in gsi) SYSTEM_SECTORS=0x600000 ;; a11) SYSTEM_SECTORS=0x300000 ;; esac
+SMAX=$((SYSTEM_SECTORS * 512)); SSIZE=$(stat -L -c %s $SUPER)
+[ "$SSIZE" -le "$SMAX" ] || die "$SUPER is $SSIZE B; the system partition holds $SMAX B"
+[ $((SSIZE % 512)) -eq 0 ] || die "$SUPER size is not a multiple of 512"
+for pair in "$RES:16777216" "$KRN:16777216" "$RD:16777216" "$META:$((0x8000 * 512))" "$UDZERO:$((0x800 * 512))"; do
+  f=${pair%%:*}; max=${pair##*:}
+  [ "$(stat -L -c %s "${f}")" -le "$max" ] || die "$f larger than its partition slot ($max B)"
+done
+echo "== all images verified"
+
+# ---- command runner (real or dry) ----
+if [ "$DRY" = 1 ]; then
+  run() { echo "DRYRUN: $*"; }
+else
+  run() { "$@"; }
+fi
+
+TMP=""
+if [ "$DRY" = 0 ]; then
+  TMP=$(mktemp -d "${TMPDIR:-/tmp}/ifive-flash.XXXXXX") || die "mktemp failed"
+  trap 'rm -rf "$TMP"' EXIT
+  command -v "$RK" >/dev/null 2>&1 || [ -x "$RK" ] || die "rkdeveloptool not found (install it, or set RKDEVELOPTOOL=)" 2
+  if [ "$YES" != 1 ]; then
+    echo
+    echo "This ERASES the Android system and ALL user data on the tablet (userdata/metadata are re-created)."
+    read -r -p "Type YES to continue: " ans
+    [ "$ans" = YES ] || die "aborted by user" 1
+  fi
+fi
+
+# ---- 2. wait for USB download mode ----
+usb_present() {
+  if command -v lsusb >/dev/null 2>&1; then lsusb | grep -q '2207:320a'
+  else grep -qs '^320a$' /sys/bus/usb/devices/*/idProduct 2>/dev/null
+  fi
+}
+if [ "$DRY" = 1 ]; then
+  echo "DRYRUN: wait up to ${WAIT}s for USB device 2207:320a"
+else
+  echo "== waiting for 2207:320a (Rockchip download mode), up to ${WAIT}s"
+  t=0; until usb_present; do
+    [ "$t" -lt "$WAIT" ] || die "no 2207:320a device within ${WAIT}s (see README: how to enter download mode)" 1
+    sleep 1; t=$((t + 1))
+  done
+fi
+
+# ---- 3. loader: only when the SoC is in real MaskROM (no running loader) ----
+if [ "$DRY" = 1 ]; then
+  echo "DRYRUN: $RK ld"
+  echo "DRYRUN: (only if ld reports Maskrom) $RK db $LOADER ; sleep 2 ; $RK ld   # must then report Loader"
+else
+  LD=$(timeout 30 "$RK" ld 2>&1) || die "rkdeveloptool ld failed: $LD" 1
+  echo "$LD"
+  case "$LD" in
+    *Maskrom*|*MaskRom*|*MASKROM*)
+      echo "== MaskROM state: downloading loader"
+      timeout 60 "$RK" db "$LOADER" || die "db $LOADER failed" 1
+      sleep 2
+      LD=$(timeout 30 "$RK" ld 2>&1); echo "$LD"
+      case "$LD" in *Loader*) : ;; *) die "device did not come up in Loader state after db" 1 ;; esac ;;
+    *Loader*) echo "== loader already running (no db needed)" ;;
+    *) die "no usable rockusb device in ld output" 1 ;;
+  esac
+fi
+
+# ---- 4. read-only probes (same as the developer flasher: each target must hold what we expect) ----
+probe() { # lba sectors label want-hex offset-in-bytes [alt-want-hex alt-offset]
+  local lba=$1 secs=$2 label=$3 want=$4 off=$5 awant=${6:-} aoff=${7:-} got agot
+  if [ "$DRY" = 1 ]; then echo "DRYRUN: $RK rl $lba $secs <tmp>   # expect $label magic $want at byte $off${awant:+ or $awant at byte $aoff}"; return 0; fi
+  rm -f "$TMP/probe.bin"
+  timeout 30 "$RK" rl "$lba" "$secs" "$TMP/probe.bin" >/dev/null 2>&1 || die "probe rl $lba failed" 1
+  got=$(offmagic "$TMP/probe.bin" "$off")
+  agot=""; [ -z "$awant" ] || agot=$(od -An -tx1 -j"$aoff" -N2 "$TMP/probe.bin" | tr -d ' \n')
+  echo "probe $label @ $lba: magic=$got"
+  if [ "$got" = "$want" ] || { [ -n "$awant" ] && [ "$agot" = "$awant" ]; }; then return 0; fi
+  if [ "$FORCE" = 1 ]; then echo "WARNING: $label probe mismatch ($got), continuing because of --force"; return 0; fi
+  die "$label @ $lba holds magic '$got', expected $want${awant:+ (or ext4 $awant)}; this does not look like the expected partition layout (use --force only if you know why)" 2
+}
+probe $RES_LBA 8 resource 52534345 0
+probe $KRN_LBA 8 kernel 4b524e4c 0
+probe $RD_LBA 8 ramdisk 4b524e4c 0
+probe $SUPER_LBA 9 system 67446c61 4096 53ef 1080   # old super (liblp) or a stock ext4 system partition
+
+# ---- 5. writes, each read back and compared ----
+wl_verify() { # lba file offset len label
+  local lba=$1 f=$2 off=$3 len=$4 label=$5 secs chunk rb lbah
+  secs=$(( (len + 511) / 512 ))
+  lbah=$(printf '0x%x' $((lba)))
+  if [ "$DRY" = 1 ]; then
+    echo "DRYRUN: WRITE $label: $RK wl $lbah <$f bytes $off..$((off + len - 1))> ($len B, $secs sectors)"
+    echo "DRYRUN: READBACK $label: $RK rl $lbah $secs <tmp> ; cmp with the same bytes"
+    return 0
+  fi
+  chunk=$TMP/chunk.bin; rb=$TMP/rb.bin
+  dd if="$f" of="$chunk" bs=512 skip=$((off / 512)) count=$secs status=none 2>/dev/null || die "dd $f chunk failed" 4
+  [ "$(magic "$chunk")" != ed26ff3a ] || die "$label chunk starts with Android sparse magic" 3
+  timeout 300 "$RK" wl "$lbah" "$chunk" >/dev/null 2>&1 || die "wl $label @ $lbah failed" 4
+  rm -f "$rb"
+  timeout 300 "$RK" rl "$lbah" "$secs" "$rb" >/dev/null 2>&1 || die "readback $label @ $lbah failed" 4
+  cmp -s -n "$len" -i "$off:0" "$f" "$rb" || die "readback mismatch $label @ $lbah" 4
+  echo "CMP OK $label @ $lbah ($len B)"
+}
+write_file() { # lba file label
+  local size; size=$(stat -L -c %s "$2")
+  wl_verify "$1" "$2" 0 "$size" "$3"
+}
+write_super() {
+  local size n i off len lba
+  size=$SSIZE; n=$(( (size + CH - 1) / CH ))
+  echo "== system: $size B in $n chunk(s) of $CH B at $SUPER_LBA"
+  for ((i = 0; i < n; i++)); do
+    off=$((i * CH)); len=$((size - off)); [ "$len" -le "$CH" ] || len=$CH
+    lba=$((SUPER_LBA + off / 512))
+    wl_verify "$lba" "$SUPER" "$off" "$len" "system chunk $((i + 1))/$n"
+  done
+}
+
+write_super
+echo "== metadata"; write_file $META_LBA "$META" metadata
+echo "== userdata head wipe"; write_file $UD_LBA "$UDZERO" userdata-head
+echo "== resource / kernel / ramdisk"
+write_file $RES_LBA "$RES" resource
+write_file $KRN_LBA "$KRN" kernel
+write_file $RD_LBA "$RD" ramdisk
+
+if [ "$DRY" = 1 ]; then echo "DRY RUN COMPLETE: nothing was written"; else echo "FLASH COMPLETE: all writes read back OK"; fi
+if [ "$RESET" = 1 ]; then
+  if [ "$DRY" = 1 ]; then echo "DRYRUN: $RK rd"; else timeout 30 "$RK" rd || die "reset failed" 5; echo "RESET ISSUED - first boot takes several minutes"; fi
+else
+  echo "Not reset (--no-reset). Run: $RK rd"
+fi

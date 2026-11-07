@@ -1,0 +1,13 @@
+ACTION!="add", GOTO="end_rkdeveloptool_rules"
+SUBSYSTEM!="usb", GOTO="end_rkdeveloptool_rules"
+
+# RK3288
+ATTRS{idVendor}=="2207", ATTRS{idProduct}=="320a", MODE="664", GROUP="dialout"
+# RK3328
+ATTRS{idVendor}=="2207", ATTRS{idProduct}=="320c", MODE="664", GROUP="dialout"
+# RK3368
+ATTRS{idVendor}=="2207", ATTRS{idProduct}=="330a", MODE="664", GROUP="dialout"
+# RK3399
+ATTRS{idVendor}=="2207", ATTRS{idProduct}=="330c", MODE="664", GROUP="dialout"
+
+LABEL="end_rkdeveloptool_rules"

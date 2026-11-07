@@ -1,0 +1,6 @@
+*.o
+*.ko
+*.cmd
+kernel/.config
+kernel/include/generated/
+kernel/arch/arm/boot/

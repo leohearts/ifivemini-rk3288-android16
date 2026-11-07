@@ -1,0 +1,154 @@
+# iFive mini 4S - Android 11 (RK3288) release {{DATE}}
+
+Community port of Android 11 to the iFive mini 4S tablet (Rockchip RK3288, 2 GB RAM, 1536x2048 LVDS/dual-DSI panel,
+stock Android 6.0.1). Kernel 4.19.232 (Rockchip BSP), vendor/HAL from the Tinker Board Android 12 BSP rebuilt for Android 11.
+
+**Flashing this ERASES the tablet's system and ALL user data (userdata and metadata are re-created on first boot).**
+It does not touch the bootloader, the parameter table, `uboot`, `misc`, `recovery`, `backup`, `cache` or `kpanic`.
+You can go back to stock Android 6.0.1 only with your own backup (see "Rollback").
+
+## Contents
+
+| File | Written to | Notes |
+|---|---|---|
+| `images/resource.img` | LBA `0x6000` (partition `resource`) | RSCE container: DTB + logos. Layout `blkdevparts` is embedded in the DTB bootargs. |
+| `images/kernel.img` | LBA `0xE000` (partition `kernel`) | KRNL container around the 4.19.232 zImage |
+| `images/ramdisk.img` | LBA `0x16000` (partition `boot`) | KRNL container; only `init` and the first-stage fstab |
+| `images/super.img` | LBA `0x92000` (partition `system`, 1.5 GiB) | raw liblp dynamic partition image: system, system_ext, vendor, product, odm |
+| `images/metadata.img` | LBA `0x392000` (partition `metadata`) | empty, freshly formatted 16 MiB ext4 |
+| `images/userdata-head-zero.img` | LBA `0x3BA000` (partition `userdata`) | 1 MiB of zeros: the old filesystem header is gone, `/data` is re-created at first boot |
+| `loader/RK3288UbootLoader_V2.30.10.bin` | only used with `rkdeveloptool db` | the tablet's own stock RK3288 loader (BOOT format). Only needed if the SoC is in real MaskROM. |
+| `flash.sh` | | Linux flasher (rkdeveloptool) |
+| `tools/linux-x86_64/` | | bundled `rkdeveloptool` 1.32 (GPL-2.0, Fedora build, x86_64) + licence + udev rule + exact source (`source/*.src.rpm`), see `README-TOOLS.txt` there |
+| `SHA256SUMS` | | `sha256sum -c SHA256SUMS` |
+| `BUILD-INFO.txt`, `kernel-release.config`, `kernel-release.fragment`, `kernel-uncommitted-files.txt` | | provenance, see below |
+
+LBAs are rkdeveloptool sector numbers (raw eMMC sector - 0x2000), 512 B per sector. The image set expects the stock partition
+table of this tablet: `resource 0x6000`, `kernel 0xE000`, `boot 0x16000`, `system 0x92000..0x391FFF`, `metadata 0x392000`,
+`userdata 0x3BA000`. `flash.sh` probes these LBAs first and refuses to write if `resource`/`kernel`/`boot` do not hold their
+`RSCE`/`KRNL` magic or the `system` partition holds neither a super image nor an ext4 filesystem (`--force` overrides).
+
+## Changelog
+
+### {{DATE}}
+- Off-mode charging restored: the release resource DTB has the `cw201x` fuel-gauge / DC-detect node that the loader's power-off charge path needs. A plugged charger on a powered-off tablet shows the charging screen instead of booting Android.
+- Android 11: auto-rotate support fixed. A static RRO on the product partition set `config_supportAutoRotation=false`, so the orientation sensor was never started. The value is now `true` (`super.img` = `super18b`; the RRO is otherwise unchanged).
+- Android 11 kernel is built without `CONFIG_BPF_JIT_ALWAYS_ON` (the Android 11 userspace hangs with it on).
+
+## How to enter Rockchip download mode (USB `2207:320a`)
+
+`flash.sh` waits for a USB device `2207:320a`. `lsusb` calls it "RK3288 in Mask ROM mode" in both states; `rkdeveloptool ld`
+reports `Loader` (the tablet's own miniloader is running, normal case) or `Maskrom` (the SoC ROM, no loader running).
+`flash.sh` runs `rkdeveloptool db loader/RK3288UbootLoader_V2.30.10.bin` only for `Maskrom`.
+
+How you get there, from most to least verified on this tablet:
+
+1. **Software, from a running Android 11 of this release** (root adb is enabled; this trigger was verified on a developer kernel of the same line, `rl1.krnl`, under another userspace - not yet on this exact release):
+   ```
+   adb root
+   adb shell 'echo 1 > /sys/module/rk_wdt_backstop/parameters/reset_loader'
+   ```
+   The tablet resets and shows up as `2207:320a` after about 2 s. The release kernel has no timed reset: this is the only
+   software path. `adb reboot loader` worked on the stock Android 6.0.1 but did NOT reliably re-enter download mode on the
+   Android 11/12 kernels - do not rely on it.
+2. **Physical** (Rockchip's documented way for U-Boot 2014.10 devices - NOT verified on this unit by this project): power the
+   tablet off, hold the recovery / Volume+ key, connect USB to the host, then power on, until `lsusb` shows `2207:320a`.
+3. **True MaskROM** (hardware): short the eMMC CLK pad to GND while powering on (requires opening the tablet).
+   Not needed as long as the loader on the eMMC is intact; `flash.sh` then does `db` for you.
+
+If the tablet is hung or soft-bricked and none of the above works, this release has no timed reset to bring it back: use
+option 2 or 3. (Developer builds of this port reset themselves to download mode ~15 minutes after every boot; that was
+removed on purpose, see below.)
+
+## Flashing (Linux)
+
+Requirements: `libusb-1.0` (your distribution's libusb package), `lsusb` (usbutils), `sha256sum`, `od`, `dd`, `cmp` (coreutils/diffutils).
+`rkdeveloptool` is bundled in `tools/linux-x86_64/` (x86_64, needs glibc >= 2.38, libstdc++ and libusb-1.0); `flash.sh` uses it when it runs on
+your machine, otherwise an `rkdeveloptool` from your `PATH`, and `RKDEVELOPTOOL=/path/to/rkdeveloptool ./flash.sh` overrides both.
+Root, or the udev rule `tools/linux-x86_64/99-rkdeveloptool.rules` (see `README-TOOLS.txt`), is needed for USB access to `2207:320a`.
+
+```
+unzip ifive-mini4s-android11-{{DATE}}.zip && cd ifive-mini4s-android11-{{DATE}}
+./flash.sh --dry-run      # verifies all SHA-256 and prints every command; touches nothing
+./flash.sh                # asks for YES, then flashes everything
+```
+
+Options: `--no-reset` (stay in download mode after the last write), `--force`, `--wait SECONDS` (default 120), `--yes`
+(skip the confirmation).
+
+What it does, in order: verify SHA-256 of every file (**refuses to write anything on any mismatch**) -> wait for `2207:320a` ->
+`rkdeveloptool ld` (and `db` only when it says Maskrom) -> read-only probes of the target LBAs -> write `super.img` in
+16 MiB pieces at `0x92000`, then `metadata.img` at `0x392000`, the zero head at `0x3BA000`, `resource.img` at `0x6000`,
+`kernel.img` at `0xE000`, `ramdisk.img` at `0x16000`; **every write is read back (`rl`) and compared byte for byte**; finally `rkdeveloptool rd`.
+Do not power-cycle in the middle. If any step stops, fix the cause and run `flash.sh` again: every step is idempotent.
+The order matters: `resource`/`kernel`/`boot` are written last, so an interrupted run leaves the previous boot chain in place.
+
+The write sequence is the same as the developer flasher (`flashX.sh --system`, then the metadata and userdata-head writes of the
+developer RUNBOOK section 3, then `flashX.sh --kernel --res --ramdisk --rd`).
+
+First boot after the reset takes several minutes (the data partition is created, apps are optimised); the screen may stay on the logo or
+black for a while. `adb devices` shows serial `RK3288IFIVE01` (the same on every unit: it is set in the DTB bootargs).
+
+### Windows / macOS
+There is no Windows script: this project has no verified Windows rkdeveloptool build or driver set, and the flash sequence needs
+chunked writes and read-back that are easy to get wrong. If you have Rockchip's `RKDevTool`/`upgrade_tool` working you can use the
+LBA table above, one `wl <LBA> <file>` per image (`super.img` must be split in 16 MiB pieces for `rkdeveloptool`); there is no support for that here.
+
+### Fastboot
+Not supported. This tablet's U-Boot 2014.10 does have a fastboot interface (`2207:0006`), but it reports no `max-download-size`,
+rejects the partition names this release needs (`super`) and wedged on the first large download in this project's tests, so no flashing
+is done through fastboot. Use `flash.sh` / rkdeveloptool only.
+
+## What works / known issues
+
+Status of this exact release (built from the same kernel line and userspace as the last verified developer build; the new release
+combination - no reset, no debug - was assembled on a host that has no tablet attached; see `BUILD-INFO.txt` for what was and was not boot-tested).
+Facts below come from the project's on-device reports; "measured" = seen on a running tablet.
+
+| Area | Status |
+|---|---|
+| Display | Works (1536x2048, boot animation, lockscreen). Hardware GLES (Mali-T764) active, GPU devfreq 198-594 MHz. Scrolling in Settings ~8% janky frames; the launcher all-apps list ~68% janky in the last measurement (animations are not smooth). |
+| Touch | Works. Early builds had touch drop-outs (lift + new touch during a stroke) caused by a wrong interrupt flag in the gslx680 driver; the fix (rising-edge interrupt) is in this kernel and removed the idle interrupt storm. A finger-drag re-analysis after the fix was never done, so **occasional drop-outs may remain**. |
+| Settings > Apps list | **Crashes occasionally** (SIGSEGV in `libhwui` `neon::rect_memset32`, thread `pool-2-thread-N` while it builds app icons). Analysis points to an upstream Android 11 bug in the VectorDrawable native tree (AOSP fix 0c4bc63 is not in this build). Intermittent (17 opens without a crash in one test); re-open Settings. No workaround applied. |
+| Back camera (OV8856) | Preview and 3264x2448 stream work; auto white balance/colour correction run; colour is slightly pink in some scenes; still capture was never tested; no OTP lens/AWB calibration. Treat as experimental. |
+| Front camera (GC2145) | Live preview works since the last kernel (green/dark/"camera error" in earlier builds). Board wiring limits it to 6 effective bits per channel (software shift applied); slight green/yellow cast; frame rate after the CPU fix-up not verified. Experimental. |
+| Audio | Speaker and microphone work (measured). Headset jack: only probed, insertion/playback untested. |
+| Wi-Fi | Works (AP6255, 2.4/5 GHz, scan + connect measured). The module `bcmdhd.ko` is built for this exact kernel: do not replace the kernel without rebuilding it. |
+| Bluetooth | Turns on (AP6255); pairing and audio untested. |
+| Battery / charging | Works (rn5t618 PMIC, charges to 100%, USB charger detection). |
+| RTC | Works (no alarm wake). |
+| Buttons | Volume keys work. **Power button: unconfirmed** (driver fix made, no keypress test recorded). |
+| Sensors | Accelerometer/gyro/compass probe OK; no rotation/motion test recorded. |
+| SD card slot | Controller comes up; no card was ever inserted/tested. |
+| USB | adb over USB works (gadget `0b05:7770`). OTG host mode untested. |
+| Video | H.264 decode via the Rockchip VPU works with errors on some frames; **no HEVC**; hardware encode works. |
+| Suspend/resume | Untested. |
+| SELinux | **Permissive** (`androidboot.selinux=permissive` in the DTB bootargs). |
+| Build type | `userdebug`: root adb (`adb root` / root shell), `ro.adb.secure=0` - anybody with the cable gets a root shell. Not a hardened build. |
+
+## What is NOT in this release (compared to the developer builds)
+
+Per the owner's requirement the release contains no timed reset and no debug facilities that cost performance:
+{{CHANGES}}
+
+## Rollback / restore
+
+* Back to stock Android 6.0.1: needs a backup of your own tablet (`parameter`, `resource`, `kernel`, `boot`, `system` partitions);
+  none is shipped here. Restore by writing them back with `rkdeveloptool wl` at the LBAs listed above (`system` is 3145728 sectors at
+  `0x92000`, `boot` 65536 sectors at `0x16000`), zero the head of `userdata` (`0x3BA000`) so stock Android reformats it, then `rkdeveloptool rd`.
+* Re-flash this release: run `flash.sh` again (no state is kept on the host).
+
+## Source and reproducibility
+
+* Kernel: Rockchip android-4.19 tree (TinkerBoard-Android/rockchip-android-kernel), local branch `ifive-mini4s-a11`, **HEAD {{KHEAD}}**
+  ({{KSUBJ}}). The release kernel was built from `git archive` of exactly that commit (no working-tree changes).
+* Kernel config: `kernel-release.config` is the exact `.config`; `kernel-release.fragment` is the diff against the developer config
+  (the developer `.config` is the last verified build's). Toolchain: Fedora 44 `gcc-arm-linux-gnu` 16.2.1 / binutils 2.46.1, `ARCH=arm`.
+* Uncommitted files in that tree at build time (NOT part of this release; listed in `kernel-uncommitted-files.txt`): {{UNCOMMITTED}}
+* DTB: built from the same commit (`rk3288-ifive-mini4s.dts`), only `/chosen/bootargs` edited (see above). Logos from the developer resource image.
+* Userspace: see `BUILD-INFO.txt`.
+
+## Licence note
+`tools/linux-x86_64/rkdeveloptool` is GPL-2.0-only software (upstream https://github.com/rockchip-linux/rkdeveloptool, Fedora 1.32-13.fc44 build); its licence text and the exact source package are in `tools/linux-x86_64/`.
+The images contain GPL kernel code (source: the commit above), Android (Apache-2.0 and others), Rockchip, Broadcom and ARM Mali
+vendor binaries and the tablet's own stock loader. They are provided for personal use on the tablet they came from, without any warranty.
