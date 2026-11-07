@@ -1,6 +1,6 @@
 # iFive mini 4S (RK3288) — Android 16 port
 
-Android 16 (TrebleDroid GSI) on the iFive mini 4S tablet: RK3288, 2 GB RAM, Mali-T760, 1536x2048 dual-DSI, Ricoh RC5T619 PMIC. Stock firmware was Android 6.
+Android 16 (TrebleDroid GSI) on the iFive mini 4S tablet: RK3288, 2 GB RAM, Mali-T760, 1536x2048 dual-DSI, Ricoh RC5T619 PMIC. Stock firmware was Android 6; the vendor image comes from a third-party Android 11 build for RK3288, not from stock.
 
 The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-2026-11-07.zip`. Unzip, put the tablet into maskrom, run `./flash.sh --yes` (bundled rkdeveloptool, Linux x86_64, needs libusb-1.0). It wipes /data; the first boot takes about 5 minutes and shows kernel text on the panel before Android starts.
 

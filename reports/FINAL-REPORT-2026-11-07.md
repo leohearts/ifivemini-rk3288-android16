@@ -14,8 +14,8 @@
 **启动方式**：沿用 Rockchip 的 loader。kernel / resource（设备树+logo）/ ramdisk 三个分区用 Rockchip 的 KRNL 容器格式打包（`release/build/tools/mkkrnl.py`，CRC 是 Rockchip 自己的变种，多项式 0x04C10DB7）。分区表由设备树里的 `blkdevparts` 决定。
 
 **Android 本身**：
-- Android 11：原厂衍生的 vendor + A11 系统，system 分区 1536 MiB。
-- Android 12 / 16：GSI（Android 16 用的是 TrebleDroid 的 a64_bvS），放在 3072 MiB 的 super 分区里，vendor 还是 A11 那套。
+- Android 11：第三方 Android 11 vendor（不是原厂的，原厂只有 Android 6；vendor 的原始来源记录随报告目录丢失，现在查不到）+ A11 系统，system 分区 1536 MiB。
+- Android 12 / 16：GSI（Android 16 用的是 TrebleDroid 的 a64_bvS），放在 3072 MiB 的 super 分区里，vendor 还是上面那套第三方 A11 vendor。
 - 因为两种布局的分区位置不一样，11-05 曾经把 GSI 的包配上了 A11 的 resource，平板卡了一整夜。之后写了 `guard-release.py`，打包时检查 super 装不装得下、flash 脚本里的扇区号和 resource 里的分区表是否一致。
 
 **两个版本内核配置上的差别**：A16 必须开 `BPF_JIT_ALWAYS_ON`，否则开机卡死；A11 开了反而卡死。所以 A11 和 GSI 用两个发布内核。NetBpfLoad 会报一个 "CRITICAL FAILURE"（arm32 JIT 不支持 BPF_XADD），确认只是日志，不影响使用。
