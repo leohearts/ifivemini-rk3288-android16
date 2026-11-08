@@ -286,6 +286,68 @@ rkdeveloptool rd
 
 Run `flash.sh` again to go back to the unrooted boot partition.
 
+**The boot image alone is not a complete Magisk install on this tablet.** With only that partition
+flashed, `magiskd` starts but stops in its post-fs-data stage every boot with
+`* Magisk environment incomplete, abort` in `/cache/magisk.log`, and the app shows
+`Ramdisk = Yes` together with `Not installed`. The app normally creates `/data/adb/magisk`
+(busybox and the rest) as part of its own install, and it does that by unpacking and re-patching the
+boot image - which it cannot do here, because this boot partition is a KRNL container
+(`magiskboot unpack` rejects it).
+
+A second thing gets in the way. The TrebleDroid GSI ships `/system/etc/init/su.rc`:
+
+```
+service sudaemon /system/bin/phh-su --daemon
+    class main
+```
+
+That daemon mounts a tmpfs over Magisk's `/debug_ramdisk/magisk`, `/system/xbin/magisk` and
+`/system/xbin/magiskpolicy`, with phh-su copied in place of each one (measured on the tablet: all
+three were the same inode, sha256 of `/system/bin/phh-su`). So `/system/xbin/su` - Magisk's own
+symlink `./magisk` - resolves to phh-su, which has no interface on this build: `me.phh.superuser` is
+not installed and there is no `su.sqlite` anywhere in `/data`, so an app calling `su` is denied
+without any prompt. And init's own Magisk boot-stage calls (`/debug_ramdisk/magisk --boot-complete`,
+`--service`, `--zygote-restart`) run phh-su instead, which exits 2 on those options. Without
+boot-complete the `bootloop` counter in `/data/adb/magisk.db` is never reset, and Magisk drops into
+safe mode with every module off two boots later.
+
+This image keeps phh-su: it belongs to the GSI and only matters once you use Magisk, so the
+override is installed as part of the Magisk setup. After the tablet has booted once with the
+patched image:
+
+```sh
+adb root
+bash scripts/magisk-install-data.sh Magisk-v31.0.apk
+adb reboot
+```
+
+That script does both halves. It fills `/data/adb/magisk` the way Magisk's own flashable-zip
+installer does (`scripts/flash_script.sh`: rename `lib/<abi>/libX.so` to `X`, add `magisk32`, copy
+`assets/`, drop `bootctl`/`main.jar`/`module_installer.sh`/`uninstaller.sh`, `chmod -R 755`), then
+installs the module `ifive-no-phh-su` (built by `scripts/make-no-phh-su-module.sh`, published as a
+release asset), which replaces `/system/etc/init/su.rc` and `/system/bin/phh-su` with empty files.
+Everything it writes is in `/data`; no partition is touched.
+
+Checked on the tablet after doing exactly that: `/cache/magisk.log` shows
+`ifive-no-phh-su: loading module files` and then `** boot-complete triggered`, `bootloop` is `0`,
+`su -c id` answers `uid=0(root) ... context=u:r:magisk:s0`, and `/debug_ramdisk/magisk` holds
+Magisk's own binary again.
+
+**"Requires additional setup" / "your device needs reflash Magisk".** That is Magisk's own
+`env_check` (`assets/app_functions.sh:17-22`) returning 2: it wants the block node
+`$MAGISKTMP/.magisk/device/preinit`, which magiskinit only creates when the ramdisk config carries
+`PREINITDEVICE=<partition>`. Measured on the tablet with an image built without that key:
+`/cache/magisk.log` keeps saying `mount: preinit dir not found` and `env_check` exits 2. The copy of
+the same key in `/data/.backup/.magisk` does not help - `parse_config_file()` runs inside
+`patch_ro_root()` / `patch_rw_root()` (`native/src/init/rootdir.cpp:264` and `:342`), long before
+fs_mgr mounts `/data`. For this tablet the value is `mmcblk0p13`: `magisk --preinit-device` answers
+that (`native/src/core/mount.rs:222` returns the basename of the mount source, and `/data` is a
+candidate because `ro.crypto.state` is `unsupported` rather than `encrypted`), and magiskinit's
+`find_block()` matches device names as well as partition labels
+(`native/src/init/mount.cpp:85`). `scripts/make-magisk-boot.sh` writes the line into the config, and
+`scripts/magisk-install-data.sh` prints the config it reads back from the boot partition, so you can
+tell which image you are on.
+
 The image is produced by `scripts/make-magisk-boot.sh` in the repository, from this package's
 `images/ramdisk.img` plus a Magisk release APK. On this tablet the boot partition is a `KRNL`
 container around a gzip cpio ramdisk (there is no `ANDROID!` boot image header), so

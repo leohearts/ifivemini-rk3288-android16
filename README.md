@@ -7,6 +7,7 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-<date
 ## Release assets
 - `ifive-mini4s-android16-gsi-<date>.zip` + `.sha256` — the flashable package (super with the Android 16 GSI + patched Tinker Board vendor, release kernel, release resource, loader, `flash.sh`, `restore.sh`, `write-loader-head.sh`, bundled rkdeveloptool).
 - `ifive-mini4s-android16-boot-magisk-v31.img` + `.sha256` — optional replacement for the boot partition (tool LBA 0x16000) with Magisk 31.0 patched in; built by `scripts/make-magisk-boot.sh`.
+- `ifive-no-phh-su.zip` — Magisk module for tablets using that boot image: replaces the GSI's `/system/etc/init/su.rc` and `/system/bin/phh-su` with empty files, because the phh-su daemon it starts mounts itself over Magisk's su binaries. Built by `scripts/make-no-phh-su-module.sh`; see `scripts/magisk-install-data.sh` for the whole setup.
 - `stock-backup.tar.gz` — raw dump of the original Android 6 partitions (gz, sha256-verified; userdata and cache not included).
 - `vndk30.tar.gz` — prebuilt VNDK-30 link libraries used by `hwc/build.sh`.
 
