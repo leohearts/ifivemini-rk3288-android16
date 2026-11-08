@@ -33,8 +33,9 @@ import json
 import os
 import sys
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_STOCK_BACKUP_DIR = "/home/leohearts/rk3288-ifive-mini4s/stock-backup"
-BOARDS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "boards")
+BOARDS_DIR = os.path.join(HERE, "boards")
 
 IMG_SIZE = 4 * 1024 * 1024
 PARM_MAGIC = b"PARM"
@@ -119,9 +120,11 @@ def build_board(out_dir, board):
     dev_dir = os.path.join(out_dir, "devices", board_id)
     os.makedirs(dev_dir, exist_ok=True)
 
-    # STOCK_BACKUP_DIR overrides the board's own directory; an empty value
-    # means "not set" and must not hide the board's directory
-    src_dir = os.environ.get("STOCK_BACKUP_DIR") or board["stock_backup_dir"]
+    # STOCK_BACKUP_DIR overrides the board's directory. If unset, check the repo's
+    # own stock-backup/ folder before falling back to the board's stock_backup_dir.
+    repo_stock = os.path.join(HERE, "..", "stock-backup")
+    default_src = repo_stock if os.path.isdir(repo_stock) else board["stock_backup_dir"]
+    src_dir = os.environ.get("STOCK_BACKUP_DIR") or default_src
     p1_gz = os.path.join(src_dir, board["p1_parameter_gz"])
     bl_gz = os.path.join(src_dir, board["bootloader_8m_gz"])
     have_p1 = os.path.isfile(p1_gz)

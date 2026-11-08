@@ -5,6 +5,12 @@
 #        Debian: gcc-arm-linux-gnueabi -> CROSS_COMPILE=arm-linux-gnueabi-), bc, bison, flex, lz4, libssl-dev, python3.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# Check dependencies
+command -v lz4 >/dev/null 2>&1 || { echo "STOP: lz4 command not found. Please install lz4 (e.g. dnf install lz4 / apt install lz4)"; exit 1; }
+# Automatically restore broken symlinks if project was downloaded as zip
+if [ -f "$HERE/scripts/restore-symlinks.py" ]; then
+    python3 "$HERE/scripts/restore-symlinks.py"
+fi
 CFG=${1:-gsi-release}
 export ARCH=arm CROSS_COMPILE=${CROSS_COMPILE:-arm-linux-gnu-} KCFLAGS="${KCFLAGS:--Wno-array-compare}"
 O=${O:-$HERE/out/kernel-$CFG}

@@ -1,7 +1,7 @@
 {
   "board": "ifive-mini4s",
   "display_name": "iFive mini 4S (RK3288)",
-  "stock_backup_dir": "/home/leohearts/rk3288-ifive-mini4s/stock-backup",
+  "stock_backup_dir": "stock-backup",
   "p1_parameter_gz": "p1-parameter.img.gz",
   "bootloader_8m_gz": "bootloader-8M.bin.gz",
   "parameter_region_lba": 0,

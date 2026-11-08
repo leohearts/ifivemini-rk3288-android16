@@ -2,10 +2,10 @@
 
 Android 16 (TrebleDroid GSI) on the iFive mini 4S tablet: RK3288, 2 GB RAM, Mali-T760, 1536x2048 dual-DSI, Ricoh RC5T619 PMIC. Stock firmware was Android 6; the vendor image comes from the ASUS Tinker Board (RK3288) Android 11 firmware (fingerprint `asus/WW_Tinker_Board:11/RQ3A.210705.001`, chakaponden build 2022-11-06), not from stock.
 
-The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-2026-11-07.zip`. Unzip, put the tablet into maskrom, run `./flash.sh --yes` (bundled rkdeveloptool, Linux x86_64, needs libusb-1.0). It wipes /data; the first boot takes about 5 minutes and shows kernel text on the panel before Android starts.
+The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-rescue.zip`. Unzip, put the tablet into loader (maskrom), run `bash restore.sh` (bundled rkdeveloptool, Linux x86_64, needs libusb-1.0). It wipes /data; the first boot takes about 5 minutes and shows kernel text on the panel before Android starts.
 
 ## Release assets
-- `ifive-mini4s-android16-gsi-2026-11-07.zip` — the package (super td16n, kernel rl5bj, release resource, loader, flash.sh, rkdeveloptool).
+- `ifive-mini4s-android16-gsi-rescue.zip` — the package (super td16n, kernel rl5bj, release resource, loader, flash.sh, rkdeveloptool).
 - `stock-backup.tar` — raw dump of the original Android 6 partitions (gz, sha256-verified; userdata and cache not included).
 - `hwc-hdr-vndk30.tar.zst` — prebuilt VNDK-30 link libraries used by `hwc/build.sh`.
 
