@@ -253,6 +253,55 @@ The base of the LBA numbering is **established, never guessed**: the script read
 The script writes the loader area and nothing else: it writes `devices/<board>/head-4M.bin`, reads the region back, compares it byte for byte, checks the `RK32` tag at byte offset 0x8800, and never resets the tablet. It refuses to run when the tablet is not enumerated, when `devices/<board>/head-4M.bin` is missing, and it asks for the word `restore` before it writes.
 
 
+## Device identity (build fingerprint)
+The `build.prop` of both the system image and the vendor image in this package carries this
+tablet's own identity instead of the GSI defaults:
+
+```
+ro.product.brand=iFive            ro.product.model=iFive mini 4S
+ro.product.name=ifive_mini4s      ro.product.device=mini4s
+ro.build.fingerprint=iFive/ifive_mini4s/mini4s:16/BP2A.250605.031.A3/250617:userdebug/test-keys
+ro.build.flavor=ifive_mini4s-userdebug
+```
+
+Before this the image kept the GSI defaults (brand `google`, model `mainline`, device `generic`,
+flavor `treble_a64_bvS`, and no `ro.build.fingerprint` key at all), which is why the About-phone
+screen and apps such as browsers showed the tablet as an unnamed device.
+`scripts/patch-identity.sh` writes those keys into both images at build time; the values can be
+changed through `ID_BRAND` / `ID_MANUFACTURER` / `ID_MODEL` / `ID_NAME` / `ID_DEVICE`.
+`ro.vendor.build.fingerprint` and `ro.bootimage.build.fingerprint` stay the ASUS Tinker Board
+Android 11 strings, because those blobs really are that build.
+
+## Optional: Magisk root (replacement boot partition)
+Published next to this zip, not inside it: `ifive-mini4s-boot-magisk-v29.img` with its
+`.sha256`. It replaces `images/ramdisk.img` at tool LBA `0x16000` — the same partition flash.sh
+writes:
+
+```sh
+sha256sum -c ifive-mini4s-boot-magisk-v29.img.sha256
+rkdeveloptool wl 0x16000 ifive-mini4s-boot-magisk-v29.img
+rkdeveloptool rd
+```
+
+Run `flash.sh` again to go back to the unrooted boot partition.
+
+The image is produced by `scripts/make-magisk-boot.sh` in the repository, from this package's
+`images/ramdisk.img` plus a Magisk release APK. On this tablet the boot partition is a `KRNL`
+container around a gzip cpio ramdisk (there is no `ANDROID!` boot image header), so
+`magiskboot unpack`/`repack` cannot be used on it; the script instead runs the ramdisk operations
+of Magisk's own `assets/boot_patch.sh` (`magiskboot cpio` with the same command list, `init`
+replaced by the ARM 32-bit `magiskinit` matching the ramdisk's own `init`), gzips the result the
+same way (`gzip -n -9`, verified to reproduce the stock bytes) and repacks the container with
+`tools/mkkrnl.py`, which recomputes the CRC the bootloader checks.
+
+`fstab.rk30board` is left byte-identical on purpose: it declares `fileencryption=software` on
+`/data` and the vendor partition has no plain `/etc/fstab.rk30board` (only `.emmc`/`.sd`
+variants), so Magisk's default stripping of those flags would change how `/data` mounts compared
+with the image that boots today. `KEEPFORCEENCRYPT=false` selects Magisk's upstream behaviour.
+Verified offline only: `magiskboot cpio test` reports the ramdisk as Magisk patched,
+`mkkrnl.py verify` reports the CRC, and unpacking the finished file gives the same members.
+Not tested on the tablet.
+
 ## Charging policy
 - Powered-off tablet on charger: `reboot -p` with the charger attached was tested; the panel stayed dark, USB charging was observed, and Android did not boot on its own.
 - Charge-boost switch (`persist.vendor.chg.boost`) is verified on device: `vendor.chgpolicy` runs, `high_current_allowed=Y`, and the ADP input current limit rises to 2000000.

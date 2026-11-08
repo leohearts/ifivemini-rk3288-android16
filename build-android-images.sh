@@ -80,10 +80,14 @@ echo "=== 4. Patch vendor (HWC, power HAL, chgpolicy, init.rk3288.rc, VINTF mani
 VENDOR_PATCHED="$WORK_DIR/vendor-patched.img"
 "$HERE/scripts/patch-vendor.sh" "$VENDOR_IMG" "$VENDOR_PATCHED"
 
-echo "=== 5. Pack super.img ==="
-"$HERE/scripts/build-super.sh" "$GSI_IMG" "$VENDOR_PATCHED" "$ODM_IMG" "$OUT_DIR/super.img"
+echo "=== 5. Device identity (brand/model/fingerprint) ==="
+ID_DIR="$WORK_DIR/identity"
+"$HERE/scripts/patch-identity.sh" "$GSI_IMG" "$VENDOR_PATCHED" "$ID_DIR"
 
-echo "=== 6. Ancillary inputs (metadata, userdata head, ramdisk, rkdeveloptool) ==="
+echo "=== 6. Pack super.img ==="
+"$HERE/scripts/build-super.sh" "$ID_DIR/system.img" "$ID_DIR/vendor.img" "$ODM_IMG" "$OUT_DIR/super.img"
+
+echo "=== 7. Ancillary inputs (metadata, userdata head, ramdisk, rkdeveloptool) ==="
 REF_DIR="$HERE/out/release/ifive-mini4s-android16-gsi-rescue/images"
 [ -f "$OUT_DIR/metadata.img" ] || { [ -f "$REF_DIR/metadata.img" ] && cp "$REF_DIR/metadata.img" "$OUT_DIR/" || dd if=/dev/zero of="$OUT_DIR/metadata.img" bs=1M count=16 status=none; }
 [ -f "$OUT_DIR/userdata-head-zero.img" ] || { [ -f "$REF_DIR/userdata-head-zero.img" ] && cp "$REF_DIR/userdata-head-zero.img" "$OUT_DIR/" || dd if=/dev/zero of="$OUT_DIR/userdata-head-zero.img" bs=1M count=1 status=none; }
