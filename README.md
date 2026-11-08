@@ -34,11 +34,50 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-rescu
 
 Requirements: Linux x86_64, `python3`, `zip`/`unzip`, `dtc`, `bc`, `bison`, `flex`, `lz4`, `libssl-dev`, and an arm cross compiler. Fedora: `gcc-arm-linux-gnu` + `binutils-arm-linux-gnu` (default `CROSS_COMPILE=arm-linux-gnu-`); Debian: `gcc-arm-linux-gnueabi` (set `CROSS_COMPILE=arm-linux-gnueabi-`).
 
+### Source components
+
 ```sh
 ./build-kernel.sh                          # -> out/kernel-gsi-release/kernel.img
 ./release-build/build-resource.sh          # -> release-build/resource-release-gsi.img (device tree + logos)
-./release-build/make-release.sh <inputs>   # -> release/ifive-mini4s-android16-gsi-<date>.zip
+cd hwc && ./build.sh && cd ..              # -> vendor-changes/lib/hw/hwcomposer.rk30board.so
 ```
 
+### Android system images (super.img)
+
+The flash package requires a `super.img` containing `system`, `vendor`, and `odm` partitions:
+
+#### Step 1: Obtain System Image (GSI)
+Download the TrebleDroid Android 16 vanilla GSI (`arm32_binder64` / `a64`):
+```sh
+mkdir -p work && cd work
+curl -sL -C - -o system.img.xz https://github.com/TrebleDroid/treble_experimentations/releases/download/ci-20250617/system-td-arm32_binder64-vanilla.img.xz
+unxz system.img.xz
+# If the uncompressed image is sparse, convert to raw:
+simg2img system.img system.raw.img && mv system.raw.img system.img || true
+cd ..
+```
+
+#### Step 2: Extract Vendor and ODM
+Extract `vendor.img` and `odm.img` from the ASUS Tinker Board Android 11 firmware (or unpack an existing release `super.img`):
+```sh
+# Unpacking from an existing super.img:
+lpunpack <path-to-super.img> work/unpacked/
+```
+
+#### Step 3: Patch Vendor Image
+Apply hardware composer, power HAL, and battery charging policies from `vendor-changes/` into `vendor.img`:
+```sh
+./scripts/patch-vendor.sh work/unpacked/vendor.img work/vendor-patched.img
+```
+
+#### Step 4: Pack `super.img`
+Generate `super.img` using `scripts/build-super.sh`:
+```sh
+./scripts/build-super.sh \
+  work/system.img \
+  work/vendor-patched.img \
+  work/unpacked/odm.img \
+  inputs/super.img
+```
 `<inputs>` holds `super.img`, `ramdisk.img`, `metadata.img`, `userdata-head-zero.img` and an optional `rkdeveloptool`; the release zip contains the same files for reference.
 `make-release.sh` runs `mkkrnl.py verify` on the kernel and ramdisk, runs `guard-release.py` against the partition layout, and checks the zip with `unzip -t`.
