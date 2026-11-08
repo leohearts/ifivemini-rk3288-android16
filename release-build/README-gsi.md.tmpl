@@ -18,7 +18,7 @@ Both `flash.sh` and `restore.sh` take their write addresses from `manifest.json`
 Linux x86_64 with libusb-1.0; rkdeveloptool is bundled (set RKDEVELOPTOOL to use another). Erases system and all user data, unless `--keep-userdata` is given.
 1. Put the tablet in Rockchip download mode, so it enumerates as USB `2207:320a`. From a running system `adb reboot loader` does it; check with `./tools/rkdeveloptool ld`, which prints `Loader` or `Maskrom`. `flash.sh` accepts either state (the Maskrom steps are in "A tablet with a blank eMMC").
 2. `./flash.sh --dry-run` (no device touched), then `./flash.sh --yes`.
-   `./flash.sh --keep-userdata` leaves `/data` alone: it skips the two writes that destroy it (the `metadata` partition and the first 1 MiB of `userdata`, which holds the ext4 superblock) and still replaces system, vendor, odm, kernel, ramdisk and the device tree. `/data` on this tablet is a plain ext4 with no encryption behind it (`ro.crypto.state=unsupported`, `/dev/block/mmcblk0p13` mounted directly), so it stays readable when those two writes are skipped. A system whose `build.prop` changed can still be asked to factory reset itself at boot; that has not been tested here, so copy anything you cannot lose first.
+   `./flash.sh --keep-userdata` leaves `/data` alone: it skips the two writes that destroy it (the `metadata` partition and the first 1 MiB of `userdata`, which holds the ext4 superblock) and still replaces system, vendor, odm, kernel, ramdisk and the device tree. `/data` on this tablet is a plain ext4 with no encryption behind it (`ro.crypto.state=unsupported`, `/dev/block/mmcblk0p13` mounted directly), so it stays readable when those two writes are skipped. Measured here: after a `--keep-userdata` flash of a package whose `build.prop` identity keys had changed, the oldest app data directories in `/data/data` still dated from the boot before the flash (10 hours earlier) and all 8 user-installed apps were still installed - Android did not factory reset itself. Still, back up anything you cannot lose: that is one tablet, one boot.
 3. Script verifies SHA-256, writes each image, reads back and compares, then resets. First boot takes several minutes.
 
 ## Restoring a wiped tablet
@@ -347,6 +347,10 @@ candidate because `ro.crypto.state` is `unsupported` rather than `encrypted`), a
 (`native/src/init/mount.cpp:85`). `scripts/make-magisk-boot.sh` writes the line into the config, and
 `scripts/magisk-install-data.sh` prints the config it reads back from the boot partition, so you can
 tell which image you are on.
+
+Verified after writing that image: `env_check 31.0 31000` exits 0, `/debug_ramdisk/.magisk/device/preinit`
+is a block device with major/minor `179, 13` (mmcblk0p13), and `/cache/magisk.log` now ends with
+`* Found preinit dir: /data/adb` instead of the warning - the app stops showing the setup dialog.
 
 The image is produced by `scripts/make-magisk-boot.sh` in the repository, from this package's
 `images/ramdisk.img` plus a Magisk release APK. On this tablet the boot partition is a `KRNL`
