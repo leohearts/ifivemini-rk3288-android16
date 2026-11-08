@@ -11,6 +11,8 @@
 #   --force     continue when a pre-write probe does not see the expected magic (see README)
 #   --wait N    wait up to N seconds for 2207:320a (default 120)
 #   --yes       do not ask for the "erase all user data" confirmation
+#   --keep-userdata  do not write the metadata partition and do not wipe the head of
+#                    userdata, so /data keeps its content (see README)
 #
 # RKDEVELOPTOOL=/path/to/rkdeveloptool overrides the tool (default: rkdeveloptool in PATH).
 # Every write is read back and compared; any mismatch stops the script.
@@ -18,14 +20,15 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 RK=${RKDEVELOPTOOL:-$(cd "$(dirname "$0")" && pwd)/tools/rkdeveloptool}
 [ -x "$RK" ] || RK=rkdeveloptool
-DRY=0; RESET=1; FORCE=0; WAIT=120; YES=0
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
+DRY=0; RESET=1; FORCE=0; WAIT=120; YES=0; KEEP_UD=0
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
     --no-reset) RESET=0; shift ;;
     --force) FORCE=1; shift ;;
     --yes) YES=1; shift ;;
+    --keep-userdata) KEEP_UD=1; shift ;;
     --wait) [ $# -ge 2 ] || usage; WAIT=$2; shift 2 ;;
     -h|--help) usage ;;
     *) usage ;;
@@ -97,7 +100,11 @@ if [ "$DRY" = 0 ]; then
   command -v "$RK" >/dev/null 2>&1 || [ -x "$RK" ] || die "rkdeveloptool not found (install it, or set RKDEVELOPTOOL=)" 2
   if [ "$YES" != 1 ]; then
     echo
-    echo "This ERASES the Android system and ALL user data on the tablet (userdata/metadata are re-created)."
+    if [ "$KEEP_UD" = 1 ]; then
+      echo "This replaces the Android system. /data is NOT touched (--keep-userdata)."
+    else
+      echo "This ERASES the Android system and ALL user data on the tablet (userdata/metadata are re-created)."
+    fi
     read -r -p "Type YES to continue: " ans
     [ "$ans" = YES ] || die "aborted by user" 1
   fi
@@ -191,8 +198,12 @@ write_super() {
 }
 
 write_super
-echo "== metadata"; write_file $META_LBA "$META" metadata
-echo "== userdata head wipe"; write_file $UD_LBA "$UDZERO" userdata-head
+if [ "$KEEP_UD" = 1 ]; then
+  echo "== metadata and userdata: NOT written (--keep-userdata), /data keeps its content"
+else
+  echo "== metadata"; write_file $META_LBA "$META" metadata
+  echo "== userdata head wipe"; write_file $UD_LBA "$UDZERO" userdata-head
+fi
 echo "== resource / kernel / ramdisk"
 write_file $RES_LBA "$RES" resource
 write_file $KRN_LBA "$KRN" kernel

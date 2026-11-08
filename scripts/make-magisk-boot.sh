@@ -123,7 +123,7 @@ echo "== 4. patch the ramdisk (KEEPVERITY=$KEEPVERITY KEEPFORCEENCRYPT=$KEEPFORC
 ./magiskboot compress=xz magisk   magisk.xz
 ./magiskboot compress=xz stub.apk stub.xz
 ./magiskboot compress=xz init-ld  init-ld.xz
-printf 'KEEPVERITY=%s\nKEEPFORCEENCRYPT=%s\nRECOVERYMODE=%s\n' "$KEEPVERITY" "$KEEPFORCEENCRYPT" "$RECOVERYMODE" > config
+printf 'KEEPVERITY=%s\nKEEPFORCEENCRYPT=%s\nRECOVERYMODE=%s\nVENDORBOOT=%s\n' "$KEEPVERITY" "$KEEPFORCEENCRYPT" "$RECOVERYMODE" "${VENDORBOOT:-false}" > config
 chmod 644 config
 ./magiskboot cpio ramdisk.cpio \
     "add 0750 init magiskinit" \

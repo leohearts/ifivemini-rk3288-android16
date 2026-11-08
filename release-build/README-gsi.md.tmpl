@@ -15,9 +15,10 @@ This package holds the GSI image set and the Rockchip parameter structures of th
 Both `flash.sh` and `restore.sh` take their write addresses from `manifest.json`, which is derived at build time from the partition table of the device tree inside `images/resource.img` and from the parameter structure of each board. Neither script carries an address of its own, so the two cannot disagree about where an image goes.
 
 ## Flashing
-Linux x86_64 with libusb-1.0; rkdeveloptool is bundled (set RKDEVELOPTOOL to use another). Erases system and all user data.
+Linux x86_64 with libusb-1.0; rkdeveloptool is bundled (set RKDEVELOPTOOL to use another). Erases system and all user data, unless `--keep-userdata` is given.
 1. Put the tablet in Rockchip download mode, so it enumerates as USB `2207:320a`. From a running system `adb reboot loader` does it; check with `./tools/rkdeveloptool ld`, which prints `Loader` or `Maskrom`. `flash.sh` accepts either state (the Maskrom steps are in "A tablet with a blank eMMC").
 2. `./flash.sh --dry-run` (no device touched), then `./flash.sh --yes`.
+   `./flash.sh --keep-userdata` leaves `/data` alone: it skips the two writes that destroy it (the `metadata` partition and the first 1 MiB of `userdata`, which holds the ext4 superblock) and still replaces system, vendor, odm, kernel, ramdisk and the device tree. `/data` on this tablet is a plain ext4 with no encryption behind it (`ro.crypto.state=unsupported`, `/dev/block/mmcblk0p13` mounted directly), so it stays readable when those two writes are skipped. A system whose `build.prop` changed can still be asked to factory reset itself at boot; that has not been tested here, so copy anything you cannot lose first.
 3. Script verifies SHA-256, writes each image, reads back and compares, then resets. First boot takes several minutes.
 
 ## Restoring a wiped tablet
@@ -273,13 +274,13 @@ changed through `ID_BRAND` / `ID_MANUFACTURER` / `ID_MODEL` / `ID_NAME` / `ID_DE
 Android 11 strings, because those blobs really are that build.
 
 ## Optional: Magisk root (replacement boot partition)
-Published next to this zip, not inside it: `ifive-mini4s-boot-magisk-v29.img` with its
-`.sha256`. It replaces `images/ramdisk.img` at tool LBA `0x16000` — the same partition flash.sh
-writes:
+Published next to this zip, not inside it: `ifive-mini4s-boot-magisk-v31.img` with its `.sha256`
+(Magisk 31.0, whose APK sha256 is `2c8a488b9a5293e578e95ae4f07e3c57aba4feec4a52ca4dd852a2692d6dd4e8`).
+It replaces `images/ramdisk.img` at tool LBA `0x16000` — the same partition flash.sh writes:
 
 ```sh
-sha256sum -c ifive-mini4s-boot-magisk-v29.img.sha256
-rkdeveloptool wl 0x16000 ifive-mini4s-boot-magisk-v29.img
+sha256sum -c ifive-mini4s-boot-magisk-v31.img.sha256
+rkdeveloptool wl 0x16000 ifive-mini4s-boot-magisk-v31.img
 rkdeveloptool rd
 ```
 
@@ -298,6 +299,12 @@ same way (`gzip -n -9`, verified to reproduce the stock bytes) and repacks the c
 `/data` and the vendor partition has no plain `/etc/fstab.rk30board` (only `.emmc`/`.sd`
 variants), so Magisk's default stripping of those flags would change how `/data` mounts compared
 with the image that boots today. `KEEPFORCEENCRYPT=false` selects Magisk's upstream behaviour.
+Measured on the tablet running this package: `/data` is a plain ext4 on `/dev/block/mmcblk0p13`
+with no device-mapper target behind it and `ro.crypto.state=unsupported`, so that declaration is
+not in effect; not touching the file keeps the mount exactly as it works today.
+The `magiskboot cpio` command list and the `.backup/.magisk` config written here follow Magisk
+31.0's `assets/boot_patch.sh`; compared with 29.0 the list is the same and one line (`VENDORBOOT=false`)
+was added to the config.
 Verified offline only: `magiskboot cpio test` reports the ramdisk as Magisk patched,
 `mkkrnl.py verify` reports the CRC, and unpacking the finished file gives the same members.
 Not tested on the tablet.

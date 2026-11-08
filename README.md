@@ -2,11 +2,11 @@
 
 Android 16 (TrebleDroid GSI) on the iFive mini 4S tablet: RK3288, 2 GB RAM, Mali-T760, 1536x2048 dual-DSI, Ricoh RC5T619 PMIC. Stock firmware was Android 6; the vendor image comes from the ASUS Tinker Board (RK3288) Android 11 firmware (fingerprint `asus/WW_Tinker_Board:11/RQ3A.210705.001`, chakaponden build 2022-11-06), not from stock.
 
-The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-<date>.zip` (latest release). Unzip, put the tablet into loader (maskrom), run `bash restore.sh` (bundled rkdeveloptool, Linux x86_64, needs libusb-1.0). It wipes /data; the first boot takes about 5 minutes and shows kernel text on the panel before Android starts. `ifive-mini4s-boot-magisk-v29.img`, published next to the zip, replaces the boot partition with a Magisk-patched one.
+The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-<date>.zip` (latest release). Unzip, put the tablet into loader (maskrom), run `bash restore.sh` (bundled rkdeveloptool, Linux x86_64, needs libusb-1.0). It wipes /data; the first boot takes about 5 minutes and shows kernel text on the panel before Android starts. `flash.sh --keep-userdata` replaces the system partitions without touching /data. `ifive-mini4s-boot-magisk-v31.img`, published next to the zip, replaces the boot partition with a Magisk-patched one.
 
 ## Release assets
 - `ifive-mini4s-android16-gsi-<date>.zip` + `.sha256` — the flashable package (super with the Android 16 GSI + patched Tinker Board vendor, release kernel, release resource, loader, `flash.sh`, `restore.sh`, `write-loader-head.sh`, bundled rkdeveloptool).
-- `ifive-mini4s-boot-magisk-v29.img` + `.sha256` — optional replacement for the boot partition (tool LBA 0x16000) with Magisk 29.0 patched in; built by `scripts/make-magisk-boot.sh`.
+- `ifive-mini4s-boot-magisk-v31.img` + `.sha256` — optional replacement for the boot partition (tool LBA 0x16000) with Magisk 31.0 patched in; built by `scripts/make-magisk-boot.sh`.
 - `stock-backup.tar.gz` — raw dump of the original Android 6 partitions (gz, sha256-verified; userdata and cache not included).
 - `vndk30.tar.gz` — prebuilt VNDK-30 link libraries used by `hwc/build.sh`.
 
