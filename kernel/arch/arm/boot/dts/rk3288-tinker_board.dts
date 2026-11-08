@@ -1,0 +1,263 @@
+/*
+ * Copyright (c) 2018 Fuzhou Rockchip Electronics Co., Ltd
+ *
+ * SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+ */
+
+/dts-v1/;
+#include "rk3288-tinker_board.dtsi"
+
+/ {
+	model = "ASUS Tinker Board (S)";
+	compatible = "rockchip,rk3288-evb-android-rk808-edp", "rockchip,rk3288";
+	chosen: chosen {
+		bootargs = "earlycon=uart8250,mmio32,0xff1b0000 vmalloc=496M console=ttyFIQ0 androidboot.baseband=N/A androidboot.veritymode=enforcing androidboot.hardware=rk30board androidboot.console=ttyFIQ0 init=/init kpti=0";
+	};
+
+	gpio-leds {
+		compatible = "gpio-leds";
+
+		pwr-led {
+				gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+				linux,default-trigger = "default-on";
+		};
+
+		act-led {
+				gpios=<&gpio1 24 GPIO_ACTIVE_HIGH>;
+				linux,default-trigger="mmc1";
+		};
+
+		rsv-led {
+				gpios=<&gpio1 25 GPIO_ACTIVE_HIGH>;
+				linux,default-trigger="default-off";
+		};
+	};
+
+	board_info: board-info {
+		compatible = "board-info";
+
+		model = "rk3288";
+
+		hw-id0 = <&gpio2 RK_PB0 GPIO_ACTIVE_HIGH>;
+		hw-id1 = <&gpio2 RK_PB1 GPIO_ACTIVE_HIGH>;
+		hw-id2 = <&gpio2 RK_PB2 GPIO_ACTIVE_HIGH>;
+
+		pid-id0 = <&gpio2 RK_PA1 GPIO_ACTIVE_HIGH>;
+		pid-id1 = <&gpio2 RK_PA2 GPIO_ACTIVE_HIGH>;
+		pid-id2 = <&gpio2 RK_PA3 GPIO_ACTIVE_HIGH>;
+
+		ddr-id0 = <&gpio2 RK_PB4 GPIO_ACTIVE_HIGH>;
+		ddr-id1 = <&gpio2 RK_PB5 GPIO_ACTIVE_HIGH>;
+		ddr-id2 = <&gpio2 RK_PB6 GPIO_ACTIVE_HIGH>;
+	};
+
+	sound-simple-card {
+		status = "okay";
+		compatible = "simple-audio-card";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,name = "rockchip,miniarm-codec";
+		simple-audio-card,mclk-fs = <512>;
+		simple-audio-card,cpu {
+			sound-dai = <&i2s>;
+		};
+		simple-audio-card,codec {
+			sound-dai = <&hdmi>;
+		};
+	};
+};
+
+&hevc {
+	status = "okay";
+	clock-names = "aclk_vcodec", "hclk_vcodec", "clk_core", "clk_cabac";
+	rockchip,normal-rates = <300000000>, <0>, <200000000>, <200000000>;
+	rockchip,advanced-rates = <600000000>, <0>, <500000000>, <500000000>;
+};
+
+&io_domains {
+	status = "okay";
+
+	dvp-supply = <&vcc_18>;
+};
+
+&isp_mmu {
+	status = "okay";
+};
+
+&i2c2 {
+	status = "okay";
+
+	cam_sensor: cam_sensor@36 {
+		compatible = "asus,cam_sensor";
+		status = "okay";
+		reg = <0x36>;
+		clocks = <&cru SCLK_VIP_OUT>;
+		clock-names = "xvclk";
+
+		pinctrl-names = "rockchip,camera_default";
+		pinctrl-0 = <&isp_mipi>;
+		enable-gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_HIGH>;
+
+		port {
+			cam_sensor_out: endpoint {
+				remote-endpoint = <&mipi_in_ucam0>;
+				data-lanes = <1 2>;
+			};
+		};
+	};
+
+};
+
+&mipi_phy_rx0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi_in_ucam0: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&cam_sensor_out>;
+				data-lanes = <1 2>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			dphy_rx_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&isp_mipi_in>;
+			};
+		};
+	};
+};
+
+&rkisp1 {
+	status = "okay";
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		isp_mipi_in: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&dphy_rx_out>;
+		};
+
+	};
+};
+
+&route_hdmi {
+	status = "okay";
+};
+
+&vopb {
+	assigned-clocks = <&cru DCLK_VOP0>;
+	assigned-clock-parents = <&cru PLL_GPLL>;
+};
+
+&vopl {
+	assigned-clocks = <&cru DCLK_VOP1>;
+	assigned-clock-parents = <&cru PLL_CPLL>;
+};
+
+&thermal_zones {
+        cpu_thermal: soc-thermal {
+                trips {
+                        cpu_alert0: trip-point@0 {
+                                temperature = <70000>; /* millicelsius */
+                        };
+                        cpu_alert1: trip-point@1 {
+                                temperature = <80000>; /* millicelsius */
+                        };
+                };
+
+        };
+};
+
+&hdmi {
+	pinctrl-0 = <&hdmi_ddc &hdmi_cec>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	#sound-dai-cells = <0>;
+};
+
+&i2s {
+	#sound-dai-cells = <0>;
+	status = "okay";
+};
+
+&rk_headset {
+	status = "okay";
+};
+
+&fiq_debugger {
+	rockchip,serial-id = <3>;
+};
+
+&spi0 {
+        status = "disabled";
+        max-freq = <50000000>;
+        pinctrl-0 = <&spi0_clk &spi0_tx &spi0_rx &spi0_cs0 &spi0_cs1>;
+
+        spidev@0 {
+                compatible = "rockchip,spidev";
+                reg = <0>;
+                spi-max-frequency = <50000000>;
+                spi-cpha = <1>;
+        };
+
+        spidev@1 {
+                compatible = "rockchip,spidev";
+                reg = <1>;
+                spi-max-frequency = <50000000>;
+                spi-cpha = <1>;
+        };
+};
+
+&spi2 {
+        status = "disabled";
+        max-freq = <50000000>;
+        pinctrl-0 = <&spi2_clk &spi2_tx &spi2_rx &spi2_cs0 &spi2_cs1>;
+
+        spidev@0 {
+                compatible = "rockchip,spidev";
+                reg = <0>;
+                spi-max-frequency = <50000000>;
+                spi-cpha = <1>;
+        };
+
+        spidev@1 {
+                compatible = "rockchip,spidev";
+                reg = <1>;
+                spi-max-frequency = <50000000>;
+                spi-cpha = <1>;
+        };
+};
+
+&uart1 {
+        pinctrl-names = "default";
+        pinctrl-0 = <&uart1_xfer &uart1_cts &uart1_rts>;
+        status = "disabled";
+};
+
+&uart2 {
+        status = "disabled";
+};
+
+&uart3 {
+        status = "disabled";
+};
+
+&uart4 {
+        pinctrl-names = "default";
+        pinctrl-0 = <&uart4_xfer>, <&uart4_cts>, <&uart4_rts>;
+        status = "disabled";
+};
+

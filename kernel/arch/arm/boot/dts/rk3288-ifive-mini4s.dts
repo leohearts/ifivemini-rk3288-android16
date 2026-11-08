@@ -1,0 +1,1270 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * iFive mini 4S - Rockchip RK3288 tablet board
+ *
+ * Covers the board wiring the tablet needs: serial console, eMMC, PMIC,
+ * USB, display (via rk3288-ifive-mini4s-display.dtsi), touch, keys, the
+ * SAR ADC keypad and the AP6255 SDIO Wi-Fi.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/pinctrl/rockchip.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/sensor-dev.h>
+#include "rk3288.dtsi"
+#include "rk3288-ifive-mini4s-display.dtsi"
+
+/ {
+	model = "iFive mini 4S";
+	compatible = "ifive,ifive-mini4s", "rockchip,rk3288";
+
+	/*
+	 * Stock mmc numbering.  Without mmcN aliases the host index follows
+	 * probe (DT) order, so enabling sdmmc/sdio0 (below ff0f0000) turns the
+	 * eMMC into mmcblk1 and blkdevparts=mmcblk0 / rkdump stop matching.
+	 */
+	aliases {
+		mmc0 = &emmc;
+		mmc1 = &sdmmc;
+		mmc2 = &sdio0;
+		mmc3 = &sdio1;
+	};
+
+	chosen {
+		bootargs = "console=ttyFIQ0 androidboot.hardware=rk30board androidboot.boot_devices=ff0f0000.dwmmc androidboot.super_partition=system androidboot.selinux=permissive rkdump=/dev/mmcblk0:0x12000000:0x400000 rkwdt=1 rkwdt_stop=0 rkwdt_loader=1 blkdevparts=mmcblk0:4M@8M(uboot),4M@12M(misc),16M@16M(resource),16M@32M(kernel),32M@48M(boot),32M@80M(recovery),52M@112M(backup),128M@164M(cache),4M@292M(kpanic),1536M@296M(system),16M@1832M(metadata),64M@1848M(radical_update),-@1912M(userdata) loglevel=4 printk.time=1 rkdeadline=300 printk.devkmsg=on androidboot.storagemedia=emmc clk_ignore_unused rkwdt_sgrf=0x00420000 log_buf_len=1M androidboot.serialno=RK3288IFIVE01";
+	};
+
+	/* Framebuffer driver node used by the bootloader logo path. */
+	fb {
+		status = "okay";
+		compatible = "rockchip,rk-fb";
+		rockchip,disp-mode = <0>;
+	};
+
+	uboot-charge {
+		status = "disabled";
+		compatible = "rockchip,uboot-charge";
+		rockchip,uboot-charge-on = <0>;
+		rockchip,android-charge-on = <0>;
+	};
+
+	reserved-memory {
+		ramoops@8000000 {
+			compatible = "ramoops";
+			reg = <0x0 0x8000000 0x0 0xf0000>;
+			record-size = <0x10000>;
+			console-size = <0x80000>;
+			ftrace-size = <0x0>;
+		};
+	};
+
+	/* 1.8 V reference for the SAR ADC, fixed rail. */
+	vcc18_saradc_vref: vcc18-saradc-vref {
+		compatible = "regulator-fixed";
+		regulator-name = "saradc_vref_1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+	};
+
+	/* 5 V rail, stock /5v_power_en: gpio7 pin 12 (PB4), active high. */
+	vcc_5v_en: vcc-5v-en {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_5v";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&gpio7 RK_PB4 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/* Volume keys on the SAR ADC ladder. */
+	adc-keys {
+		compatible = "adc-keys";
+		io-channels = <&saradc 1>;
+		io-channel-names = "buttons";
+		keyup-threshold-microvolt = <1800000>;
+
+		vol-up {
+			label = "volume up";
+			linux,code = <KEY_VOLUMEUP>;
+			press-threshold-microvolt = <0x48f4c>;
+		};
+
+		vol-down {
+			label = "volume down";
+			linux,code = <KEY_VOLUMEDOWN>;
+			press-threshold-microvolt = <0x6de>;
+		};
+	};
+
+	/* Board-level nodes the reference DTB has disabled. */
+	arm-pmu {
+		status = "disabled";
+	};
+
+	bus_intmem@ff700000 {
+		status = "disabled";
+	};
+
+	sram@ff720000 {
+		status = "disabled";
+	};
+
+	display-subsystem {
+		status = "okay";
+	};
+
+	/*
+	 * 32 kHz input from the RC5T619 (stock /clocks/xin32k, fixed).  Without
+	 * it sclk_tsadc (and sclk_hdmi_cec, sclk_otg_adp) are orphans and the
+	 * tsadc probe defers forever on its assigned-clocks.
+	 */
+	xin32k: xin32k {
+		compatible = "fixed-clock";
+		clock-frequency = <32768>;
+		clock-output-names = "xin32k";
+		#clock-cells = <0>;
+	};
+
+	/*
+	 * AP6255 (BCM43455) WL_REG_ON on gpio4 PD4 (stock WIFI,poweren_gpio).
+	 * Driven through mmc-pwrseq so the chip is powered when the
+	 * non-removable sdio0 host scans; mmc_host_rescan() does not rescan
+	 * non-removable hosts.  200 ms matches the stock bcmdhd power-up delay.
+	 */
+	sdio_pwrseq: sdio-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_enable_h>;
+		reset-gpios = <&gpio4 RK_PD4 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <200>;
+	};
+
+	/* rfkill-wlan platform data: out-of-band host wake on gpio4 PD6. */
+	wireless-wlan {
+		compatible = "wlan-platdata";
+		rockchip,grf = <&grf>;
+		wifi_chip_type = "ap6255";
+		WIFI,host_wake_irq = <&gpio4 RK_PD6 GPIO_ACTIVE_HIGH>;
+		status = "okay";
+	};
+
+	/*
+	 * AP6255 Bluetooth on uart0 (stock values).  rfkill-bt owns the RTS
+	 * pin so it can drive it as GPIO while the controller powers up.
+	 */
+	wireless-bluetooth {
+		compatible = "bluetooth-platdata";
+		uart_rts_gpios = <&gpio4 RK_PC3 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default", "rts_gpio";
+		pinctrl-0 = <&uart0_rts>;
+		pinctrl-1 = <&uart0_rts_gpio>;
+		BT,reset_gpio = <&gpio4 RK_PD5 GPIO_ACTIVE_HIGH>;
+		BT,wake_gpio = <&gpio4 RK_PD2 GPIO_ACTIVE_HIGH>;
+		BT,wake_host_irq = <&gpio4 RK_PD7 GPIO_ACTIVE_HIGH>;
+		status = "okay";
+	};
+
+	/*
+	 * Speaker amplifier fed from the RT5616 LOUT pair; stock
+	 * rt5616 spk-ctl-gpio = GPIO7_B7, active high.  Driven by DAPM so
+	 * the amp is only on while a speaker path is powered.
+	 */
+	spk_amp: speaker-amplifier {
+		compatible = "simple-audio-amplifier";
+		enable-gpios = <&gpio7 RK_PB7 GPIO_ACTIVE_HIGH>;
+		sound-name-prefix = "Speaker Amp";
+	};
+
+	/*
+	 * RT5616 on i2s0.  The card name gives ALSA id "realtekrt5616co"
+	 * (vendor 4.4 convention), which the vendor audio.primary.rk30board
+	 * HAL matches against its "realtekrt5616c" speaker/mic entry; any
+	 * other id leaves the HAL with card -1 and no PCM.
+	 *
+	 * That HAL hard-codes PCM device 2 for speaker playback and device 1
+	 * for mic capture, so the same i2s0 <-> RT5616 pair is linked three
+	 * times: pcm0 (generic/tinyalsa), pcm1 (HAL capture), pcm2 (HAL
+	 * playback).  Only one stream per direction may run at a time.
+	 */
+	sound {
+		compatible = "simple-audio-card";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		simple-audio-card,name = "realtek,rt5616-codec";
+		simple-audio-card,mclk-fs = <256>;
+		simple-audio-card,aux-devs = <&spk_amp>;
+		simple-audio-card,widgets =
+			"Microphone", "Microphone Jack",
+			"Headphone", "Headphones",
+			"Speaker", "Speaker";
+		simple-audio-card,routing =
+			"MIC1", "Microphone Jack",
+			"MIC2", "Microphone Jack",
+			"Microphone Jack", "micbias1",
+			"Headphones", "HPOL",
+			"Headphones", "HPOR",
+			"Speaker Amp INL", "LOUTL",
+			"Speaker Amp INR", "LOUTR",
+			"Speaker", "Speaker Amp OUTL",
+			"Speaker", "Speaker Amp OUTR";
+
+		simple-audio-card,dai-link@0 {
+			reg = <0>;
+			format = "i2s";
+
+			cpu {
+				sound-dai = <&i2s>;
+			};
+
+			codec {
+				sound-dai = <&rt5616>;
+			};
+		};
+
+		simple-audio-card,dai-link@1 {
+			reg = <1>;
+			format = "i2s";
+
+			cpu {
+				sound-dai = <&i2s>;
+			};
+
+			codec {
+				sound-dai = <&rt5616>;
+			};
+		};
+
+		simple-audio-card,dai-link@2 {
+			reg = <2>;
+			format = "i2s";
+
+			cpu {
+				sound-dai = <&i2s>;
+			};
+
+			codec {
+				sound-dai = <&rt5616>;
+			};
+		};
+	};
+
+	/*
+	 * Stock rockchip_headset: insert on GPIO7_A7 (active low, pull-up),
+	 * hook key on SAR ADC channel 2.
+	 */
+	rockchip-headset {
+		compatible = "rockchip_headset";
+		headset_gpio = <&gpio7 RK_PA7 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&hp_det>;
+		io-channels = <&saradc 2>;
+	};
+};
+
+&cpu0 {
+	cpu0-supply = <&vdd_arm>;
+};
+
+/*
+ * Expose 1608 MHz (stock 3.10 vd_arm: 1608 MHz @1.35 V).  rk3288.dtsi has
+ * opp-1608000000 at 1.35 V, but with rockchip,max-volt = 1.35 V the 1512 MHz
+ * OPP already reaches max-volt, so rockchip_adjust_opp_by_irdrop() reports
+ * safe_rate = 1512 MHz and rockchip_adjust_power_scale() (avs=0) deletes
+ * everything above it.  1.40 V is the stock 3.10 vd_arm ceiling and below the
+ * syr827 vdd_arm limit (1.5 V).  The max cell of every opp-microvolt stays
+ * at 1.35 V; target voltages are raised to at least the stock vd_arm value
+ * in every column (see the opp_table0 override below).
+ */
+&cpu_opp_table {
+	rockchip,max-volt = <1400000>;
+};
+
+/*
+ * CPU OPP targets raised to the stock 3.10 vd_arm floor where the
+ * rk3288.dtsi value was lower (600 MHz 1.00 V, 816 MHz 1.10 V and the
+ * L1..L3 columns at 1008..1608 MHz).  The driver selects the plain
+ * opp-microvolt (L0) column for this bin (no leakage/bin/pvtm voltage
+ * selectors present), but every column is kept at or above stock.
+ * Stock has no 696 MHz point; 1.05 V is interpolated between 600 MHz 1.00 V
+ * and 816 MHz 1.10 V.
+ */
+&cpu_opp_table {
+	opp-600000000 {
+		opp-microvolt = <1000000 1000000 1350000>;
+		opp-microvolt-L0 = <1000000 1000000 1350000>;
+		opp-microvolt-L1 = <1000000 1000000 1350000>;
+		opp-microvolt-L2 = <1000000 1000000 1350000>;
+		opp-microvolt-L3 = <1000000 1000000 1350000>;
+	};
+	opp-696000000 {
+		opp-microvolt = <1050000 1050000 1350000>;
+		opp-microvolt-L0 = <1050000 1050000 1350000>;
+		opp-microvolt-L1 = <1050000 1050000 1350000>;
+		opp-microvolt-L2 = <1050000 1050000 1350000>;
+		opp-microvolt-L3 = <1050000 1050000 1350000>;
+	};
+	opp-816000000 {
+		opp-microvolt = <1100000 1100000 1350000>;
+		opp-microvolt-L0 = <1100000 1100000 1350000>;
+		opp-microvolt-L1 = <1100000 1100000 1350000>;
+		opp-microvolt-L2 = <1100000 1100000 1350000>;
+		opp-microvolt-L3 = <1100000 1100000 1350000>;
+	};
+	opp-1008000000 {
+		opp-microvolt = <1150000 1150000 1350000>;
+		opp-microvolt-L0 = <1150000 1150000 1350000>;
+		opp-microvolt-L1 = <1150000 1150000 1350000>;
+		opp-microvolt-L2 = <1150000 1150000 1350000>;
+		opp-microvolt-L3 = <1150000 1150000 1350000>;
+	};
+	opp-1200000000 {
+		opp-microvolt = <1200000 1200000 1350000>;
+		opp-microvolt-L0 = <1200000 1200000 1350000>;
+		opp-microvolt-L1 = <1200000 1200000 1350000>;
+		opp-microvolt-L2 = <1200000 1200000 1350000>;
+		opp-microvolt-L3 = <1200000 1200000 1350000>;
+	};
+	opp-1416000000 {
+		opp-microvolt-L2 = <1250000 1250000 1350000>;
+		opp-microvolt-L3 = <1250000 1250000 1350000>;
+	};
+	opp-1512000000 {
+		opp-microvolt-L2 = <1300000 1300000 1350000>;
+		opp-microvolt-L3 = <1300000 1300000 1350000>;
+	};
+	opp-1608000000 {
+		opp-microvolt-L2 = <1350000 1350000 1350000>;
+		opp-microvolt-L3 = <1350000 1350000 1350000>;
+	};
+};
+
+/*
+ * NPLL 460 MHz instead of 500 MHz: the 1536x2048 dual-DSI panel needs a
+ * 230 MHz dclk_vop0, which is NPLL / 2 (see &vopb).
+ */
+&cru {
+	assigned-clock-rates =
+			<594000000>, <460000000>,
+			<300000000>, <150000000>,
+			<75000000>, <300000000>,
+			<150000000>, <75000000>,
+			<594000000>, <297000000>,
+			<200000000>;
+};
+
+/*
+ * eMMC: 8 bit, 150 MHz, HS200.  The eMMC rails are fixed, so no vmmc or
+ * vqmmc supply is described.
+ */
+&emmc {
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	mmc-hs200-1_8v;
+	max-frequency = <150000000>;
+	disable-wp;
+	non-removable;
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_clk &emmc_cmd &emmc_bus8>;
+	status = "okay";
+};
+
+/*
+ * SD slot (stock rksdmmc@ff0c0000): 4 bit, 50 MHz, no UHS, card detect
+ * polled (broken-cd) as in stock, vmmc = LDO4.  The pads run from
+ * vccio_sd (LDO8, 3.3 V), described in &io_domains as stock
+ * sdmmc0-vdd-domain; stock has no vqmmc.  The mmc aliases keep the eMMC
+ * at mmc0.
+ */
+&sdmmc {
+	bus-width = <4>;
+	cap-sd-highspeed;
+	max-frequency = <50000000>;
+	broken-cd;
+	cd-gpios = <&gpio6 RK_PC6 GPIO_ACTIVE_LOW>;
+	card-detect-delay = <200>;
+	disable-wp;
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdmmc_clk &sdmmc_cmd &sdmmc_cd &sdmmc_bus4>;
+	vmmc-supply = <&vcc_sd>;
+	status = "okay";
+};
+
+/* SDIO Wi-Fi (AP6255).  Stock: 4 bit, high speed, no UHS. */
+&sdio0 {
+	bus-width = <4>;
+	cap-sd-highspeed;
+	keep-power-in-suspend;
+	mmc-pwrseq = <&sdio_pwrseq>;
+	non-removable;
+	supports-sdio;
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio0_bus4 &sdio0_cmd &sdio0_clk>;
+	status = "okay";
+};
+
+/* Debug console. */
+&uart2 {
+	status = "okay";
+};
+
+/* AP6255 Bluetooth HCI UART (ttyS0); RTS is claimed by wireless-bluetooth. */
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_xfer &uart0_cts>;
+	status = "okay";
+};
+
+/* PMIC bus: syr827 (vdd_arm), syr828 (vdd_gpu), rc5t619 (main PMIC). */
+&i2c0 {
+	status = "okay";
+
+	vdd_arm: syr827@40 {
+		compatible = "silergy,syr827";
+		fcs,suspend-voltage-selector = <1>;
+		reg = <0x40>;
+		regulator-name = "vdd_arm";
+		regulator-min-microvolt = <712500>;
+		regulator-max-microvolt = <1500000>;
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-enable-ramp-delay = <300>;
+		regulator-ramp-delay = <8000>;
+	};
+
+	vdd_gpu: syr828@41 {
+		compatible = "silergy,syr828";
+		fcs,suspend-voltage-selector = <1>;
+		reg = <0x41>;
+		regulator-name = "vdd_gpu";
+		regulator-min-microvolt = <712500>;
+		regulator-max-microvolt = <1500000>;
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-enable-ramp-delay = <300>;
+		regulator-ramp-delay = <8000>;
+	};
+
+	/*
+	 * Ricoh RC5T619.  drivers/mfd/rn5t618.c matches "ricoh,rc5t619" and
+	 * drivers/regulator/rn5t618-regulator.c looks up the children of the
+	 * "regulators" node by node name (DCDC1..5, LDO1..10, LDORTC1/2).
+	 */
+	ricoh619: pmic@32 {
+		compatible = "ricoh,rc5t619";
+		reg = <0x32>;
+		interrupt-parent = <&gpio0>;
+		interrupts = <4 IRQ_TYPE_LEVEL_LOW>;
+		/* BC1.2 result for the VBUS feeding VADP sets the ADP limit. */
+		extcon = <&usbphy>;
+		system-power-controller;
+		/*
+		 * 32 kHz outputs as the vendor driver sets them (0x05 = 0x07):
+		 * besides the SoC xin32k, the second output is the AP6255 LPO.
+		 */
+		ricoh,out32ken = <0x07>;
+
+		regulators {
+			vccio: DCDC1 {
+				regulator-name = "vccio";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			DCDC2 {
+				regulator-name = "ricoh619_dcdc2";
+				regulator-min-microvolt = <2000000>;
+				regulator-max-microvolt = <2000000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			vcc_lcd: DCDC3 {
+				regulator-name = "vcc_lcd";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			vdd_logic: DCDC4 {
+				regulator-name = "vdd_logic";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <1500000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			vcc_ddr: DCDC5 {
+				regulator-name = "vcc_ddr";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			LDO1 {
+				regulator-name = "vccio_pmu";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			LDO2 {
+				regulator-name = "ricoh619_ldo2";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			LDO3 {
+				regulator-name = "ricoh619_ldo3";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			vcc_sd: LDO4 {
+				regulator-name = "vcc_sd";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			vcc_wl: LDO5 {
+				regulator-name = "vcc_wl";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			/* Panel 1.8 V rail, referenced by the panel node. */
+			ldo6: LDO6 {
+				regulator-name = "lcd_18";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			LDO7 {
+				regulator-name = "ricoh619_ldo7";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1000000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			vccio_sd: LDO8 {
+				regulator-name = "vccio_sd";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			LDO9 {
+				regulator-name = "ricoh619_ldo9";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1000000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			vcc_18: LDO10 {
+				regulator-name = "vcc_18";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			LDORTC1 {
+				regulator-name = "ricoh619_ldortc1";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			LDORTC2 {
+				regulator-name = "ricoh619_ldortc2";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+		};
+	};
+};
+
+/*
+ * Motion sensors (stock i2c@ff140000), Rockchip sensor framework, polled
+ * (irq_enable 0) like stock.  Stock probes: lsm330 acc devid 0x40, ak8963
+ * 0x48, lsm330 gyro 0xd4; the stock gs_mma8452@1d is not fitted.
+ * Compatibles are the 4.19 i2c_device_id names (stock: gs_lsm330,
+ * lsm330_gryo).
+ */
+&i2c1 {
+	status = "okay";
+
+	sensor@d {
+		compatible = "ak8963";
+		reg = <0x0d>;
+		type = <SENSOR_TYPE_COMPASS>;
+		irq-gpio = <&gpio8 RK_PA1 IRQ_TYPE_EDGE_RISING>;
+		irq_enable = <0>;
+		poll_delay_ms = <20>;
+		layout = <7>;
+	};
+
+	sensor@1e {
+		compatible = "lsm330_acc";
+		reg = <0x1e>;
+		type = <SENSOR_TYPE_ACCEL>;
+		irq-gpio = <&gpio8 RK_PA0 IRQ_TYPE_LEVEL_LOW>;
+		irq_enable = <0>;
+		poll_delay_ms = <20>;
+		layout = <6>;
+	};
+
+	sensor@6a {
+		compatible = "lsm330_gyro";
+		reg = <0x6a>;
+		type = <SENSOR_TYPE_GYROSCOPE>;
+		irq-gpio = <&gpio8 RK_PA2 IRQ_TYPE_LEVEL_LOW>;
+		irq_enable = <0>;
+		poll_delay_ms = <10>;
+		layout = <6>;
+	};
+};
+
+/* Audio codec bus: RT5616 at 0x1b (stock i2c@ff660000). */
+&i2c2 {
+	status = "okay";
+
+	rt5616: codec@1b {
+		compatible = "realtek,rt5616";
+		reg = <0x1b>;
+		#sound-dai-cells = <0>;
+		clocks = <&cru SCLK_I2S0_OUT>;
+		clock-names = "mclk";
+		realtek,default-dac-routing;
+		realtek,default-adc-routing;
+	};
+};
+
+/* i2s0 with the MCLK output pin (GPIO6_B0) as in stock. */
+&i2s {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2s0_bus &i2s0_mclk>;
+	status = "okay";
+};
+
+/* Touch controller (gslX680) on I2C4. */
+&i2c4 {
+	status = "okay";
+	/*
+	 * The ts is the only slave.  400 kHz cuts the 44-byte frame read from
+	 * ~5 ms (100 kHz default) to ~2 ms.
+	 */
+	clock-frequency = <400000>;
+
+	ts@40 {
+		compatible = "gslX680";
+		reg = <0x40>;
+		/* Flag 8 is the raw value from the reference DTB. */
+		touch-gpio = <&gpio7 RK_PA6 8>;
+		reset-gpio = <&gpio7 RK_PA5 GPIO_ACTIVE_LOW>;
+		/* Stock reports X = panel y, Y = panel x (0..600 x 0..1024). */
+		swap-xy = <1>;
+		status = "okay";
+	};
+};
+
+/* SAR ADC feeding the keypad, with the 1.8 V fixed reference. */
+&saradc {
+	vref-supply = <&vcc18_saradc_vref>;
+	status = "okay";
+};
+
+/*
+ * Stock apio3-vdd-domain: the sdio0 pads (APIO3) run from vcc_wl (LDO5,
+ * 1.8 V).  Stock sdmmc0-vdd-domain: the SD pads run from vccio_sd (LDO8,
+ * 3.3 V).  DVP (cif data, cif_clkout, camera pwdn, i2c3): 1.8 V rail
+ * (stock "vcc18_cif"); the stock camsys driver sets GRF_IO_VSEL dvp_v18sel
+ * at camera power-up because cam_board.xml DOVDD is 1.8 V, and rk3288-th804
+ * uses vcc_18 here as well.  The other domains keep their bootloader state.
+ */
+&io_domains {
+	dvp-supply = <&vcc_18>;
+	wifi-supply = <&vcc_wl>;
+	sdcard-supply = <&vccio_sd>;
+	status = "okay";
+};
+
+&pinctrl {
+	sdio-pwrseq {
+		wifi_enable_h: wifi-enable-h {
+			rockchip,pins = <4 RK_PD4 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
+	headset {
+		hp_det: hp-det {
+			rockchip,pins = <7 RK_PA7 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
+
+	bt {
+		uart0_rts_gpio: uart0-rts-gpio {
+			rockchip,pins = <4 RK_PC3 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+};
+
+/*
+ * USB.  The PHY lives in the GRF (usbphy); usb_otg is the only enabled
+ * controller.
+ */
+&usbphy {
+	status = "okay";
+};
+
+&usb_otg {
+	status = "okay";
+};
+
+&usb_host0_ehci {
+	status = "disabled";
+};
+
+&usb_host0_ohci {
+	status = "disabled";
+};
+
+&usb_host1 {
+	status = "disabled";
+};
+
+/* Disabled in the reference DTB. */
+&dmac_peri {
+	status = "disabled";
+};
+
+/* i2s0 TX/RX DMA (stock pdma@ffb20000 is enabled). */
+&dmac_bus_s {
+	status = "okay";
+};
+
+&dmc {
+	status = "disabled";
+};
+
+&optee {
+	status = "disabled";
+};
+
+&power {
+	status = "okay";
+};
+
+&reboot_mode {
+	status = "disabled";
+};
+
+&rockchip_system_monitor {
+	status = "disabled";
+};
+
+&thermal_zones {
+	status = "okay";
+};
+
+/*
+ * Stock 3.10 tsadc: tsadc-ht-reset-cru = <1>, tsadc-ht-pull-gpio = <0>,
+ * tsadc-ht-temp = <120>: over-temperature resets through the CRU, the
+ * OTP_OUT pin (gpio0 PB2) is not used to signal the PMIC.
+ */
+&tsadc {
+	rockchip,hw-tshut-mode = <0>; /* tshut mode 0:CRU 1:GPIO */
+	rockchip,hw-tshut-polarity = <0>; /* tshut polarity 0:LOW 1:HIGH */
+	status = "okay";
+};
+
+&timer {
+	status = "disabled";
+};
+
+&noc {
+	status = "disabled";
+};
+
+&nocp_core {
+	status = "disabled";
+};
+
+&nocp_gpu {
+	status = "disabled";
+};
+
+&nocp_peri {
+	status = "disabled";
+};
+
+&nocp_vpu {
+	status = "disabled";
+};
+
+&nocp_vio0 {
+	status = "disabled";
+};
+
+&nocp_vio1 {
+	status = "disabled";
+};
+
+&nocp_vio2 {
+	status = "disabled";
+};
+
+&pvtm {
+	status = "disabled";
+};
+
+/* Enabled QoS blocks. */
+/*
+ * Mali-T764: midgard kbase looks up the "mali" supply
+ * (mali_kbase_core_linux.c regulator_get_optional(dev, "mali"),
+ * mali_kbase_config_rk.c rockchip_init_opp_table(..., "mali")) and
+ * scales vdd_gpu along gpu_opp_table from rk3288.dtsi.
+ */
+&gpu {
+	mali-supply = <&vdd_gpu>;
+	/*
+	 * simple_ondemand, sampled every 10 ms (kbase default is 20 ms): jump
+	 * to max above 25 % busy, hold the current rate down to 10 % busy and
+	 * only then scale proportionally, so a swipe does not fall back to
+	 * 198 MHz between frames and cost a full sample period to ramp up.
+	 */
+	polling-ms = <10>;
+	upthreshold = <25>;
+	downdifferential = <15>;
+	status = "okay";
+};
+
+/*
+ * kbase sets the rate of aclk_gpu, whose parent sclk_gpu can only divide
+ * CPLL (384 MHz) or GPLL (594 MHz) here: NPLL is reserved for dclk_vop0 and
+ * usbphy480m is gated with the USB PHY (clk-rk3288.c restricts the mux).
+ * The rk3288.dtsi 200/300/420/500 MHz OPPs are not reachable, so list the
+ * exact rates; voltages follow the stock 3.10 clk_gpu table
+ * (200 MHz 950 mV, 300 MHz 1000 mV, 400 MHz 1100 mV).
+ */
+&gpu_opp_table {
+	status = "okay";
+	/delete-node/ opp-200000000;
+	/delete-node/ opp-300000000;
+	/delete-node/ opp-420000000;
+	/delete-node/ opp-500000000;
+
+	opp-198000000 {
+		opp-hz = /bits/ 64 <198000000>;
+		opp-microvolt = <950000>;
+	};
+	opp-297000000 {
+		opp-hz = /bits/ 64 <297000000>;
+		opp-microvolt = <1000000>;
+	};
+	opp-384000000 {
+		opp-hz = /bits/ 64 <384000000>;
+		opp-microvolt = <1100000>;
+	};
+	/*
+	 * gpll/1.  Stock 3.10 / rk3288.dtsi run 500 MHz at 1.15 / 1.20 V, so
+	 * 594 MHz takes 1.25 V (vdd_gpu syr828 max 1.5 V).  No rockchip,max-volt
+	 * or leakage cell here; bin-scale 55 (600 MHz) keeps it (scale 56).
+	 */
+	opp-594000000 {
+		opp-hz = /bits/ 64 <594000000>;
+		opp-microvolt = <1250000>;
+	};
+};
+
+&vopb_mmu {
+	status = "okay";
+};
+
+&qos_gpu_r {
+	status = "okay";
+};
+
+&qos_gpu_w {
+	status = "okay";
+};
+
+&qos_vio1_vop {
+	status = "okay";
+};
+
+&qos_vio1_isp_w0 {
+	status = "okay";
+};
+
+&qos_vio1_isp_w1 {
+	status = "okay";
+};
+
+&qos_vio0_vop {
+	status = "okay";
+};
+
+&qos_vio0_vip {
+	status = "okay";
+};
+
+&qos_vio0_iep {
+	status = "okay";
+};
+
+&qos_vio2_rga_r {
+	status = "okay";
+};
+
+&qos_vio2_rga_w {
+	status = "okay";
+};
+
+&qos_vio1_isp_r {
+	status = "okay";
+};
+
+&qos_video {
+	status = "okay";
+};
+
+&qos_hevc_r {
+	status = "okay";
+};
+
+&qos_hevc_w {
+	status = "okay";
+};
+
+/* Video codecs: MPP service (/dev/mpp_service) for vendor libmpp. */
+&mpp_srv {
+	status = "okay";
+};
+
+&vepu {
+	status = "okay";
+};
+
+&vdpu {
+	status = "okay";
+};
+
+&vpu_mmu {
+	status = "okay";
+};
+
+&hevc {
+	status = "okay";
+};
+
+&hevc_mmu {
+	status = "okay";
+};
+
+/* RGA2 (/dev/rga) for librga/hwcomposer; uses its internal MMU, no iommus. */
+&rga {
+	compatible = "rockchip,rga2";
+	clocks = <&cru ACLK_RGA>, <&cru HCLK_RGA>, <&cru SCLK_RGA>;
+	clock-names = "aclk_rga", "hclk_rga", "clk_rga";
+	assigned-clocks = <&cru ACLK_RGA>, <&cru SCLK_RGA>;
+	assigned-clock-rates = <300000000>, <300000000>;
+	status = "okay";
+};
+
+/*
+ * Display: VOPB feeds DSI0 (4 channels); DSI1 is enabled but has no
+ * endpoints.  The VOP-side DSI1 endpoints are removed.
+ */
+/*
+ * support-multi-area (as rk3288-android.dtsi): vop_win_init() then exposes
+ * win2/win3 areas 1..3 as extra planes sharing the parent SHARE_ID, which
+ * the vendor HWC needs to put combined layer groups (StatusBar + NavBar)
+ * on one multi-area window instead of GLES (reports/HwcPolicy.md).
+ */
+&vopb {
+	rockchip,grf = <&grf>;
+	support-multi-area;
+};
+
+&vopl {
+	support-multi-area;
+};
+
+&vopb_out {
+	/delete-node/ endpoint@4;
+};
+
+&vopl_out {
+	/delete-node/ endpoint@4;
+};
+
+&dsi0 {
+	status = "okay";
+	rockchip,dual-channel = <&dsi1>;
+	rockchip,lane-rate = <0x384>;
+
+	ports {
+		/delete-node/ port;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			dsi0_in_vopb: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&vopb_out_dsi0>;
+			};
+
+			dsi0_in_vopl: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&vopl_out_dsi0>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+
+			dsi0_out_panel: endpoint {
+				remote-endpoint = <&panel_in>;
+			};
+		};
+	};
+};
+
+&dsi1 {
+	status = "okay";
+
+	ports {
+		/delete-node/ port;
+
+		port {
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+	};
+};
+
+&rng {
+	status = "okay";
+};
+
+/*
+ * Cameras (stock /system/etc/cam_board.xml, same wiring as
+ * rk3288-th804-avb.dts): both sensors on i2c3, 24 MHz xvclk from
+ * cif_clkout (SCLK_VIP_OUT), shared power enable GPIO0_C1 (active high).
+ * Back: OV8856, 2-lane MIPI through mipi_phy_rx0, pwdn GPIO2_B7 (stock
+ * pwdn active=0; the driver drives it to 1 to run).  Front: GC2145, 8-bit
+ * DVP on cif_data2..9 into the ISP parallel port, pwdn GPIO2_B6 (stock
+ * active=1; the driver drives it to 0 to run).  The DVP endpoints carry
+ * hsync/vsync/pclk properties so v4l2-fwnode reports a parallel bus
+ * (no flags means BT656); the values match gc2145_g_mbus_config().
+ */
+
+/*
+ * Back camera path (ov8856 -> mipi_phy_rx0 -> rkisp1 endpoint@0).  The
+ * OV8856 on this board answers at I2C 0x10 (SID strapped high), not the
+ * default 0x36 (Day6-53 camera probe: 0x36 NACK, 0x10 ACK with pwdn GPIO2_B7
+ * high and cif_clkout 24 MHz).  It is listed before the GC2145 so it probes
+ * first and gets the first media entity (the HAL numbers cameras in entity
+ * order: camera 0 = ov8856 back, camera 1 = gc2145 front).
+ */
+#define IFIVE_BACK_CAMERA 1
+/ {
+	vcc_camera: vcc-camera-regulator {
+		compatible = "regulator-fixed";
+		gpio = <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_pwr>;
+		regulator-name = "vcc_camera";
+		enable-active-high;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+&pinctrl {
+	camera {
+		camera_pwr: camera-pwr {
+			rockchip,pins = <0 RK_PC1 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+};
+
+&i2c3 {
+	status = "okay";
+
+#if IFIVE_BACK_CAMERA
+	ov8856: ov8856@10 {
+		compatible = "ovti,ov8856";
+		reg = <0x10>;
+		clocks = <&cru SCLK_VIP_OUT>;
+		clock-names = "xvclk";
+		pwdn-gpios = <&gpio2 RK_PB7 GPIO_ACTIVE_HIGH>;
+		avdd-supply = <&vcc_camera>;
+		dovdd-supply = <&vcc_camera>;
+		dvdd-supply = <&vcc_camera>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "CameraKing";
+		rockchip,camera-module-lens-name = "Largan-9569A2";
+
+		port {
+			ov8856_out: endpoint {
+				remote-endpoint = <&mipi_in_ucam0>;
+				data-lanes = <1 2>;
+			};
+		};
+	};
+#endif
+
+	gc2145: gc2145@3c {
+		compatible = "galaxycore,gc2145";
+		reg = <0x3c>;
+		clocks = <&cru SCLK_VIP_OUT>;
+		clock-names = "xvclk";
+		pwdn-gpios = <&gpio2 RK_PB6 GPIO_ACTIVE_HIGH>;
+		avdd-supply = <&vcc_camera>;
+		dovdd-supply = <&vcc_camera>;
+		dvdd-supply = <&vcc_camera>;
+		rockchip,camera-module-index = <1>;
+		rockchip,camera-module-facing = "front";
+		rockchip,camera-module-name = "CameraKing";
+		rockchip,camera-module-lens-name = "Largan";
+
+		port {
+			gc2145_out: endpoint {
+				remote-endpoint = <&cif_in>;
+				bus-width = <8>;
+				hsync-active = <1>;
+				vsync-active = <0>;
+				pclk-sample = <1>;
+			};
+		};
+	};
+
+};
+
+#if IFIVE_BACK_CAMERA
+&mipi_phy_rx0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi_in_ucam0: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&ov8856_out>;
+				data-lanes = <1 2>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			dphy_rx_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&isp_mipi_in>;
+			};
+		};
+	};
+};
+#endif
+
+/*
+ * rockchip,grf: only used by rkisp1 for ISP V12/V13 DVP width, set to drop
+ * the probe warning.  No assigned clock for SCLK_VIP_OUT: CLKGATE3[7] is the
+ * cif_clkout output gate but the clock driver models it on vip_src, so an
+ * xin24m parent would keep the pad gated; the sensors set 24 MHz.
+ */
+&rkisp1 {
+	pinctrl-names = "default";
+	/*
+	 * CIF experiment: rkisp1 keeps only the MIPI path and owns isp_mipi
+	 * (cif_clkout, shared by both sensors); the DVP pins belong to &cif.
+	 */
+	pinctrl-0 = <&isp_mipi>;
+	rockchip,grf = <&grf>;
+	/*
+	 * OV8856 keeps BLC target 0x4003=0x40 (256 in the 12-bit ISP domain)
+	 * but the vendor stand-in IQ file sends fixed BLS 64: add the missing
+	 * 192 to every fixed BLS value (drop if the IQ file carries 256).
+	 */
+	rockchip,bls-offset = <192>;
+	status = "okay";
+
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+#if IFIVE_BACK_CAMERA
+		isp_mipi_in: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&dphy_rx_out>;
+		};
+#endif
+	};
+};
+
+/*
+ * CIF experiment: gc2145 on VIP (ff950000), no ISP.  cif_data0..7 =
+ * isp_dvp_d0d1 + isp_dvp_d2d9 (the d2d9 group also muxes vsync/href/pclk).
+ * isp_mipi (cif_clkout) is NOT listed here: pinctrl allows one owner per
+ * pin and rkisp1 already holds it.  No iommus: VIP uses the default 16 MiB
+ * CMA pool (non-iommu dma-contig path), no extra reserved-memory needed.
+ */
+&cif {
+	pinctrl-names = "default";
+	pinctrl-0 = <&isp_dvp_d0d1 &isp_dvp_d2d9>;
+	rockchip,dvp-data-shift = <2>;
+	status = "okay";
+
+	port {
+		cif_in: endpoint {
+			remote-endpoint = <&gc2145_out>;
+			bus-width = <8>;
+			hsync-active = <1>;
+			vsync-active = <0>;
+			pclk-sample = <1>;
+		};
+	};
+};
+
+&isp_mmu {
+	status = "okay";
+};
