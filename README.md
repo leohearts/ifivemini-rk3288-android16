@@ -4,6 +4,22 @@ Android 16 (TrebleDroid GSI) on the iFive mini 4S tablet: RK3288, 2 GB RAM, Mali
 
 The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-2026-11-07.zip`. Unzip, put the tablet into maskrom, run `./flash.sh --yes` (bundled rkdeveloptool, Linux x86_64, needs libusb-1.0). It wipes /data; the first boot takes about 5 minutes and shows kernel text on the panel before Android starts.
 
+## Release assets
+- `ifive-mini4s-android16-gsi-2026-11-07.zip` — the package (super td16n, kernel rl5bj, release resource, loader, flash.sh, rkdeveloptool).
+- `stock-backup.tar` — raw dump of the original Android 6 partitions (gz, sha256-verified; userdata and cache not included).
+- `hwc-hdr-vndk30.tar.zst` — prebuilt VNDK-30 link libraries used by `hwc/build.sh`.
+
+## Usage
+
+- Download `ifive-mini4s-android16-gsi-rescue.zip`
+- bash restore.sh
+- reboot
+
+## Known issues
+- Rare hard hang (screen freezes, USB gone); root cause not found. The release kernel writes a periodic dmesg dump to the kpanic partition for post-mortem.
+- Native HWC2 port (drmhwc2) does not initialise on this VOP; the release uses the patched HWC1 through hwc2on1adapter.
+
+
 ## Layout
 - `kernel/` — Linux 4.19 tree with all board changes (touch, bcmdhd Wi-Fi, audio, camera, RC5T619 charging policy + JEITA, lsm330, `rk_wdt_backstop` watchdog/logdump driver). Git history of this tree was lost; the tree is complete.
 - `kernel-configs/` — `gsi-release.config` (the release kernel, BPF_JIT_ALWAYS_ON=y), `dev.config` (debug: watchdog, logdump).
@@ -13,14 +29,6 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-2026-
 - `scripts/` — developer flashing helpers and the kpanic ring parser.
 - `reports/` — `FINAL-REPORT-2026-11-07.md` (Chinese, full write-up) and working notes.
 
-## Release assets
-- `ifive-mini4s-android16-gsi-2026-11-07.zip` — the package (super td16n, kernel rl5bj, release resource, loader, flash.sh, rkdeveloptool).
-- `stock-backup.tar` — raw dump of the original Android 6 partitions (gz, sha256-verified; userdata and cache not included).
-- `hwc-hdr-vndk30.tar.zst` — prebuilt VNDK-30 link libraries used by `hwc/build.sh`.
-
-## Known issues
-- Rare hard hang (screen freezes, USB gone); root cause not found. The release kernel writes a periodic dmesg dump to the kpanic partition for post-mortem.
-- Native HWC2 port (drmhwc2) does not initialise on this VOP; the release uses the patched HWC1 through hwc2on1adapter.
 
 ## Building
 
