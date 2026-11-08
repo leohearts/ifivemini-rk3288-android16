@@ -1,0 +1,216 @@
+#!/bin/bash
+# write-loader-head.sh - restore the loader area (idblock + u-boot.itb) of a board.
+#
+# The loader area is the first 4 MiB of the eMMC: the idblock at raw eMMC
+# sector 0x40 and the u-boot.itb at raw eMMC sector 0x44, which carries the
+# Rockchip tag "RK32" at byte offset 0x8800 of the image.  It is the part the
+# normal LBA numbering cannot reach: on this tablet the tool LBA 0 is the first
+# raw eMMC sector of the loader-area parameter region, so the loader area lies
+# below every tool LBA and restore.sh can neither read nor write it.
+#
+#   ./write-loader-head.sh [--board ID] [--lba-base raw|tool] [--yes]
+#
+#   --board ID         the board whose devices/<ID>/head-4M.bin is written.
+#                      It is required: a tablet with a blank eMMC holds no
+#                      parameter structure, so the board cannot be detected.
+#   --lba-base raw|tool
+#                      how the address of the loader area is counted:
+#                        raw   the tool counts eMMC sectors like the raw eMMC
+#                              sectors: raw sector 0 is tool LBA 0x0000
+#                        tool  the tool's own numbering puts the raw eMMC
+#                              sector 0 at the tool LBA of the p1 partition
+#                      Without it the base is established by comparing the
+#                      loader head with what the tablet holds; the script
+#                      refuses to write when that comparison says nothing.
+#   --yes              do not ask for the "restore" confirmation
+#
+# The script writes the loader area of the selected board and nothing else.  It
+# reads the region back and compares it byte for byte, and it never resets the
+# tablet.
+#
+# RKDEVELOPTOOL=/path/to/rkdeveloptool overrides the tool (default: the bundled
+# tools/rkdeveloptool, then rkdeveloptool in PATH).
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+RK=${RKDEVELOPTOOL:-$HERE/tools/rkdeveloptool}
+[ -x "$RK" ] || RK=rkdeveloptool
+BOARD=""
+BASE=""
+YES=0
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --board) [ $# -ge 2 ] || usage; BOARD=$2; shift 2 ;;
+    --lba-base) [ $# -ge 2 ] || usage; BASE=$2; shift 2 ;;
+    --yes) YES=1; shift ;;
+    -h|--help) usage ;;
+    *) usage ;;
+  esac
+done
+die() { echo "STOP: $*" >&2; exit "${2:-3}"; }
+
+cd "$HERE" || die "cannot cd to $HERE"
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/ifive-loader-head.XXXXXX") || die "mktemp failed"
+trap 'rm -rf "$TMP"' EXIT
+
+# ------------------------------------------------------------------ boards ----
+
+list_boards() {
+  [ -d devices ] || die "this package has no devices/ directory"
+  local b found=""
+  for b in devices/*/; do
+    b=${b%/}; b=${b#devices/}
+    [ -f "devices/$b/device.json" ] && found="$found $b"
+  done
+  set -- $found
+  [ $# -gt 0 ] || die "this package has no boards in devices/"
+  echo "$@"
+}
+
+# A field of devices/<board>/device.json.  Every address this script uses is
+# read from there: nothing about a board is written down here.
+board_field() { # board key -> value
+  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([0-9a-fA-Fx]*\)\"\{0,1\}.*/\1/p" \
+    "devices/$1/device.json" | head -1
+}
+
+# A text field of devices/<board>/device.json (the note about the loader area).
+board_text() { # board key -> text
+  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+    "devices/$1/device.json" | head -1
+}
+
+# ------------------------------------------------------------------ device ----
+
+BOARDS=$(list_boards)
+
+if [ -z "$BOARD" ]; then
+  {
+    echo "STOP: --board is required: a tablet with a blank eMMC holds no parameter"
+    echo "STOP: structure, so the board cannot be detected from the tablet."
+    echo "STOP: the boards this package knows: $BOARDS"
+  } >&2
+  exit 64
+fi
+
+[ -f "devices/$BOARD/device.json" ] || die "unknown board $BOARD (known: $BOARDS)"
+
+HEAD="devices/$BOARD/head-4M.bin"
+[ -f "$HEAD" ] || die "missing $HEAD: this package cannot restore the loader area of board $BOARD"
+
+# the addresses of the loader area, straight from the board description
+RAW_START=$(board_field "$BOARD" loader_area_raw_start)
+CAND_RAW=$(board_field "$BOARD" loader_area_lba_raw)
+CAND_TOOL=$(board_field "$BOARD" loader_area_lba_tool)
+if [ -z "$RAW_START" ] || [ -z "$CAND_RAW" ] || [ -z "$CAND_TOOL" ]; then
+  die "devices/$BOARD/device.json has no loader_area_raw_start / loader_area_lba_raw / loader_area_lba_tool"
+fi
+RAW_START=$((RAW_START)); CAND_RAW=$((CAND_RAW)); CAND_TOOL=$((CAND_TOOL))
+
+SIZE=$(stat -L -c %s "$HEAD")
+[ "$SIZE" -gt 0 ] || die "$HEAD is empty"
+SECS=$((SIZE / 512))
+
+echo "== looking for the tablet (rkdeveloptool ld)"
+LD=$(timeout 30 "$RK" ld 2>&1) || die "rkdeveloptool ld failed: $LD" 1
+echo "$LD"
+case "$LD" in
+  *Loader*)  echo "== device is in Loader mode" ;;
+  *Maskrom*) die "the tablet is in Maskrom mode: it has no bootloader on the eMMC and no eMMC sector can be read or written. Run './restore.sh --maskrom' first (it pushes the bundled loader into the tablet's RAM), then run this script again." 1 ;;
+  *) die "no usable rockchip device in ld output" 1 ;;
+esac
+
+# ------------------------------------------------------------------- base ----
+
+# Which tool LBA holds the loader area?  The base is established, never
+# guessed: the loader head is read back from the candidate addresses and
+# compared with the file that is going to be written.
+FOUND=""
+FOUND_BASE=""
+read_candidate() { # lba -> file
+  local lba=$1 out=$2
+  rm -f "$out"
+  timeout 300 "$RK" rl "$(printf '0x%x' "$lba")" "$SECS" "$out" >/dev/null 2>&1 \
+    || die "cannot read tool LBA $(printf '0x%05x' "$lba") from the tablet: it must be in Loader mode" 1
+}
+
+detect_base() {
+  read_candidate "$CAND_RAW" "$TMP/candidate.bin"
+  if cmp -s "$HEAD" "$TMP/candidate.bin"; then
+    FOUND=$CAND_RAW; FOUND_BASE=raw; return 0
+  fi
+  read_candidate "$CAND_TOOL" "$TMP/candidate.bin"
+  if cmp -s "$HEAD" "$TMP/candidate.bin"; then
+    FOUND=$CAND_TOOL; FOUND_BASE=tool; return 0
+  fi
+  return 1
+}
+
+ADDRESS=""
+BASENAME=""
+if [ -n "$BASE" ]; then
+  case "$BASE" in
+    raw)  ADDRESS=$CAND_RAW;  BASENAME=raw ;;
+    tool) ADDRESS=$CAND_TOOL; BASENAME=tool ;;
+    *) die "unknown --lba-base '$BASE' (raw or tool)" ;;
+  esac
+  echo "== the LBA base was given: $BASENAME"
+elif detect_base; then
+  ADDRESS=$FOUND; BASENAME=$FOUND_BASE
+  echo "== the tablet holds the loader head at tool LBA $(printf '0x%05x' "$FOUND")"
+  echo "== the LBA base was established: $BASENAME"
+else
+  {
+    echo "STOP: the tablet holds the loader head at neither candidate address:"
+    echo "STOP:   tool LBA $(printf '0x%05x' "$CAND_RAW") and tool LBA $(printf '0x%05x' "$CAND_TOOL")"
+    echo "STOP: both read as something else (on a blank tablet: zeros), so the base of"
+    echo "STOP: the LBA numbering cannot be established and the script refuses to"
+    echo "STOP: guess it.  Nothing was written."
+    echo "STOP: pass --lba-base and say how this tool counts the eMMC sectors:"
+    echo "STOP:   --lba-base raw   raw eMMC sector $(printf '0x%05x' "$RAW_START") is tool LBA $(printf '0x%05x' "$CAND_RAW")"
+    echo "STOP:   --lba-base tool  raw eMMC sector $(printf '0x%05x' "$RAW_START") is tool LBA $(printf '0x%05x' "$CAND_TOOL")"
+    echo "STOP: $BOARD: $(board_text "$BOARD" loader_area_note)"
+  } >&2
+  exit 3
+fi
+
+# ------------------------------------------------------------------- write ---
+
+echo "== loader area write plan"
+echo "   board:       $BOARD"
+echo "   file:        $HEAD ($SIZE B, RK32 tag at byte offset 0x8800 = eMMC sector 0x44)"
+echo "   base:        $BASENAME"
+echo "   tool LBA:    $(printf '0x%05x' "$ADDRESS")"
+echo "   raw sector:  $(printf '0x%05x' "$RAW_START")"
+echo "   region:      $SIZE B, the loader area only - no other region is touched"
+
+if [ "$YES" != 1 ]; then
+  echo
+  echo "This writes the loader area (idblock + u-boot.itb) of board $BOARD to the tablet."
+  ans=""
+  read -r -p "Type restore to continue: " ans || true
+  [ "$ans" = restore ] || die "aborted by user" 1
+fi
+
+ADDR_HEX=$(printf '0x%x' "$ADDRESS")
+echo "== writing the loader area"
+timeout 600 "$RK" wl "$ADDR_HEX" "$HEAD" || die "wl at tool LBA $ADDR_HEX failed" 4
+
+rm -f "$TMP/readback.bin"
+timeout 600 "$RK" rl "$ADDR_HEX" "$SECS" "$TMP/readback.bin" \
+  || die "readback at tool LBA $ADDR_HEX failed" 4
+if ! cmp -s "$HEAD" "$TMP/readback.bin"; then
+  {
+    echo "STOP: readback mismatch at tool LBA $ADDR_HEX: the tablet does not hold the"
+    echo "STOP: loader head that was written.  The region was overwritten - if the"
+    echo "STOP: base was wrong, run ./restore.sh: it writes the parameter region back."
+  } >&2
+  exit 4
+fi
+tag=$(od -An -tx1 -j34816 -N4 "$TMP/readback.bin" | tr -d ' \n')
+[ "$tag" = 524b3332 ] || die "the readback holds no RK32 tag at byte offset 0x8800 (magic $tag)" 4
+
+echo "PASS loader area @ tool LBA $ADDR_HEX (raw eMMC sector $(printf '0x%05x' "$RAW_START"), $SIZE B)"
+echo "LOADER AREA COMPLETE: the write was read back and compared byte for byte"
+echo "Not reset. Run: $RK rd"

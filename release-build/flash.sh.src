@@ -34,17 +34,23 @@ done
 die() { echo "STOP: $*" >&2; exit "${2:-3}"; }
 
 # ---- manifest: image file, LBA (rkdeveloptool numbering = raw eMMC sector - 0x2000), required magic ----
-# LAYOUT selects the partition map the images were built for (set by make-release.sh): a11 | gsi.
-# META_LBA / UD_LBA are filled in per layout; guard-release.py checks them against the resource blkdevparts.
+# LAYOUT names the image set this package was built for.
+# Every LBA below is derived from the partition table of the device tree inside
+# images/resource.img, recorded in manifest.json and filled in by make-flash.py.
+# guard-release.py checks each of them against both manifest.json and the
+# device tree, so flash.sh and restore.sh can never disagree about an address.
 LAYOUT=@LAYOUT@
 LOADER=loader/RK3288UbootLoader_V2.30.10.bin
-SUPER=images/super.img;          SUPER_LBA=0x92000   # system partition (0x92000..META), raw liblp image
-META=images/metadata.img;        META_LBA=@META_LBA@ # metadata partition, empty freshly formatted ext4, 16 MiB
-UDZERO=images/userdata-head-zero.img; UD_LBA=@UD_LBA@ # userdata head, 1 MiB of zeros -> /data is re-created at first boot
-RES=images/resource.img;         RES_LBA=0x6000      # "RSCE" resource container (DTB + logos)
-KRN=images/kernel.img;           KRN_LBA=0xE000      # "KRNL" container
-RD=images/ramdisk.img;           RD_LBA=0x16000      # "KRNL" container
+SUPER=images/super.img;          SUPER_LBA=@SUPER_LBA@   # system partition, raw liblp image
+META=images/metadata.img;        META_LBA=@META_LBA@     # metadata partition, empty freshly formatted ext4
+UDZERO=images/userdata-head-zero.img; UD_LBA=@UD_LBA@    # userdata head, 1 MiB of zeros -> /data is re-created at first boot
+RES=images/resource.img;         RES_LBA=@RES_LBA@       # "RSCE" resource container (DTB + logos)
+KRN=images/kernel.img;           KRN_LBA=@KRN_LBA@       # "KRNL" container
+RD=images/ramdisk.img;           RD_LBA=@RD_LBA@         # "KRNL" container
 CH=16777216                                          # super is written in 16 MiB pieces
+# the size each image may take in its partition, derived from the device tree
+RES_MAX=@RES_MAX@; KRN_MAX=@KRN_MAX@; RD_MAX=@RD_MAX@
+META_MAX=@META_MAX@; UD_MAX=@UD_MAX@
 FILES="$LOADER $SUPER $META $UDZERO $RES $KRN $RD"
 
 cd "$HERE" || die "cannot cd to $HERE"
@@ -67,11 +73,11 @@ case $LAYOUT in a11|gsi) : ;; *) die "unknown LAYOUT $LAYOUT" ;; esac
 for f in $FILES; do
   [ "$(magic $f)" != ed26ff3a ] || die "$f is an Android sparse image; this script needs raw images"
 done
-case $LAYOUT in gsi) SYSTEM_SECTORS=0x600000 ;; a11) SYSTEM_SECTORS=0x300000 ;; esac
+SYSTEM_SECTORS=@SYSTEM_SECTORS@
 SMAX=$((SYSTEM_SECTORS * 512)); SSIZE=$(stat -L -c %s $SUPER)
 [ "$SSIZE" -le "$SMAX" ] || die "$SUPER is $SSIZE B; the system partition holds $SMAX B"
 [ $((SSIZE % 512)) -eq 0 ] || die "$SUPER size is not a multiple of 512"
-for pair in "$RES:16777216" "$KRN:16777216" "$RD:16777216" "$META:$((0x8000 * 512))" "$UDZERO:$((0x800 * 512))"; do
+for pair in "$RES:$RES_MAX" "$KRN:$KRN_MAX" "$RD:$RD_MAX" "$META:$META_MAX" "$UDZERO:$UD_MAX"; do
   f=${pair%%:*}; max=${pair##*:}
   [ "$(stat -L -c %s "${f}")" -le "$max" ] || die "$f larger than its partition slot ($max B)"
 done

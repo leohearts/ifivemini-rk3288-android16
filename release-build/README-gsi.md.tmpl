@@ -1,25 +1,263 @@
 # iFive mini 4S — Android 16 GSI release {{DATE}}
 
 Partition map: GSI layout (system 3072 MiB @ 296 MiB, metadata 16 MiB @ 3368 MiB, userdata @ 3448 MiB).
-Super image: Android 16 GSI (TrebleDroid a64_bvS) + Tinker Board vendor partition with the patched HWC and charging service. Kernel: 4.19 release config.
+Super image: Android 16 GSI (TrebleDroid a64_bvS) + Tinker Board vendor partition with the patched HWC (HWC1 mix-policy + fence fix, sha 83101dff) and the charging policy service. Kernel: 4.19 release config.
 
 ## Contents
 - `images/resource.img` (RSCE, GSI blkdevparts), `images/kernel.img` (KRNL), `images/ramdisk.img` (KRNL)
 - `images/super.img` (liblp, system/vendor/odm/product), `images/metadata.img`, `images/userdata-head-zero.img`
 - `loader/RK3288UbootLoader_V2.30.10.bin`
-- `flash.sh` (LAYOUT=gsi, LBAs SUPER 0x92000, META 0x692000, UD 0x6ba000), `tools/rkdeveloptool`, `SHA256SUMS` (images/*.img and loader/*.bin only), `BUILD-INFO.txt`
+- `devices/<board>/` — the per-board rescue data (see "Restoring a wiped tablet")
+- `flash.sh` (whole-image flash), `restore.sh` (wiped-tablet restore), `write-loader-head.sh` (loader-area restore), `manifest.json` (the write map derived at build time), `tools/rkdeveloptool`, `SHA256SUMS` (every images/*.img, loader/*.bin and devices/* file), `BUILD-INFO.txt`
+
+This package holds the GSI image set and the Rockchip parameter structures of the supported boards only. It contains **no stock Android 11 partition images** (no system, boot, recovery, vendor from the original firmware). The original stock backup stays on the owner's machine; the copy in this package is the part that is needed to make a wiped tablet bootable again.
+
+Both `flash.sh` and `restore.sh` take their write addresses from `manifest.json`, which is derived at build time from the partition table of the device tree inside `images/resource.img` and from the parameter structure of each board. Neither script carries an address of its own, so the two cannot disagree about where an image goes.
 
 ## Flashing
 Linux x86_64 with libusb-1.0; rkdeveloptool is bundled (set RKDEVELOPTOOL to use another). Erases system and all user data.
-1. Put the tablet in Rockchip maskrom (USB 2207:320a). Owner-entered; for this build, `adb reboot loader` from a running system is the stated route (owner note; see Known issues).
+1. Put the tablet in Rockchip download mode (USB 2207:320a); the script accepts both Maskrom and Loader state. Owner-entered; from a running system `adb reboot loader` is the stated route (owner note; see Known issues).
 2. `./flash.sh --dry-run` (no device touched), then `./flash.sh --yes`.
 3. Script verifies SHA-256, writes each image, reads back and compares, then resets. First boot takes several minutes.
 
+## Restoring a wiped tablet
+
+`restore.sh` brings a tablet with an erased partition table back to a bootable state. It works for every board in `devices/`, not only for the one this release was built for.
+
+**The damage class this section covers: the bootloader is intact, the parameter structures are erased.** The tablet still has its Rockchip bootloader on the eMMC, so it enumerates in Loader mode and every region the restore writes is reachable with `rkdeveloptool`. A tablet whose bootloader is gone as well (a blank eMMC) needs the extra steps of "A tablet with a blank eMMC" below — `restore.sh` alone does not cover it.
+
+### Picking a board
+
+The package holds one directory per supported board:
+
+```
+devices/ifive-mini4s/
+  device.json           board id, display name, the parameter LBAs, the loader-area note
+  parameter-p1.img      that board's p1 parameter partition (4 MiB, 4 PARM structures)
+  parameter-loader.img  that board's loader-area parameter region (4 MiB, 8 PARM structures)
+  head-4M.bin           the board's first 4 MiB of eMMC (idblock + u-boot.itb)
+  head-8M.bin           the board's first 8 MiB of eMMC
+```
+
+`restore.sh` without `--board` detects the board itself: it reads the parameter structure the tablet holds at tool LBA 0x2000 and compares it against the `parameter-p1.img` of every board. It prints what it matched:
+
+```
+== detected board ifive-mini4s
+```
+
+If the tablet's parameter structure matches no board, the script refuses to write and lists the boards it knows:
+
+```
+STOP: the device matches no known board (ifive-mini4s); pass --board
+```
+
+Use `--board <id>` to pick a board by hand.
+
+### Where the write addresses come from
+
+Nothing in `restore.sh` carries an address. Every address is derived from the data inside the package:
+
+- The **device tree** inside `images/resource.img` holds the partition table in the kernel command line (`blkdevparts=mmcblk0:16M@16M(resource),...`). Its offsets are in MiB.
+- The **parameter structure** of the board holds the table the bootloader uses (`mtdparts=rk29xxnand:0x00008000@0x00006000(resource),...`). Its offsets are in sectors and are already tool LBAs.
+
+Both tables must describe the same disk, and the script refuses to write when they do not. The rule it applies:
+
+- `system` and every partition **before** it: the two tables must agree exactly.
+- `system` itself: the device tree may give it more room. The difference `delta` is computed from the two tables (system size in the device tree minus system size in the parameter), never written down as a constant.
+- every partition **behind** `system`: its device tree address must be exactly `delta` sectors further out than the parameter says.
+
+For this GSI the difference is 1536 MiB (0x300000 sectors): the device tree gives `system` 3072 MiB, the stock parameter gives it 1536 MiB. The GSI super image of 1650458624 B (1574 MiB) does not fit the stock 1536 MiB system partition, so the GSI doubles it and everything behind it moves by the same amount.
+
+Any other difference between the two tables is fatal: the script names the partition that disagrees and stops without writing.
+
+### How the eMMC is addressed
+
+The eMMC of these tablets starts with a 4 MiB loader area that holds the bootloader itself:
+
+- eMMC sector 0x40: the idblock (Rockchip boot hash / signature area)
+- eMMC sector 0x44: `u-boot.itb`, tagged `RK32` in its first bytes
+- eMMC sectors 0x2000..0x3FFF: the loader-area parameter region (8 copies of the parameter structure, 512 KiB apart)
+- eMMC sectors 0x4000..0x5FFF: the p1 "uboot" partition (4 copies of the parameter structure, 1 MiB apart)
+
+`rkdeveloptool` does not number sectors from 0. Its sector 0 is eMMC sector 0x2000, so:
+
+```
+tool LBA = eMMC sector - 0x2000
+```
+
+That is also the mtdparts offset of the partition table, so the tool LBA of a partition is the same number the parameter file lists. The whole loader area (eMMC sectors 0x0000..0x1FFF) lies **below** tool LBA 0 and is therefore not reachable by any `rkdeveloptool` LBA — it can neither be read nor written that way.
+
+### The two kinds of damage
+
+**1. The parameter structures are erased** (partition table unusable, the tablet cannot boot at all).
+This is the common case after a partial erase, and it is the damage class `restore.sh` covers on its own: the bootloader is still on the eMMC, so the tablet enumerates in Loader mode. `restore.sh` writes both parameter structures back first and then the whole GSI image set. Everything in that path is reachable with `rkdeveloptool`, so Linux alone is enough.
+
+**2. The loader area is erased** (idblock and `u-boot.itb` gone, so not even the parameter structures can be found).
+This area is below tool LBA 0 and `rkdeveloptool` cannot write it. The fix is a different tool: write `devices/<board>/head-4M.bin` at **eMMC sector 0** — with `./write-loader-head.sh --board <id>` from this package, or with RKDevTool or AFPTool on Windows (or any other tool that can write the eMMC from sector 0) — and then run `restore.sh` as in case 1. See "A tablet with a blank eMMC" below for the full order.
+
+`head-4M.bin` is the exact first 4 MiB of that board's eMMC (idblock at sector 0x40, `u-boot.itb` at sector 0x44), taken from the owner's stock backup. `head-8M.bin` is the whole 8 MiB dump (sectors 0x0000..0x3FFF), i.e. the loader area plus the loader-area parameter region; it is included so the owner can inspect or re-derive the pieces.
+
+### What `restore.sh` writes
+
+For the board of this release the derived write map is (the same numbers are in `manifest.json`, and for any other board they are derived the same way):
+
+|what|tool LBA|raw sector|MiB|
+|---|---|---|---|
+|`devices/ifive-mini4s/parameter-loader.img` (loader-area parameter region)|0x0000|0x02000|4|
+|`devices/ifive-mini4s/parameter-p1.img` (p1 "uboot" partition)|0x2000|0x04000|8|
+|`images/resource.img`|0x6000|0x08000|16|
+|`images/kernel.img`|0xE000|0x10000|32|
+|`images/ramdisk.img`|0x16000|0x18000|48|
+|`images/super.img`|0x92000|0x94000|296|
+|`images/metadata.img`|0x692000|0x694000|3368|
+|`images/userdata-head-zero.img`|0x6BA000|0x6BC000|3448|
+
+### The commands
+
+```sh
+./restore.sh                 # detect the board, restore everything
+./restore.sh --board ifive-mini4s
+./restore.sh --parameters-only   # write only the two parameter structures
+./restore.sh --plan          # print the derived write map, touch no device
+./restore.sh --maskrom       # the tablet is in Maskrom mode: push the loader into RAM first
+```
+
+`--parameters-only` writes the loader-area parameter copy (tool LBA 0x0000) and the p1 parameter partition (tool LBA 0x2000) and nothing else: no image partition is touched. Use it when the tablet already runs the GSI and only its parameter structures are missing.
+
+It is not the same as a full restore. A full restore also writes `images/kernel.img` to 0xE000, which replaces the kernel the tablet has with the one in this package. On the tablet this release was built for the kernel that runs is a different build: its `KRNL` container is 0x8b9510 bytes against 0x8b9578 bytes for the kernel in this package, a difference of 104 bytes. `--parameters-only` leaves the running kernel alone.
+
+The script checks the images against `SHA256SUMS`, refuses to start unless the tablet is enumerated (`rkdeveloptool ld`), shows the derived write map, and then asks for the word `restore` before it writes anything:
+
+```
+Type restore to continue:
+```
+
+Every write is read back and compared; a mismatch stops the script. `./restore.sh --yes` skips the confirmation word (it still does all checks and still verifies every write). It does not reset the tablet at the end; run `tools/rkdeveloptool rd` (or reboot it by hand) when it says `RESTORE COMPLETE`.
+
+If the loader area was erased as well (case 2), do this first on Windows:
+
+1. Put the tablet in Maskrom mode.
+2. RKDevTool (or AFPTool): write `devices/<board>/head-4M.bin` at address **0** (eMMC sector 0, 4 MiB).
+3. Then run `./restore.sh` on Linux as above.
+
+### What this package does not contain
+
+No stock (Android 11) partition images — no stock `system`, `boot`, `recovery` or `vendor`. The tablet is restored with the Android 16 GSI image set, not with the original firmware. The full stock backup remains on the owner's machine; only the loader head and the two parameter structures were copied into this package.
+
+### Adding another board
+
+A board entry is one directory under `devices/` plus one JSON file that describes it. To add a board:
+
+1. **Take a stock backup of that board.** At least two files are needed:
+   - the **p1 parameter partition** (4 MiB) — the parameter structure of the "uboot" partition. `parameter-p1.img` is this image.
+   - the **first 8 MiB of the eMMC** — for `head-8M.bin` and its first 4 MiB for `head-4M.bin`. The loader-area parameter copy (`parameter-loader.img`) is the 4 MiB at byte offset 0x2000..0x3FFF of that dump: 8 copies of the parameter structure, 512 KiB apart.
+
+2. **Put the files in `devices/<board>/`:**
+
+   ```
+   devices/<board>/device.json
+   devices/<board>/parameter-p1.img
+   devices/<board>/parameter-loader.img    (optional)
+   devices/<board>/head-4M.bin             (optional)
+   devices/<board>/head-8M.bin             (optional)
+   ```
+
+3. **Write `device.json`:**
+
+   |field|meaning|
+   |---|---|
+   |`board`|the board id, the name of the directory and the value `--board` takes|
+   |`display_name`|the name shown when the board is detected|
+   |`stock_backup_dir`|where the stock backup of that board lives (build time only)|
+   |`p1_parameter_gz`|the file name of the p1 parameter image inside that backup|
+   |`bootloader_8m_gz`|the file name of the 8 MiB eMMC dump inside that backup|
+   |`parameter_region_lba`|the tool LBA of the loader-area parameter copy|
+   |`p1_lba`|the tool LBA of the p1 parameter partition|
+   |`loader_area_note`|a note about the loader area, copied into the package|
+   |`head4_sha256`, `head8_sha256`, `p1_sha256`, `parameter_loader_sha256`|the digests the build verifies against|
+
+4. **Two constraints the new board must satisfy**, or `restore.sh` refuses to write and the guard fails the build:
+
+   - **`parameter-p1.img` must be exactly 4 MiB and hold exactly 4 PARM structures** (at offsets 0, 0x100000, 0x200000, 0x300000). The guard checks the size and the count.
+   - **The two partition tables must satisfy the same `system`-anchor rule** as described above: the device tree of the package and the parameter structure of the new board must agree on every partition up to and including `system`, and every partition behind `system` must sit exactly `delta` sectors further out, where `delta` is the difference of the two `system` sizes. If the two tables disagree about any other partition, `restore.sh` names that partition and stops before writing.
+
+   The board's `p1_lba` must also match where the parameter structure itself puts its "uboot" partition, and the `RK32` tag must be present at byte offset 0x8800 of `head-4M.bin`.
+
+
+## A tablet with a blank eMMC
+
+**What "blank" means here:** no bootloader, no parameter structures, no images — the eMMC holds nothing of the original firmware, not even the Rockchip bootloader. Such a tablet cannot boot at all, and its boot ROM finds no bootloader on the eMMC, so it enumerates on USB as **2207:320a in Maskrom mode** (the same USB id as Loader mode; only `rkdeveloptool ld` tells the two apart — it prints `Maskrom` or `Loader`).
+
+### The order of the recovery
+
+1. **Maskrom → Loader mode.** While the tablet is in Maskrom mode not one eMMC sector can be read or written: the Rockchip loader has to run from RAM first.
+   - `./restore.sh --maskrom` does that: it pushes the bundled loader (`loader/RK3288UbootLoader_V2.30.10.bin`) into the tablet's RAM with `rkdeveloptool db` and continues with the normal flow. It is off by default, and it has failed on this tablet (see below).
+   - The documented route is RKDevTool/AFPTool on Windows (Advanced Function → Download Boot with `loader/RK3288UbootLoader_V2.30.10.bin`); that leaves the tablet in Loader mode as well.
+2. **The loader area** (idblock + `u-boot.itb`, raw eMMC sectors 0x0000..0x1FFF): `./write-loader-head.sh --board <id>`, or RKDevTool/AFPTool on Windows ("write by address 0") with `devices/<board>/head-4M.bin` — 4 MiB at eMMC sector 0.
+3. **The parameter structures**: `./restore.sh --board <id> --parameters-only` (the loader-area parameter copy to tool LBA 0x0000, the p1 parameter partition to tool LBA 0x2000).
+4. **The GSI images**: `./restore.sh --board <id>`.
+
+Step 2 comes before step 3: with some tools the loader area and the loader-area parameter copy share an address range, and step 3 writes the parameter copy back.
+
+### What `restore.sh` covers on its own
+
+`restore.sh` alone covers **only** the damage class "bootloader intact, parameter structures erased". On such a tablet the bootloader is still on the eMMC, so the tablet is in Loader mode, every write of the restore is reachable, and the parameter structure can be read back from the tablet to detect the board.
+
+On a blank tablet none of that holds:
+
+- the tablet is in Maskrom mode, so `restore.sh` stops before it reads or writes anything — unless `--maskrom` is given, which pushes the loader into the RAM but does not write the loader area;
+- **the board cannot be detected**: the auto-detection reads the parameter structure at tool LBA 0x2000 and compares it with the `parameter-p1.img` of every board in `devices/`. A tablet with no parameter structure has nothing to compare, so **`--board <id>` is required** on a blank tablet.
+
+### `--maskrom` and the recorded `rkdeveloptool db` failure
+
+`--maskrom` runs exactly one `rkdeveloptool db` with the bundled loader, waits about two seconds, probes the device again, and continues only when the tablet now reports `Loader`. If it does not, the tool's own output is printed and the script stops with exit code 5.
+
+`rkdeveloptool db` **failed on this tablet three times on 2026-10-29**, and the failures are not a typo of this README:
+
+| attempt | what the tool printed | what happened |
+|---|---|---|
+| 1 | `The device does not support this operation!` | the tool judged the USB device to be in Loader mode and refused before it even opened the loader file (`strace`: the loader file was never opened) |
+| 2 (the gate patched) | `Downloading bootloader failed!` and `DeviceRequest vendor=0x471 failed, err=-1` | request 0x0471 was sent and rejected |
+| 3 | as above | the device fell off the USB bus (`usb 3-2.3: USB disconnect, device number 21`) and did not come back |
+
+So the documented route for the Maskrom step is **RKDevTool/AFPTool on Windows**, not `rkdeveloptool db`. `restore.sh --maskrom` exists for the case where `db` works; it never runs `db` unless it is asked to.
+
+### The raw sector map of the first 12 MiB
+
+The first three regions of the eMMC are three contiguous 4 MiB blocks:
+
+| raw eMMC sectors | MiB | what is there | tool LBA |
+|---|---|---|---|
+| 0x0000..0x1FFF | 0..4 | the loader area: idblock at sector 0x40, `u-boot.itb` (tag `RK32`) at sector 0x44 | below 0 — unreachable |
+| 0x2000..0x3FFF | 4..8 | the loader-area parameter region: 8 copies of the parameter structure, 512 KiB apart | 0x0000..0x1FFF |
+| 0x4000..0x5FFF | 8..12 | the p1 "uboot" partition: 4 copies of the parameter structure, 1 MiB apart | 0x2000..0x3FFF |
+
+and the rule that connects the two columns:
+
+```
+tool LBA = raw eMMC sector - 0x2000
+```
+
+The loader area (raw 0x0000..0x1FFF) is therefore at tool LBA −0x2000..−1, below every tool LBA — which is why no `rkdeveloptool` LBA command can reach it. The rule was verified three ways on this tablet: the resource image sits at tool LBA 0x6000 = raw 0x8000, the kernel at tool LBA 0xE000 = raw 0x10000, the super partition at tool LBA 0x92000 = raw 0x94000, and the parameter structure the bootloader itself uses lists the same numbers.
+
+### `write-loader-head.sh`
+
+```sh
+./write-loader-head.sh --board ifive-mini4s                   # the base is established from the tablet
+./write-loader-head.sh --board ifive-mini4s --lba-base raw    # raw eMMC sector 0 is tool LBA 0x0000
+./write-loader-head.sh --board ifive-mini4s --lba-base tool   # raw eMMC sector 0 is tool LBA 0x2000
+```
+
+The base of the LBA numbering is **established, never guessed**: the script reads the loader head back from the two candidate addresses (tool LBA 0x0000 and tool LBA 0x2000, both read from `devices/<board>/device.json`) and compares it with `head-4M.bin`. On a blank tablet both read as zeros, so the script refuses to write, says that the base cannot be detected and asks for `--lba-base`.
+
+The script writes the loader area and nothing else: it writes `devices/<board>/head-4M.bin`, reads the region back, compares it byte for byte, checks the `RK32` tag at byte offset 0x8800, and never resets the tablet. It refuses to run when the tablet is not enumerated, when `devices/<board>/head-4M.bin` is missing, and it asks for the word `restore` before it writes.
+
+
 ## Charging policy
 - Powered-off tablet on charger: `reboot -p` with the charger attached was tested; the panel stayed dark, USB charging was observed, and Android did not boot on its own.
-- Charge-boost switch (`persist.vendor.chg.boost`) is NOT verified on device in this build.
+- Charge-boost switch (`persist.vendor.chg.boost`) is verified on device: `vendor.chgpolicy` runs, `high_current_allowed=Y`, and the ADP input current limit rises to 2000000.
 
 ## Known issues
-- Hard hang: on first boot after a data wipe the device hangs at about 86–110 s. Root cause unknown.
-- Hardware watchdog verified: a hard hang resets in about 10–16 s and returns to maskrom via the loader flag.
-- HWC2 (td16j) boots and was measured, but the soak test is not finished.
+- Hard hang: rare, root cause unknown. Most earlier "hangs" were the host-side adb server wedging, not the tablet. The one hang with a kpanic ring behind it stopped at 86.7 s during init (netd/wificond start), with no kernel error.
+- Hardware watchdog verified on the debug kernel: a hard hang resets in about 10–16 s and returns to maskrom via the loader flag. The release kernel runs with `rkwdt=0` — no timed reset and no watchdog, only the kpanic log dump.
+- The native HWC2 port (drm_hwcomposer) does not initialise on this VOP (`init_success_=0`, plane 0 keeps the fbcon frame), so it was reverted; the release uses the patched HWC1 through the hwc2on1adapter.

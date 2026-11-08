@@ -1,0 +1,17 @@
+{
+  "board": "ifive-mini4s",
+  "display_name": "iFive mini 4S (RK3288)",
+  "stock_backup_dir": "/home/leohearts/rk3288-ifive-mini4s/stock-backup",
+  "p1_parameter_gz": "p1-parameter.img.gz",
+  "bootloader_8m_gz": "bootloader-8M.bin.gz",
+  "parameter_region_lba": 0,
+  "p1_lba": 8192,
+  "loader_area_raw_start": 0,
+  "loader_area_lba_raw": 0,
+  "loader_area_lba_tool": 8192,
+  "loader_area_note": "The loader area (raw eMMC sectors 0x0000..0x1FFF) lies below tool LBA 0 and no rkdeveloptool LBA command can reach it. Write it with ./write-loader-head.sh --board ifive-mini4s, or with RKDevTool/AFPTool (devices/<board>/head-4M.bin at address 0) from Windows, then run restore.sh.",
+  "head4_sha256": "aa937d5ae53842cda1b7e9a4b4fca7a40cd74b601f04f5fab6df145c4b8ab068",
+  "head8_sha256": "9292f5a365048591f3e18413617846b4ec4798565124e02adc6d27ce52fb2e9e",
+  "p1_sha256": "4b5c340dbc15682182abb7b307fd8aded640bc0a12a9d6da68ea2b56a44112ba",
+  "parameter_loader_sha256": "eb48a9bc5f73b6688d4fa5a8ce0b184c490e2c5ac68c78b896008db4c972e709"
+}

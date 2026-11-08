@@ -1,0 +1,562 @@
+#!/bin/bash
+# restore.sh - restore a wiped Rockchip tablet from this release package with rkdeveloptool (Linux).
+#
+# The tablet must be enumerated as a Rockchip USB device (2207:320a). The owner
+# enters download mode; from a running system `adb reboot loader` does it.
+#
+#   ./restore.sh [--board ID] [--yes] [--parameters-only] [--plan] [--maskrom]
+#
+#   --board ID         restore for this board (devices/ID/). Without it the board
+#                      is detected from the parameter structure the device holds.
+#   --yes              do not ask for the "restore" confirmation
+#   --parameters-only  write only the two parameter structures, leave every
+#                      image partition alone
+#   --plan             print the derived write map and exit, touch no device
+#   --maskrom          the tablet is in Maskrom mode (its boot ROM found no
+#                      bootloader on the eMMC): push the bundled loader into the
+#                      tablet's RAM with "rkdeveloptool db" and continue.
+#                      Off by default: "db" is not safe to run unattended and
+#                      has failed on this tablet before.
+#
+# RKDEVELOPTOOL=/path/to/rkdeveloptool overrides the tool (default: the bundled
+# tools/rkdeveloptool, then rkdeveloptool in PATH).
+#
+# Where every write goes is derived from the package, not hardcoded here:
+#   - the partition table comes from the device tree inside images/resource.img
+#     (blkdevparts= in the kernel command line)
+#   - the parameter structure of the board (devices/<board>/parameter-p1.img)
+#     must describe the same disk (mtdparts= in its CMDLINE)
+#   - each image is matched to the partition of the same name and must fit
+#
+# Every write is read back and compared; any mismatch stops the script.
+# The tablet is not reset at the end.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+RK=${RKDEVELOPTOOL:-$HERE/tools/rkdeveloptool}
+[ -x "$RK" ] || RK=rkdeveloptool
+RESOURCE_TOOL=$HERE/tools/resource_tool
+DTC=$HERE/tools/dtc
+YES=0
+PARAM_ONLY=0
+PLAN_ONLY=0
+MASKROM=0
+BOARD=""
+CH=16777216                                          # super is written in 16 MiB pieces
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --board) [ $# -ge 2 ] || usage; BOARD=$2; shift 2 ;;
+    --yes) YES=1; shift ;;
+    --parameters-only) PARAM_ONLY=1; shift ;;
+    --plan) PLAN_ONLY=1; shift ;;
+    --maskrom) MASKROM=1; shift ;;
+    -h|--help) usage ;;
+    *) usage ;;
+  esac
+done
+die() { echo "STOP: $*" >&2; exit "${2:-3}"; }
+
+cd "$HERE" || die "cannot cd to $HERE"
+
+# ---------------------------------------------------------------- helpers ----
+
+# The device tree partition table (blkdevparts) -> "name lba size".
+# lba is a tool LBA (raw eMMC sector - 0x2000), size is in bytes or -1.
+parse_dtb_table() { # dts file
+  local blk
+  blk=$(grep -o 'blkdevparts=mmcblk0:[^"]*' "$1" | head -1) || true
+  [ -n "$blk" ] || die "the device tree in images/resource.img has no blkdevparts= table"
+  blk=${blk#blkdevparts=mmcblk0:}     # drop the device and the table name
+  echo "$blk" | tr ',' '\n' | awk -F'[@()]' '
+    function hex2dec(s,  i,c,d,v) {
+      s = toupper(s); sub(/^0X/, "", s); v = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1); d = index("0123456789ABCDEF", c) - 1
+        if (d < 0) return -1
+        v = v * 16 + d
+      }
+      return v
+    }
+    {
+      size = $1; off = $2; name = $3
+      if (name == "") next
+      if (size == "-") sz = -1; else { sub(/M$/, "", size); sz = size * 1048576 }
+      if (off ~ /^0x/) lba = hex2dec(off) - 8192; else lba = off * 2048 - 8192
+      printf "%s %.0f %.0f\n", name, lba, sz
+    }'
+}
+
+# The parameter structure (mtdparts) -> "name lba size".
+# lba is a tool LBA, size is in bytes or -1.
+parse_par_table() { # parameter text file
+  local tbl
+  tbl=$(par_mtdparts "$1") || die "cannot read the parameter structure $1"
+  [ -n "$tbl" ] || die "the parameter structure $1 has no mtdparts= table"
+  tbl=${tbl#mtdparts=}
+  tbl=${tbl#*:}                       # drop the device name (rk29xxnand:)
+  echo "$tbl" | tr ',' '\n' | awk -F'[@()]' '
+    function hex2dec(s,  i,c,d,v) {
+      s = toupper(s); sub(/^0X/, "", s); v = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1); d = index("0123456789ABCDEF", c) - 1
+        if (d < 0) return -1
+        v = v * 16 + d
+      }
+      return v
+    }
+    {
+      size = $1; off = $2; name = $3
+      if (name == "") next
+      if (size == "-") sz = -1; else sz = hex2dec(size) * 512
+      printf "%s %.0f %.0f\n", name, hex2dec(off), sz
+    }'
+}
+
+# The text area of a Rockchip parameter structure: magic "PARM" at 0, the text
+# length as a little endian uint32 at 4, the text at 8, CRLF terminated.
+par_text() { # file -> text with LF line endings
+  local magic size
+  magic=$(od -An -tx1 -N4 "$1" | tr -d ' \n')
+  [ "$magic" = 5041524d ] || return 1
+  size=$(od -An -tu4 -j4 -N4 "$1" | tr -d ' \n')
+  [ -n "$size" ] && [ "$size" -gt 0 ] && [ "$size" -lt 65536 ] || return 1
+  dd if="$1" bs=1 skip=8 count="$size" status=none 2>/dev/null | tr '\r' '\n'
+}
+
+# The mtdparts table of a parameter structure, as one comparable string.
+par_mtdparts() { # file
+  local text
+  text=$(par_text "$1") || return 1
+  printf '%s\n' "$text" | grep -o 'mtdparts=[^[:space:]]*' | head -1
+}
+
+# Compare the device tree table with the parameter table.
+#
+# The two tables use different units and both are turned into tool LBAs and
+# bytes here: the device tree lists blkdevparts=... in MiB, the parameter
+# structure lists mtdparts=... in sectors.
+#
+# "system" is the anchor.  The GSI device tree gives "system" twice the room
+# the stock parameter gives it: 3072 MiB in the DTB against 1536 MiB in the
+# stock parameter.  The extra 1536 MiB (0x300000 sectors) is what makes the
+# GSI super image of 1650458624 B (1574 MiB) fit - it does not fit the stock
+# 1536 MiB system partition.  Every partition behind "system" therefore
+# starts 0x300000 sectors further out than the stock parameter says.
+#
+# The rule the check applies:
+#   system and everything before it: the two tables must agree exactly
+#   everything behind system:        dtb_lba == param_lba + delta
+# delta is computed from the two tables, it is never a constant.  Any other
+# difference is fatal.
+compare_tables() { # dtb table file, parameter table file
+  awk '
+    $1 == "D" { dl[$2] = $3; ds[$2] = $4; ord[++n] = $2 }
+    $1 == "P" { pl[$2] = $3; ps[$2] = $4 }
+    END {
+      # the two tables are compared partition by partition below
+      ai = 0
+      for (i = 1; i <= n; i++) if (ord[i] == "system") ai = i
+      if (ai == 0 || !("system" in pl) || ds["system"] < 0 || ps["system"] < 0) {
+        print "neither table defines the system partition" > "/dev/stderr"
+        exit 3
+      }
+      d = ds["system"] - ps["system"]
+      if (d % 512 != 0) { print "the system size difference is not a multiple of 512 B" > "/dev/stderr"; exit 3 }
+      delta = d / 512
+      if (delta <= 0) {
+        print "the device tree gives system " (ds["system"] / 1048576) " MiB, the parameter " (ps["system"] / 1048576) " MiB: the device tree must give it more room, not less" > "/dev/stderr"
+        exit 3
+      }
+      bad = ""
+      for (i = 1; i <= n; i++) {
+        name = ord[i]
+        if (!(name in pl)) continue
+        want = dl[name] - (i > ai ? delta : 0)
+        if (pl[name] != want) bad = bad " " name
+        if (name != "system" && ds[name] != ps[name]) bad = bad " " name "(size)"
+      }
+      if (bad != "") {
+        print "the device tree and the parameter structure disagree about:" bad > "/dev/stderr"
+        exit 3
+      }
+      printf "%.0f\n", delta
+    }' "$1" "$2"
+}
+
+# ------------------------------------------------------------------ boards ----
+
+list_boards() {
+  [ -d devices ] || die "this package has no devices/ directory"
+  local b found=""
+  for b in devices/*/; do
+    b=${b%/}; b=${b#devices/}
+    [ -f "devices/$b/device.json" ] && found="$found $b"
+  done
+  set -- $found
+  [ $# -gt 0 ] || die "this package has no boards in devices/"
+  echo "$@"
+}
+
+board_field() { # board, key -> value
+  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([0-9a-fA-Fx]*\)\"\{0,1\}.*/\1/p" \
+    "devices/$1/device.json" | head -1
+}
+
+# ------------------------------------------------------------- derivation ----
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/ifive-restore.XXXXXX") || die "mktemp failed"
+trap 'rm -rf "$TMP"' EXIT
+
+derive_plan() { # board
+  local board=$1 dts file lba bytes size psize key i
+  local images="images/resource.img images/kernel.img images/ramdisk.img images/super.img images/metadata.img images/userdata-head-zero.img"
+  local roles="resource kernel boot system metadata userdata"
+
+  [ -x "$RESOURCE_TOOL" ] || die "missing $RESOURCE_TOOL"
+  [ -x "$DTC" ] || die "missing $DTC"
+  [ -f images/resource.img ] || die "missing images/resource.img"
+  [ -f "devices/$board/parameter-p1.img" ] || die "missing devices/$board/parameter-p1.img"
+
+  rm -rf "$TMP/res"; mkdir -p "$TMP/res"
+  "$RESOURCE_TOOL" --unpack --image=images/resource.img "$TMP/res" >/dev/null 2>&1 \
+    || die "cannot unpack images/resource.img"
+  [ -f "$TMP/res/rk-kernel.dtb" ] || die "images/resource.img has no rk-kernel.dtb"
+  "$DTC" -I dtb -O dts -o "$TMP/res/rk.dts" "$TMP/res/rk-kernel.dtb" >/dev/null 2>&1 \
+    || die "cannot decompile the device tree"
+
+  parse_dtb_table "$TMP/res/rk.dts" > "$TMP/dtb.table" || die "cannot read the device tree table"
+  parse_par_table "devices/$board/parameter-p1.img" > "$TMP/par.table" \
+    || die "cannot read the parameter table"
+  # the comparison needs to know which table a line came from
+  awk '{print "D", $0}' "$TMP/dtb.table" > "$TMP/dtb.tagged"
+  awk '{print "P", $0}' "$TMP/par.table" > "$TMP/par.tagged"
+  compare_tables "$TMP/dtb.tagged" "$TMP/par.tagged" > "$TMP/delta" \
+    || die "the device tree and the parameter structure of $board do not match"
+
+  : > "$TMP/plan"
+  # the two parameter structures go to the LBAs the board entry records
+  local loader_lba p1_lba par_uboot
+  loader_lba=$(board_field "$board" parameter_region_lba)
+  p1_lba=$(board_field "$board" p1_lba)
+  [ -n "$loader_lba" ] && [ -n "$p1_lba" ] \
+    || die "devices/$board/device.json has no parameter_region_lba / p1_lba"
+  loader_lba=$((loader_lba)); p1_lba=$((p1_lba))
+  # the parameter structure says where its own p1 partition is
+  par_uboot=$(awk '$1=="uboot" {printf "%.0f", $2}' "$TMP/par.table")
+  [ "$par_uboot" = "$p1_lba" ] \
+    || die "devices/$board/device.json says p1 is at $p1_lba but the parameter structure says $par_uboot"
+
+  if [ -f "devices/$board/parameter-loader.img" ]; then
+    printf 'PLAN %s %s %s %s\n' parameter_loader "devices/$board/parameter-loader.img" \
+      "$loader_lba" "$(stat -L -c %s "devices/$board/parameter-loader.img")" >> "$TMP/plan"
+  else
+    echo "WARNING: devices/$board/parameter-loader.img is missing - the loader-area parameter copy is not restored"
+  fi
+  printf 'PLAN %s %s %s %s\n' parameter_p1 "devices/$board/parameter-p1.img" \
+    "$p1_lba" "$(stat -L -c %s "devices/$board/parameter-p1.img")" >> "$TMP/plan"
+
+  # the images, each matched to the partition of the same name
+  i=1
+  for file in $images; do
+    key=$(echo "$roles" | cut -d' ' -f"$i")
+    [ -f "$file" ] || die "missing $file"
+    bytes=$(stat -L -c %s "$file")
+    lba=$(awk -v n="$key" '$1==n {printf "%.0f", $2}' "$TMP/dtb.table")
+    [ -n "$lba" ] || die "$file: the device tree has no partition $key"
+    psize=$(awk -v n="$key" '$1==n {printf "%.0f", $3}' "$TMP/dtb.table")
+    if [ "$psize" != "-1" ] && [ "$bytes" -gt "$psize" ]; then
+      die "$file: $bytes B does not fit the $key partition ($psize B)"
+    fi
+    printf 'PLAN %s %s %s %s\n' "$key" "$file" "$lba" "$bytes" >> "$TMP/plan"
+    i=$((i + 1))
+  done
+}
+
+plan_list() { cut -d' ' -f3 "$TMP/plan" | tr '\n' ' '; }
+
+show_plan() { # board
+  local board=$1 k f lba b
+  echo "== restore map for board $board (tool LBA = raw eMMC sector - 0x2000)"
+  while read -r _ k f lba b; do
+    printf "   %-42s tool LBA 0x%05x   raw sector 0x%05x   %9d B\n" \
+      "$f" "$lba" "$((lba + 8192))" "$b"
+    printf "PLAN %s %s %s %s\n" "$k" "$f" "$lba" "$b"
+  done < "$TMP/plan"
+}
+
+# ------------------------------------------------------------- verification ----
+
+verify_files() { # board
+  local board=$1 f
+  [ -f SHA256SUMS ] || die "SHA256SUMS missing"
+  for f in $(plan_list); do
+    [ -f "$f" ] || die "missing $f"
+    grep -q "  $f\$" SHA256SUMS || die "$f is not listed in SHA256SUMS"
+    grep "  $f\$" SHA256SUMS | sha256sum -c - >/dev/null || die "checksum mismatch: $f"
+  done
+  for f in "devices/$board/parameter-p1.img" "devices/$board/parameter-loader.img"; do
+    [ -f "$f" ] || continue
+    [ "$(stat -L -c %s "$f")" -eq 4194304 ] || die "$f is not 4 MiB"
+    [ "$(od -An -tx1 -N4 "$f" | tr -d ' \n')" = 5041524d ] || die "$f does not start with a PARM structure"
+  done
+  [ "$(od -An -tx1 -N4 images/resource.img | tr -d ' \n')" = 52534345 ] \
+    || die "images/resource.img is not an RSCE container"
+  [ "$(od -An -tx1 -N4 images/kernel.img | tr -d ' \n')" = 4b524e4c ] \
+    || die "images/kernel.img is not a KRNL container"
+  [ "$(od -An -tx1 -N4 images/ramdisk.img | tr -d ' \n')" = 4b524e4c ] \
+    || die "images/ramdisk.img is not a KRNL container"
+  [ "$(od -An -tx1 -j4096 -N4 images/super.img | tr -d ' \n')" = 67446c61 ] \
+    || die "images/super.img has no liblp magic at offset 4096"
+  echo "== all images verified"
+}
+
+# ------------------------------------------------------------------ device ----
+
+# Push the bundled loader into the tablet's RAM and wait for the tablet to
+# enumerate as a Loader.  "rkdeveloptool db" is only ever run when the user
+# asks for it: it is not safe to run unattended and it failed on this tablet
+# on 2026-10-29 (the tool refused with "The device does not support this
+# operation!", and after that gate was patched it answered "Downloading
+# bootloader failed!" / "DeviceRequest vendor=0x471 failed, err=-1" and the
+# device fell off the USB bus).
+maskrom_bootstrap() {
+  local out LD2 loader
+  loader="$HERE/loader/RK3288UbootLoader_V2.30.10.bin"
+  [ -f "$loader" ] || die "missing $loader" 3
+  echo "== Maskrom: pushing the bundled loader into the tablet's RAM (rkdeveloptool db)"
+  out=$(timeout 120 "$RK" db "$loader" 2>&1) || true
+  if [ -n "$out" ]; then printf '%s\n' "$out"; fi
+  sleep 2
+  LD2=$(timeout 30 "$RK" ld 2>&1) || LD2=""
+  if [ -n "$LD2" ]; then printf '%s\n' "$LD2"; fi
+  case "$LD2" in
+    *Loader*)
+      echo "== the tablet took the loader and is in Loader mode now"
+      return 0 ;;
+  esac
+  {
+    echo "STOP: the loader was not accepted - the tablet is still not in Loader mode."
+    echo "STOP: next step: write the loader area (devices/<board>/head-4M.bin at address 0) with RKDevTool/AFPTool on Windows, then run this script again."
+  } >&2
+  exit 5
+}
+
+# The device must be there.  In Maskrom mode not one eMMC sector can be read
+# or written: the Rockchip loader has to run from RAM first.
+check_device() {
+  local LD
+  LD=$(timeout 30 "$RK" ld 2>&1) || die "rkdeveloptool ld failed: $LD" 1
+  echo "$LD"
+  case "$LD" in
+    *Loader*)   echo "== device is in Loader mode"; return 0 ;;
+    *Maskrom*)  ;;
+    *) die "no usable rockchip device in ld output" 1 ;;
+  esac
+  # Maskrom mode: the boot ROM found no bootloader on the eMMC
+  echo "== device is in Maskrom mode (the boot ROM found no bootloader on the eMMC)"
+  if [ "$MASKROM" != 1 ]; then
+    {
+      echo "STOP: the tablet is in Maskrom mode - it has no bootloader on the eMMC, so"
+      echo "STOP: no eMMC sector can be read or written yet.  Nothing was written."
+      echo "STOP: run this script again with --maskrom: it then pushes the bundled loader"
+      echo "STOP: (loader/RK3288UbootLoader_V2.30.10.bin) into the tablet's RAM with"
+      echo "STOP: \"rkdeveloptool db\" and continues with the normal flow."
+      echo "STOP: --maskrom does not write the loader area itself (raw eMMC sectors"
+      echo "STOP: 0x0000..0x1FFF): that area is below every rkdeveloptool LBA and needs"
+      echo "STOP: RKDevTool/AFPTool on Windows (write devices/<board>/head-4M.bin at"
+      echo "STOP: address 0) or ./write-loader-head.sh from this package."
+    } >&2
+    exit 1
+  fi
+  maskrom_bootstrap
+}
+
+# The tablet matched no board.  Two reasons are possible and the user has to
+# pick the board by hand in both of them.
+no_board_match() {
+  {
+    echo "STOP: the tablet matches no known board ($(list_boards))."
+    echo "STOP: two reasons are possible: the parameter structures of the tablet are"
+    echo "STOP: erased (it holds no mtdparts table to compare), or the tablet is a"
+    echo "STOP: different board than the ones this package knows."
+    echo "STOP: on a tablet whose parameter structures are gone the auto-detection has"
+    echo "STOP: nothing to read, so the board has to be given by hand:"
+    echo "STOP:   ./restore.sh --board <id>"
+    echo "STOP: the boards this package knows: $(list_boards)"
+  } >&2
+  exit 1
+}
+
+# Read the parameter structure the device still holds and match it to a board.
+detect_board() {
+  local boards known="" b lba dump dev tbl magic
+  boards=$(list_boards)
+  for b in $boards; do
+    lba=$(board_field "$b" p1_lba)
+    [ -n "$lba" ] || continue
+    dump="$TMP/probe-$b.bin"
+    rm -f "$dump"
+    timeout 30 "$RK" rl "$lba" 8 "$dump" >/dev/null 2>&1 \
+      || die "cannot read the parameter structure at tool LBA $lba: the tablet must be in Loader mode" 1
+    dev=$(par_mtdparts "$dump") || dev=""
+    if [ -z "$dev" ]; then
+      magic=$(od -An -tx1 -N4 "$dump" | tr -d ' \n')
+      echo "probe $b at tool LBA $lba: the region holds no parameter structure (magic $magic, not PARM)"
+      continue
+    fi
+    tbl=$(par_mtdparts "devices/$b/parameter-p1.img") || continue
+    if [ "$dev" = "$tbl" ]; then known="$known $b"; fi
+  done
+  set -- $known
+  case $# in
+    1) echo "$1"; return 0 ;;
+    0) no_board_match ;;
+    *) die "the device matches several boards ($known); pass --board" 1 ;;
+  esac
+}
+
+probe_parm() { # lba label
+  local lba=$1 label=$2 got
+  rm -f "$TMP/probe.bin"
+  timeout 30 "$RK" rl "$lba" 1 "$TMP/probe.bin" >/dev/null 2>&1 \
+    || die "probe rl $lba failed: the device must be in Loader mode for eMMC reads" 1
+  got=$(od -An -tx1 -N4 "$TMP/probe.bin" | tr -d ' \n')
+  if [ "$got" = 5041524d ]; then
+    echo "probe $label @ $lba: the region holds a PARM structure"
+  else
+    echo "probe $label @ $lba: the region holds NO parameter structure (magic $got, not PARM)"
+    echo "probe $label @ $lba: it is erased, and the restore writes the parameter structure back here"
+  fi
+}
+
+# ------------------------------------------------------------------ writes ----
+
+wl_verify() { # lba file offset len label
+  local lba=$1 f=$2 off=$3 len=$4 label=$5 secs chunk rb lbah
+  secs=$(( (len + 511) / 512 ))
+  lbah=$(printf '0x%x' $((lba)))
+  chunk=$TMP/chunk.bin; rb=$TMP/rb.bin
+  dd if="$f" of="$chunk" bs=512 skip=$((off / 512)) count=$secs status=none 2>/dev/null \
+    || { echo "STOP: dd $f chunk failed" >&2; return 1; }
+  timeout 600 "$RK" wl "$lbah" "$chunk" >/dev/null 2>&1 \
+    || { echo "STOP: wl $label @ $lbah failed" >&2; return 1; }
+  rm -f "$rb"
+  timeout 600 "$RK" rl "$lbah" "$secs" "$rb" >/dev/null 2>&1 \
+    || { echo "STOP: readback $label @ $lbah failed" >&2; return 1; }
+  cmp -s -n "$len" -i "$off:0" "$f" "$rb" \
+    || { echo "STOP: readback mismatch $label @ $lbah" >&2; return 1; }
+  return 0
+}
+
+item() { # lba file label
+  local lba=$1 f=$2 label=$3 size
+  size=$(stat -L -c %s "$f")
+  echo "-- $label: $size B -> tool LBA $(printf '0x%05x' "$lba") (raw sector $(printf '0x%05x' $((lba + 8192))))"
+  if wl_verify "$lba" "$f" 0 "$size" "$label"; then
+    echo "PASS $label @ $(printf '0x%05x' "$lba") (raw sector $(printf '0x%05x' $((lba + 8192))), $size B)"
+  else
+    echo "FAIL $label @ $(printf '0x%05x' "$lba")"
+    die "write or readback failed: $label @ $(printf '0x%05x' "$lba")" 4
+  fi
+}
+
+write_super() { # lba file
+  local lba=$1 f=$2 size n i off len chunk_lba
+  size=$(stat -L -c %s "$f"); n=$(( (size + CH - 1) / CH ))
+  echo "-- system-super: $size B in $n chunk(s) of $CH B -> tool LBA $(printf '0x%05x' "$lba")"
+  for ((i = 0; i < n; i++)); do
+    off=$((i * CH)); len=$((size - off)); [ "$len" -le "$CH" ] || len=$CH
+    chunk_lba=$((lba + off / 512))
+    if wl_verify "$chunk_lba" "$f" "$off" "$len" "system chunk $((i + 1))/$n"; then
+      echo "   OK system chunk $((i + 1))/$n @ $(printf '0x%05x' "$chunk_lba") ($len B)"
+    else
+      echo "FAIL system chunk $((i + 1))/$n @ $(printf '0x%05x' "$chunk_lba")"
+      die "write or readback failed: system chunk $((i + 1))/$n" 4
+    fi
+  done
+  echo "PASS system-super @ $(printf '0x%05x' "$lba") (raw sector $(printf '0x%05x' $((lba + 8192))), $size B)"
+}
+
+# -------------------------------------------------------------------- main ----
+
+BOARDS=$(list_boards)
+
+if [ -z "$BOARD" ]; then
+  if [ "$PLAN_ONLY" = 1 ]; then
+    set -- $BOARDS
+    [ $# -eq 1 ] || die "--plan needs --board when the package holds several boards ($BOARDS)" 64
+    BOARD=$1
+  else
+    echo "== looking for the tablet (rkdeveloptool ld)"
+    check_device
+    BOARD=$(detect_board)
+    echo "== detected board $BOARD"
+  fi
+fi
+
+[ -f "devices/$BOARD/device.json" ] || die "unknown board $BOARD (known: $BOARDS)"
+
+derive_plan "$BOARD"
+show_plan "$BOARD"
+
+if [ "$PLAN_ONLY" = 1 ]; then
+  exit 0
+fi
+
+verify_files "$BOARD"
+
+if [ "$PARAM_ONLY" = 1 ]; then
+  echo "== parameter-only restore: the image partitions are left alone"
+fi
+
+# the device must be there
+echo "== looking for the tablet (rkdeveloptool ld)"
+check_device
+
+# read-only pre-flight probes
+echo "== pre-flight probes (read only)"
+probe_parm "$(board_field "$BOARD" parameter_region_lba)" parameter-loader
+probe_parm "$(board_field "$BOARD" p1_lba)" parameter-p1
+
+# confirmation
+if [ "$YES" != 1 ]; then
+  echo
+  if [ "$PARAM_ONLY" = 1 ]; then
+    echo "This writes the two parameter structures to the tablet."
+  else
+    echo "This writes the parameter structures and the whole GSI image set to the tablet."
+    echo "It replaces the running system and erases ALL user data (userdata/metadata are re-created)."
+  fi
+  echo "It does not touch the loader area (raw eMMC sectors 0x0000..0x1FFF)."
+  ans=""
+  read -r -p "Type restore to continue: " ans || true
+  [ "$ans" = restore ] || die "aborted by user" 1
+fi
+
+# the writes, each read back and compared
+echo "== restore"
+while read -r _ key file lba bytes; do
+  case "$key" in
+    parameter_loader|parameter_p1) ;;
+    *) [ "$PARAM_ONLY" = 1 ] && continue ;;
+  esac
+  if [ "$key" = system ]; then
+    write_super "$lba" "$file"
+  else
+    item "$lba" "$file" "$key"
+  fi
+done < "$TMP/plan"
+
+echo "RESTORE COMPLETE: all writes read back OK"
+echo "Not reset. Run: $RK rd"
+cat <<'EOF'
+
+NOTE: the loader area (idblock + u-boot.itb, raw eMMC sectors 0x0000..0x1FFF)
+lies below tool LBA 0 and cannot be written with rkdeveloptool - it is not
+reachable by any tool LBA.  This restore does not touch it.  If the tablet does
+not boot after the restore, its bootloader is gone (the tablet enumerates in
+Maskrom mode) and the loader area has to be written first:
+  - ./write-loader-head.sh --board <id>   (from this package), or
+  - RKDevTool/AFPTool on another machine: write devices/<board>/head-4M.bin
+    at address 0 (eMMC sector 0).
+EOF
