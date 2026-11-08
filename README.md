@@ -19,6 +19,11 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-rescu
 - Rare hard hang (screen freezes, USB gone); root cause not found. The release kernel writes a periodic dmesg dump to the kpanic partition for post-mortem.
 - Native HWC2 port (drmhwc2) does not initialise on this VOP; the release uses the patched HWC1 through hwc2on1adapter.
 
+## Screen*shot*s
+
+<img height="300px" alt="PXL_20261108_175240621 jpg" src="https://github.com/user-attachments/assets/6c9ac10f-92d0-43e6-826b-8f162be20d14" />
+<img height="300px" alt="PXL_20261108_175035032 jpg" src="https://github.com/user-attachments/assets/14219f6f-d90c-48e2-b879-8fb2313e87eb" />
+
 
 ## Layout
 - `kernel/` — Linux 4.19 tree with all board changes (touch, bcmdhd Wi-Fi, audio, camera, RC5T619 charging policy + JEITA, lsm330, `rk_wdt_backstop` watchdog/logdump driver). Git history of this tree was lost; the tree is complete.
