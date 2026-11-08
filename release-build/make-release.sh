@@ -30,7 +30,10 @@ for f in $KRN $RES $LOADER $IN/super.img $IN/ramdisk.img $IN/metadata.img $IN/us
 python3 "$HERE/tools/mkkrnl.py" verify "$KRN"; python3 "$HERE/tools/mkkrnl.py" verify "$IN/ramdisk.img"
 RK=${IN}/rkdeveloptool; [ -x "$RK" ] || RK=$(command -v rkdeveloptool) || { echo "STOP: no rkdeveloptool to bundle"; exit 3; }
 S=$TOP/out/release; T=$S/$NAME
-rm -rf "$S"; mkdir -p "$T/images" "$T/loader" "$T/tools"
+# never wipe more than the one build directory this run owns
+[ "${T#$S/}" != "$T" ] && [ "$T" != "$S" ] || { echo "STOP: refusing to remove $T"; exit 3; }
+case "$IN" in "$T"|"$T"/*) echo "STOP: inputs dir $IN is inside the output dir $T"; exit 3 ;; esac
+rm -rf "$T"; mkdir -p "$T/images" "$T/loader" "$T/tools"
 cp "$RES" "$T/images/resource.img"; cp "$KRN" "$T/images/kernel.img"
 cp "$IN/ramdisk.img" "$IN/super.img" "$IN/metadata.img" "$IN/userdata-head-zero.img" "$T/images/"
 cp "$LOADER" "$T/loader/"; cp "$RK" "$T/tools/rkdeveloptool"

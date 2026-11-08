@@ -37,9 +37,20 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-rescu
 
 ## Building
 
-Requirements: Linux x86_64, `python3`, `zip`/`unzip`, `dtc`, `bc`, `bison`, `flex`, `lz4`, `libssl-dev`, and an arm cross compiler. Fedora: `gcc-arm-linux-gnu` + `binutils-arm-linux-gnu` (default `CROSS_COMPILE=arm-linux-gnu-`); Debian: `gcc-arm-linux-gnueabi` (set `CROSS_COMPILE=arm-linux-gnueabi-`).
+Requirements: Linux x86_64, `python3`, `zip`/`unzip`, `dtc`, `bc`, `bison`, `flex`, `lz4`, OpenSSL headers, an arm cross compiler, plus the Android image tools `simg2img` `lpmake` `lpunpack` and the ext2 tools `debugfs` `e2fsck`.
 
-### Source components
+```sh
+# Fedora (lines below were run on fc45; android-tools provides lpmake/lpunpack/simg2img)
+sudo dnf install -y python3 zip unzip dtc bc bison flex lz4 openssl-devel \
+    gcc-arm-linux-gnu binutils-arm-linux-gnu android-tools e2fsprogs xz curl
+# Debian / Ubuntu (set CROSS_COMPILE=arm-linux-gnueabi-)
+sudo apt-get install -y python3 zip unzip device-tree-compiler bc bison flex lz4 \
+    libssl-dev gcc-arm-linux-gnueabi android-sdk-libsparse-utils e2fsprogs xz-utils curl
+```
+
+On Debian/Ubuntu the package set above does not include `lpmake`/`lpunpack`; build them from AOSP `system/extras/partition_tools` (not verified on a Debian box). `build-android-images.sh` prints which tools it could not find before doing any work.
+
+### Step 1: build kernel, device tree, and hardware composer
 
 ```sh
 ./build-kernel.sh                          # -> out/kernel-gsi-release/kernel.img
@@ -47,42 +58,43 @@ Requirements: Linux x86_64, `python3`, `zip`/`unzip`, `dtc`, `bc`, `bison`, `fle
 cd hwc && ./build.sh && cd ..              # -> vendor-changes/lib/hw/hwcomposer.rk30board.so
 ```
 
-### Android system images (super.img)
+### Step 2: build the Android images
 
-The flash package requires a `super.img` containing `system`, `vendor`, and `odm` partitions:
-
-#### Step 1: Obtain System Image (GSI)
-Download the TrebleDroid Android 16 vanilla GSI (`arm32_binder64` / `a64`):
 ```sh
-mkdir -p work && cd work
-curl -sL -C - -o system.img.xz https://github.com/TrebleDroid/treble_experimentations/releases/download/ci-20250617/system-td-arm32_binder64-vanilla.img.xz
-unxz system.img.xz
-# If the uncompressed image is sparse, convert to raw:
-simg2img system.img system.raw.img && mv system.raw.img system.img || true
-cd ..
+./build-android-images.sh inputs
 ```
 
-#### Step 2: Extract Vendor and ODM
-Extract `vendor.img` and `odm.img` from the ASUS Tinker Board Android 11 firmware (or unpack an existing release `super.img`):
+That single command downloads the TrebleDroid Android 16 `arm32_binder64` GSI
+(`system-td-arm32_binder64-vanilla.img.xz`, HTTP 200 checked on 2026-11-08), reads
+`vendor.img` and `odm.img` out of a reference `super.img` (searched in this order:
+`inputs/super.img`, `out/release/ifive-mini4s-android16-gsi-rescue/images/super.img`,
+the first zip in `release/`), applies `vendor-changes/` onto the vendor image, and
+writes `inputs/{super,metadata,userdata-head-zero,ramdisk}.img`.
+Intermediate files stay in `out/super-work/`; delete that folder to force a stage to redo.
+`rkdeveloptool` is copied into the inputs directory from the previous package (or from PATH),
+so the zip always bundles the binary that was used on this tablet.
+
+Checked on 2026-11-08 by rebuilding into a scratch directory: the `system` and `odm` images this
+produces are byte-identical to the ones inside the released `images/super.img`, and the patched
+`vendor` holds the same 1042 files with the same modes, owners and SELinux labels (the image
+bytes still differ, because rewriting a file moves its blocks and updates its timestamps).
+`lpdump` of the new and the released `super.img` is identical.
+
+The two stages are separate scripts, so you can also run them one at a time:
+
+- `scripts/patch-vendor.sh <in.img> <out.img>` -- `debugfs` writes for
+  `bin/chgpolicy.sh`, `bin/hw/android.hardware.power-service.rockchip`,
+  `lib/hw/hwcomposer.rk30board.so`, `etc/init/hw/init.rk3288.rc`, `etc/vintf/manifest.xml`,
+  each with the SELinux label and file mode the release expects, then `e2fsck -fn`.
+- `scripts/build-super.sh <system> <vendor> <odm> <out>` -- `lpmake` with this board's
+  layout: super name `system`, group `rockchip_dynamic_partitions`, device size
+  1650458624 B, metadata 65536 x2, all three partitions readonly.
+
+### Step 3: package the release zip
+
 ```sh
-# Unpacking from an existing super.img:
-lpunpack <path-to-super.img> work/unpacked/
+./release-build/make-release.sh inputs     # -> release/ifive-mini4s-android16-gsi-<date>.zip
 ```
 
-#### Step 3: Patch Vendor Image
-Apply hardware composer, power HAL, and battery charging policies from `vendor-changes/` into `vendor.img`:
-```sh
-./scripts/patch-vendor.sh work/unpacked/vendor.img work/vendor-patched.img
-```
-
-#### Step 4: Pack `super.img`
-Generate `super.img` using `scripts/build-super.sh`:
-```sh
-./scripts/build-super.sh \
-  work/system.img \
-  work/vendor-patched.img \
-  work/unpacked/odm.img \
-  inputs/super.img
-```
 `<inputs>` holds `super.img`, `ramdisk.img`, `metadata.img`, `userdata-head-zero.img` and an optional `rkdeveloptool`; the release zip contains the same files for reference.
 `make-release.sh` runs `mkkrnl.py verify` on the kernel and ramdisk, runs `guard-release.py` against the partition layout, and checks the zip with `unzip -t`.

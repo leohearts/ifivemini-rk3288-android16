@@ -16,7 +16,7 @@ Both `flash.sh` and `restore.sh` take their write addresses from `manifest.json`
 
 ## Flashing
 Linux x86_64 with libusb-1.0; rkdeveloptool is bundled (set RKDEVELOPTOOL to use another). Erases system and all user data.
-1. Put the tablet in Rockchip download mode (USB 2207:320a); the script accepts both Maskrom and Loader state. Owner-entered; from a running system `adb reboot loader` is the stated route (owner note; see Known issues).
+1. Put the tablet in Rockchip download mode, so it enumerates as USB `2207:320a`. From a running system `adb reboot loader` does it; check with `./tools/rkdeveloptool ld`, which prints `Loader` or `Maskrom`. `flash.sh` accepts either state (the Maskrom steps are in "A tablet with a blank eMMC").
 2. `./flash.sh --dry-run` (no device touched), then `./flash.sh --yes`.
 3. Script verifies SHA-256, writes each image, reads back and compares, then resets. First boot takes several minutes.
 
