@@ -29,6 +29,11 @@ command -v e2fsck  >/dev/null 2>&1 || { echo "STOP: e2fsck not found (e2fsprogs)
 for f in "$SYS" "$VEN"; do [ -f "$f" ] || { echo "STOP: no such image: $f"; exit 1; }; done
 mkdir -p "$OUTD"
 
+# patch_one stops with "exit 1" on several checks; a RETURN trap does not run on that path, which
+# is what left /tmp/ifive-identity.* directories behind. Collect them and clean up on EXIT instead.
+WORK_DIRS=()
+trap '[ ${#WORK_DIRS[@]} -eq 0 ] || rm -rf "${WORK_DIRS[@]}"' EXIT
+
 rewrite_props() { # <props file> <partition prefix>
     ID_BRAND="$BRAND" ID_MANUFACTURER="$MANU" ID_MODEL="$MODEL" ID_NAME="$NAME" \
     ID_DEVICE="$DEVICE" ID_PREFIX="$2" python3 - "$1" <<'PY'
@@ -90,7 +95,7 @@ PY
 patch_one() { # <in.img> <prop path in image> <partition prefix> <out name>
     local img=$1 prop=$2 pfx=$3 out=$4 work dir st mode uid gid label
     work=$(mktemp -d /tmp/ifive-identity.XXXXXX)
-    trap 'rm -rf "$work"' RETURN
+    WORK_DIRS+=("$work")
     dir="$OUTD/$out"
     cp "$img" "$dir"
 
