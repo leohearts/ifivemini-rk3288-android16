@@ -33,7 +33,7 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-<date
 - `hwc/` — Rockchip drm_hwcomposer 0.66: `src005` base, `src-a16` patched, `hwc-ifive.patch` (skip-layer mix policy + fence fix), `build.sh` (NDK r25), `checkso.py`, headers (`hdr/vndk30` prebuilt libs are a release asset).
 - `vendor-changes/` — files changed inside the Tinker Board vendor image: `init.rk3288.rc` (charging service), `chgpolicy.sh`, Rockchip Power HAL + manifest, patched HWC `.so`.
 - `release-build/` — packaging (`make-release.sh`, `guard-release.py`, `flash.sh.src`), release DTS and resource images, stock loader, `mkkrnl.py`, `resource_tool`, `dtc`, rkdeveloptool src.rpm.
-- `scripts/` — image build helpers used by `build-android-images.sh`: `patch-vendor.sh` (debugfs writes of `vendor-changes/`), `patch-identity.sh` (build.prop identity/fingerprint), `build-super.sh` (`lpmake`), `make-magisk-boot.sh` (Magisk-patched boot partition), plus the developer flashing helpers and the kpanic ring parser.
+- `scripts/` — image build helpers used by `build-android-images.sh`: `patch-vendor.sh` (debugfs writes of `vendor-changes/`), `patch-identity.sh` (build.prop identity/fingerprint), `build-super.sh` (`lpmake`), plus the Magisk setup pair `make-magisk-boot.sh` (Magisk-patched boot partition) and `magisk-install-data.sh` (the two /data-side steps that finish that install, incl. the `ifive-no-phh-su` module built by `make-no-phh-su-module.sh`), and the developer flashing helpers and the kpanic ring parser.
 - `reports/` — `FINAL-REPORT-2026-11-07.md` (Chinese, full write-up) and working notes.
 
 
