@@ -9,8 +9,18 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT_DIR=${1:-$HERE/inputs}
-WORK_DIR="$HERE/out/super-work"
-GSI_URL="https://github.com/TrebleDroid/treble_experimentations/releases/download/ci-20250617/system-td-arm32_binder64-vanilla.img.xz"
+# One work dir per base: out/super-work holds the TrebleDroid build, a different base builds
+# into its own directory so no intermediate image is ever shared between two generations.
+WORK_DIR=${WORK_DIR:-$HERE/out/super-work}
+# The base system image. Default is the TrebleDroid Android 16 a64 GSI this release shipped
+# with. To build the same pipeline on another framework generation (e.g. a LineageOS 23.2
+# arm32_binder64 GSI, whose ImageDecoder.setDefaultProcessListener and nav-button layoutter
+# are the ones Android 16 QPR2 launchers need), point SYSTEM_IMG_LOCAL at a raw or sparse
+# .img and leave GSI_URL alone; the source is stamped so a stale system.img can never be
+# reused for a different base.
+SYSTEM_IMG_LOCAL=${SYSTEM_IMG_LOCAL:-}
+GSI_URL=${GSI_URL:-"https://github.com/TrebleDroid/treble_experimentations/releases/download/ci-20250617/system-td-arm32_binder64-vanilla.img.xz"}
+GSI_XZ=${GSI_XZ:-}
 
 mkdir -p "$OUT_DIR" "$WORK_DIR"
 
@@ -28,23 +38,51 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     exit 1
 fi
 
-echo "=== 2. System image: TrebleDroid Android 16 GSI (a64) ==="
-GSI_XZ="$WORK_DIR/system-td-arm32_binder64-vanilla.img.xz"
+echo "=== 2. System image (the base) ==="
+if [ -z "$GSI_XZ" ]; then GSI_XZ="$WORK_DIR/system-td-arm32_binder64-vanilla.img.xz"; fi
 GSI_IMG="$WORK_DIR/system.img"
-if [ -f "$GSI_IMG" ]; then
-    echo "using existing $GSI_IMG"
+SRC_STAMP="$WORK_DIR/system.img.stamp"
+RAW=""
+if [ -n "$SYSTEM_IMG_LOCAL" ]; then
+    SRC="$SYSTEM_IMG_LOCAL"
+    if [ ! -f "$SYSTEM_IMG_LOCAL" ]; then echo "STOP: SYSTEM_IMG_LOCAL=$SYSTEM_IMG_LOCAL does not exist"; exit 1; fi
 else
-    [ -f "$GSI_XZ" ] || { echo "downloading GSI (~740 MB compressed) ..."; curl -L -C - -o "$GSI_XZ" "$GSI_URL"; }
-    RAW="${GSI_XZ%.xz}"
-    [ -f "$RAW" ] || unxz -k "$GSI_XZ"
-    # GSI may be sparse or raw; simg2img fails on raw, so fall back to a plain copy.
-    if simg2img "$RAW" "$GSI_IMG" 2>/dev/null; then
-        echo "converted sparse GSI -> raw $GSI_IMG"
+    SRC="$GSI_URL"
+fi
+
+if [ -f "$GSI_IMG" ]; then
+    # Never let one base's system.img be packed for another: the source is recorded next to it.
+    if [ "$(cat "$SRC_STAMP" 2>/dev/null)" = "$SRC" ]; then
+        echo "using existing $GSI_IMG (source: $SRC)"
     else
-        cp "$RAW" "$GSI_IMG"
-        echo "GSI already raw -> $GSI_IMG"
+        echo "STOP: $GSI_IMG came from '$(cat "$SRC_STAMP" 2>/dev/null || echo no-stamp)', not '$SRC'"
+        echo "      to build the other base: rm -f $GSI_IMG $SRC_STAMP $WORK_DIR/identity/system.img"
+        exit 1
     fi
-    rm -f "$RAW"
+else
+    if [ -n "$SYSTEM_IMG_LOCAL" ]; then
+        BASE="$SYSTEM_IMG_LOCAL"
+        case "$BASE" in
+            *.xz) RAW="$WORK_DIR/$(basename "$BASE" .xz)"
+                  if [ ! -f "$RAW" ]; then unxz -k "$BASE"; fi
+                  BASE="$RAW" ;;
+        esac
+    else
+        if [ ! -f "$GSI_XZ" ]; then echo "downloading GSI (~740 MB compressed) ..."; curl -L -C - -o "$GSI_XZ" "$GSI_URL"; fi
+        RAW="${GSI_XZ%.xz}"
+        if [ ! -f "$RAW" ]; then unxz -k "$GSI_XZ"; fi
+        BASE="$RAW"
+    fi
+    # The image may be sparse or raw; simg2img fails on raw, so fall back to a plain copy.
+    if simg2img "$BASE" "$GSI_IMG" 2>/dev/null; then
+        echo "converted sparse image -> raw $GSI_IMG"
+    else
+        cp "$BASE" "$GSI_IMG"
+        echo "image already raw -> $GSI_IMG"
+    fi
+    if [ -n "$RAW" ]; then rm -f "$RAW"; fi
+    echo "$SRC" > "$SRC_STAMP"
+    echo "   stamped source: $SRC"
 fi
 
 echo "=== 3. Vendor and ODM images (from a reference super.img) ==="
