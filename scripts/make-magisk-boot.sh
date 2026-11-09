@@ -123,7 +123,15 @@ echo "== 4. patch the ramdisk (KEEPVERITY=$KEEPVERITY KEEPFORCEENCRYPT=$KEEPFORC
 ./magiskboot compress=xz magisk   magisk.xz
 ./magiskboot compress=xz stub.apk stub.xz
 ./magiskboot compress=xz init-ld  init-ld.xz
-printf 'KEEPVERITY=%s\nKEEPFORCEENCRYPT=%s\nRECOVERYMODE=%s\nVENDORBOOT=%s\n' "$KEEPVERITY" "$KEEPFORCEENCRYPT" "$RECOVERYMODE" "${VENDORBOOT:-false}" > config
+# PREINITDEVICE: magiskinit uses it to create $MAGISKTMP/.magisk/device/preinit, and Magisk's own
+# env_check (assets/app_functions.sh) returns 2 without that block device - the app then shows
+# "Requires additional setup / your device needs reflash Magisk" on every start. Upstream
+# boot_patch.sh fills it in with `magisk --preinit-device` because it runs on the device; building
+# on a host cannot, so this is the measured answer for this tablet: mmcblk0p13, the userdata
+# partition (find_preinit_device() in native/src/core/mount.rs may take /data because
+# ro.crypto.state is "unsupported", i.e. not encrypted). Override with PREINITDEVICE=<name>.
+PREINITDEVICE=${PREINITDEVICE:-mmcblk0p13}
+printf 'KEEPVERITY=%s\nKEEPFORCEENCRYPT=%s\nRECOVERYMODE=%s\nVENDORBOOT=%s\nPREINITDEVICE=%s\n' "$KEEPVERITY" "$KEEPFORCEENCRYPT" "$RECOVERYMODE" "${VENDORBOOT:-false}" "$PREINITDEVICE" > config
 chmod 644 config
 ./magiskboot cpio ramdisk.cpio \
     "add 0750 init magiskinit" \
