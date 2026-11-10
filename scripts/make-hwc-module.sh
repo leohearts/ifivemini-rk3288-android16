@@ -67,7 +67,7 @@ name=iFive mini 4S: HWC composition fixes
 version=v2026-11-10
 versionCode=1
 author=leohearts
-description=Replaces /vendor/lib/hw/hwcomposer.rk30board.so with the build that stops rejecting hardware-plane composition (bottom-layer global alpha gate; 1080p-tuned 3.3 bandwidth cap -> vendor.hwc.vop.max_scale, 6.0 default here). Shade frames compose on VOP planes instead of full-screen GLES. Jank unchanged; see reports/HwcFix1110.md. sha256 $SO_SHA
+description=Replaces /vendor/lib/hw/hwcomposer.rk30board.so with the build that stops rejecting hardware-plane composition (bottom-layer global alpha gate; 1080p-tuned 3.3 bandwidth cap -> vendor.hwc.vop.max_scale, 6.0 default here; mix window widened upwards first so the full-screen wallpaper keeps a VOP plane instead of costing SF ~11 ms of GLES per pull-down frame). Shade frames compose on VOP planes instead of full-screen GLES. See reports/HwcFix1110.md for the measured composition changes and reports/ShadeJankTrace1110.md for the frame budget; the end-to-end jank effect of this module + the 2026-11-10 kernel is pending re-measurement. sha256 $SO_SHA
 PROP
 
 unzip -p "$APK" assets/module_installer.sh > "$W/m/META-INF/com/google/android/update-binary"
