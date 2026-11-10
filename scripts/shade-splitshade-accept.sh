@@ -33,11 +33,19 @@ drag12(){
     i=$((i+1))
   done
 }
-grab(){ # $1=rounddir
-  dumpsys gfxinfo $P reset >/dev/null 2>&1
+grab(){ # $1=rounddir ; ONE slow pull-down inside the 6 s window: the release
+        # cadence and band-draw counts are per-gesture metrics, one clean
+        # gesture is the unit of analysis (12 would overrun the buffer window).
   atrace -t 6 -b 16000 gfx sched freq idle am wm view > "$1/trace.txt" 2>"$1/atrace.err" &
   A=$!
-  sleep 0.4; drag12; wait $A 2>/dev/null
+  sleep 0.4
+  input swipe 768 10 768 800 1400; sleep 0.6
+  input swipe 768 700 768 10 1200
+  wait $A 2>/dev/null
+}
+jankrun(){ # $1=rounddir ; the jank number needs the full 2x12 protocol
+  dumpsys gfxinfo $P reset >/dev/null 2>&1
+  drag12
   pair > "$1/jank.txt"
   cat "$1/jank.txt" | tr '\n' ' ' | sed 's/^/    /'; echo ""
 }
@@ -66,10 +74,10 @@ if [ "$MODE" = fabricate ]; then
   while [ $i -le $R ]; do
     say "== round $i/$R : A (drawer, overlay off) =="
     setmode on > $D/lookup_A$i.txt; home
-    mkdir -p $D/A$i; grab $D/A$i
+    mkdir -p $D/A$i; home; grab $D/A$i; jankrun $D/A$i
     say "== round $i/$R : B (classic, overlay on) =="
     setmode off > $D/lookup_B$i.txt; home
-    mkdir -p $D/B$i; grab $D/B$i
+    mkdir -p $D/B$i; home; grab $D/B$i; jankrun $D/B$i
     i=$((i+1))
   done
   setmode on >/dev/null 2>&1   # ensure no leftover fabricate
@@ -78,12 +86,12 @@ if [ "$MODE" = fabricate ]; then
 else
   # module mode: two invocations, before / after
   case "$2" in
-    before) say "before phase x$R"; i=1; while [ $i -le $R ]; do mkdir -p $D/A$i; home; grab $D/A$i; i=$((i+1)); done; echo ok> $D/state ;;
+    before) say "before phase x$R"; i=1; while [ $i -le $R ]; do mkdir -p $D/A$i; home; grab $D/A$i; jankrun $D/A$i; i=$((i+1)); done; echo ok> $D/state ;;
     after)  [ -f $D/state ] || { say "FATAL: no before state"; exit 1; }
             V=$(cmd overlay lookup $P $P:bool/config_use_split_notification_shade 2>/dev/null)
             say "lookup after module install: $V"
             case "$V" in *false*) : ;; *) say "FAIL: overlay not active"; exit 2;; esac
-            i=1; while [ $i -le $R ]; do mkdir -p $D/B$i; home; grab $D/B$i; i=$((i+1)); done ;;
+            i=1; while [ $i -le $R ]; do mkdir -p $D/B$i; home; grab $D/B$i; jankrun $D/B$i; i=$((i+1)); done ;;
     *) say "module mode usage: $0 <rounds> before|after"; exit 1 ;;
   esac
 fi
