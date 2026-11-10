@@ -54,23 +54,48 @@ being waited on is GPU rasterization of the shade window:
 - Wallpaper layers were `invisible (hidden by parent)` in the same dump: the
   opaque shade background replaces wallpaper draw, no wallpaper cost.
 
-### What the 11.13 ms `Drawing` pass really is (simulation, 23:5x)
+### What the 11.13 ms `Drawing` pass really is (corrected twice; final version)
 
-Reconstructing the validate input from sf.txt (z-order, visible only): wallpaper,
-launcher, SettingsHomepage, SubSettings, taskbar, status bar, shade(SKIP),
-colorfade(SKIP) = **8 layers against 5 VOP planes** - the capture happened with
-two Settings windows stacked. Simulating `mix_policy()` window selection on that
-stack (see commit `ca81d5e78` discussion in `HwcFix1110.md`): the skip window
-must widen to cover all 8 indices under both old and new orderings, i.e. SF
-composites **the entire visible stack** into one GLES frame each vsync - the 11 ms
-is full-screen whole-stack composition, not a single wallpaper layer. For
-non-overlaid stacks (one app + launcher + shade = 6-7 layers with the skip
-range in the middle) the new upward-first preference keeps low-z content on
-planes where the old code would have mixed it; that is the scene the change
-targets. The general lesson stands: on this SoC jank crosses a threshold when
-visible layers exceed 5 planes; minimizing simultaneous windows is the user-side
-lever, and plane-count-aware mix priority (sacrifice colorfade/pointer overlays
-first) is the next hwc-side candidate.
+First read of this data blamed the wallpaper; parsing sf.txt's visible/invisible
+flags properly disproves that: with the shade open, **only 4 layers are visible
+on the display** - `ColorFade BLAST` (frame=18, a static remnant), `NotificationShade`,
+`StatusBar`, `Taskbar` - while `ImageWallpaper`, the wallpaper BBQ wrapper, all
+`ActivityRecordInputSink` layers and the `Dim layer` are invisible and never
+reach the HWC at all. The launcher window is likewise absent from the visible
+set (zero commits during drag clusters, measured above).
+
+The `Drawing 0.0 0.0 558.0 2048.0` region therefore matches the shade panel
+itself: on this 1536x2048 portrait panel Android 16 draws the notification
+shade as a **left-anchored ~558 px wide card**, and SF re-composites that card
+through its GLES path every frame instead of handing it to a VOP plane. The
+`Drawing` median of 11.13 ms is SF rasterizing the animated shade card per
+vsync. Why SF marks that one layer client is the open question - the usual
+forces are window corner radius, shadows/elevation, dim or blur regions - and
+settling it needs the device-side capture prepared in
+`scripts/shade-scene-atrace.sh` (2026-11-11).
+
+This reframes the remaining optimization target precisely: **the 11 ms is one
+layer - the shade card - GPU-composited per frame; if that single layer
+returned to a VOP plane, the 27 ms period would collapse toward ~16 ms and
+60 fps becomes arithmetically plausible** - the first genuinely
+frame-budget-halving candidate found all night. Experiment order for the next
+device session (in the script's session):
+1. `settings put secure no_rounded_corners 1` (official Settings.Secure key,
+   string present in this framework build's dex; revert `put ... 0`), re-run
+   the 2x12 cycle + a 6 s atrace. If the shade's `Drawing` disappears from the
+   SF timeline, corner radius was the client-force.
+2. If not (1): same round with the `com.android.window.flags`
+   `ignore_corner_radius_and_shadows` flag via `aflags` (its runtime-read path
+   was verified in the framework bytecode this evening); record mutability.
+3. If a step works, shipping it as a release default gets weighed openly -
+   squaring the corners is a visual change, so it ships as an opt-in module,
+   not a silent default, and the README states the trade explicitly.
+
+The mix-window reorder shipped tonight neither saves the wallpaper (invisible
+during the shade animation - the earlier claim is retracted) nor changes any
+captured scene (simulation: both orders pick the same full-width window when
+layers exceed planes). It stays as a strictly-safer preference for
+middle-skip stacks; no measured jank claim rides on it.
 
 ### User-side confirmation (2026-11-11 00:2x)
 

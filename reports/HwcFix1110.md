@@ -181,47 +181,34 @@ stock-like GSI + this vendor stack.
    module dir is `adb_data_file` either way (verified matching the working
    modules).
 
-## Third fix (23:52): mix-window preference reordered; scene analysis corrected what it can and cannot save
+## Third change (23:52): mix-window preference reordered - and the wallpaper story retracted twice
 
-The ftrace analysis (`ShadeJankTrace1110.md`) measured SurfaceFlinger spending a
-median **11.13 ms per frame** on a GLES `Drawing` pass during the drag; with the
-captured stack (8 visible layers against 5 VOP planes - Settings windows were
-also open) `mix_policy()` ends up mixing **everything** and re-compositing the
-whole screen per vsync. Part of that is plain plane exhaustion (see the
-simulation subsection in `ShadeJankTrace1110.md`), but the code had one real
-preference bug on top: when the skip window needed widening it always tried
-**downwards first** (`skip_layer_indices.first = 0`) - which, in any stack where
-the skip range sits high, swallows z=0 (the full-screen wallpaper, biggest and
-most static layer) while the small dynamic strips above keep planes. The
-fallback ordering is inverted: **widen upwards first**, then downwards, then
-fail as before. Same checks, same fallbacks, order only - a strictly safer
-preference; it changes the outcome for middle-skip stacks and none for the
-fully-over-subscribed captured stack.
+What the evening's trace finally supports (`ShadeJankTrace1110.md` keeps the
+full correction chain): SurfaceFlinger spends a median **11.13 ms per frame**
+in a GLES `Drawing 0.0 0.0 558.0 2048.0` pass. Parsing sf.txt visible flags:
+during the open-shade animation only four layers are visible (ColorFade remnant,
+NotificationShade, StatusBar, Taskbar) - the wallpaper and launcher are not in
+the frame at all. The 558x2048 region matches the **shade card itself** (this
+A16 build draws the pull-down as a left-anchored ~558 px portrait panel), so
+the 11 ms is SF compositing one animated client layer per vsync - not the
+wallpaper, and not whole-screen plane exhaustion from eight visible layers.
+Two earlier framings of this section are retracted as wrong.
+
+The `mix_policy()` fallback-order change (try widening the mix range upwards
+before `first = 0`) did ship in this build: it is a strictly-safer preference,
+but per the simulation it changes no outcome in any captured scene, and since
+the dragged layer set is 4 visible + fb target (well under 5 planes), even the
+old order could not have been exhausting planes here. **No jank improvement
+is claimed for this change** - it stays because it can only choose equal-or-
+better windows. The real prize it exposed is the open question of *why SF
+marks the shade card client* (corner radius? shadow? dim?), which is now the
+planned next device experiment (`no_rounded_corners`, then the
+`ignore_corner_radius_and_shadows` aconfig route - see the trace report's
+final section).
 
 New library: 370484 B, sha256 `7575aed5...` (size unchanged, decision order
 only). Both channels rebuilt: vendor image -> super.img, and the
 `ifive-hwc-composition` Magisk module (zip sha256 `43892f5e...`).
-
-Expected effect, honestly bounded: a python simulation of the window-choice
-logic against the exact layer stack of this capture (8 layers: wallpaper,
-launcher, Settings x2, taskbar, status bar, shade-skip, colorfade-skip; 5
-planes) shows BOTH old and new orders land on the full-width window (0..7) -
-with more real layers than planes, the direction change cannot save this
-scene; everything mixes and SF composites the whole screen in GLES per frame
-(that is the true identity of the 11.13 ms `Drawing` pass, and it explains
-why the whole drag sits at ~27 ms). The reordering pays off in the common
-non-overlaid stack (wallpaper + launcher + taskbar + status + shade + skip =
-6..7 with skip in the middle): there the upward-first order keeps low-z
-content on planes. It is kept as a strictly-safer preference, not as a claim
-of a fixed 11 ms.
-
-What this scene analysis does establish for the release: with a heavy
-multi-window stack the VOP runs out of planes and jank follows from layer
-count. The user-facing levers are the documented ones (fewer on-screen
-windows; `ifive-hwc-composition` gets the composition decisions right for
-stacks that do fit). A plane-count-aware priority (mix the *largest static*
-layer only as last resort, and mix colorfade/pointer overlays first) is the
-next candidate; recorded in `ShadeJankTrace1110.md`.
 
 ## Rollout
 
