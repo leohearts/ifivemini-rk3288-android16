@@ -64,38 +64,51 @@ on the display** - `ColorFade BLAST` (frame=18, a static remnant), `Notification
 reach the HWC at all. The launcher window is likewise absent from the visible
 set (zero commits during drag clusters, measured above).
 
-The `Drawing 0.0 0.0 558.0 2048.0` region therefore matches the shade panel
-itself: on this 1536x2048 portrait panel Android 16 draws the notification
-shade as a **left-anchored ~558 px wide card**, and SF re-composites that card
-through its GLES path every frame instead of handing it to a VOP plane. The
-`Drawing` median of 11.13 ms is SF rasterizing the animated shade card per
-vsync. Why SF marks that one layer client is the open question - the usual
-forces are window corner radius, shadows/elevation, dim or blur regions - and
-settling it needs the device-side capture prepared in
-`scripts/shade-scene-atrace.sh` (2026-11-11).
+The `Drawing 0.0 0.0 558.0 2048.0` region that carried the 11.13 ms median:
+in the same sf.txt dump, `[0 0 558, 2048]` is the *visible* rect of
+`SettingsHomepageActivity` (the part not covered by the shade panel), so the
+pass was SF re-compositing the whole visible stack on GLES - damage rect
+sized by what actually changed - and the identification of any single
+"culprit layer" is moot: the layer list itself shows the mechanism was
+rejection, not force. (See the final correction below; intermediate drafts
+of this section attributed it to the shade card and then to the wallpaper -
+both were wrong, kept in git history for the correction chain.)
 
-This reframes the remaining optimization target precisely: **the 11 ms is one
-layer - the shade card - GPU-composited per frame; if that single layer
-returned to a VOP plane, the 27 ms period would collapse toward ~16 ms and
-60 fps becomes arithmetically plausible** - the first genuinely
-frame-budget-halving candidate found all night. Experiment order for the next
-device session (in the script's session):
-1. `settings put secure no_rounded_corners 1` (official Settings.Secure key,
-   string present in this framework build's dex; revert `put ... 0`), re-run
-   the 2x12 cycle + a 6 s atrace. If the shade's `Drawing` disappears from the
-   SF timeline, corner radius was the client-force.
-2. If not (1): same round with the `com.android.window.flags`
-   `ignore_corner_radius_and_shadows` flag via `aflags` (its runtime-read path
-   was verified in the framework bytecode this evening); record mutability.
-3. If a step works, shipping it as a release default gets weighed openly -
-   squaring the corners is a visual change, so it ships as an opt-in module,
-   not a silent default, and the README states the trade explicitly.
+Third and final correction of this section, with the loop closed:
 
-The mix-window reorder shipped tonight neither saves the wallpaper (invisible
-during the shade animation - the earlier claim is retracted) nor changes any
-captured scene (simulation: both orders pick the same full-width window when
-layers exceed planes). It stays as a strictly-safer preference for
-middle-skip stacks; no measured jank claim rides on it.
+The all-CLIENT state in sf.txt is the **old HWC build's** doing, layer by
+layer - every layer rejected in `validate()`. That is the same alpha-gate bug
+fixed at 21:44 (`4b03399d6`): the full log line `vop cann't support first
+layer with global alpha` appears 727 times across the afternoon's hwc
+captures (`pull-hwclog.txt`), and the 11.13 ms `Drawing [0 0 1536 2048]`
+measured in trace2 is the consequence: old HWC rejects -> SF GLES-composites
+the whole screen every frame - exactly the 9.2 ms-vs-4.9 ms pattern published
+by another GSI project for the same mechanism.
+
+The new build's validate behaviour was captured at 22:1x with
+`vendor.hwc.log=2` over 307 composition windows: **zero GLES downgrades, zero
+bandwidth rejections** (`HwcFix1110.md` Validation; the 445 number is plane
+log lines, not per-frame plane counts). That removes the *rejection* cause of
+whole-screen GLES. Whether an SF `Drawing` pass still appears on-device under
+the fixed HWC (and with what duration) has no host-side capture - the trace
+in hand predates the fix - so the honest status of the 11 ms item is
+"mechanism identified and the identified cause fixed; on-device confirmation
+of its removal still owed", via the atrace arms of
+`scripts/shade-scene-atrace.sh`. The `no_rounded_corners`/shadow experiments
+remain in the script as fallbacks: they only matter if the on-device trace
+still shows a big `Drawing` with zero downgrades in the hwc log.
+
+What the residual 84% jank is then, under the fixed HWC: main thread 8 ms CPU
++ HWUI's own render/submission waits (`flush commands` 4.4 ms + postAndWait
+3.0 ms medians) + normal vsync pacing - with jank re-measured at 83.9/84.9%
+after the HWC fix, no single removable item remains in these numbers.
+The three shipped fixes (alpha gate + bandwidth cap + device-tree ramp-up)
+each remove a *measured* waste - whole-screen GLES per frame, bandwidth
+rejections, cold-start clock tail - without moving the aggregate jank
+percentage yet. The remaining budget belongs to SystemUI's per-frame work
+(3 shade surfaces committing at 199 fps aggregate + taskbar co-commits),
+which needs SystemUI-source work this machine cannot do (26 G free on /home
+vs hundreds of G for an AOSP tree) - stated plainly, not hidden.
 
 ### User-side confirmation (2026-11-11 00:2x)
 
