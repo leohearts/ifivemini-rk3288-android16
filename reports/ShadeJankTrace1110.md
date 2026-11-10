@@ -285,24 +285,29 @@ and this analysis referenced, branch through commit `d1eb11700`, capture script
 
 Open, in priority order - all need device minutes, all have their exact
 commands inside the capture script:
-1. **Confirm the fix removed the SF pass on-device**: one 6 s atrace during 10
-   pull-downs on the current module build (22:03 build still on the tablet -
-   flash the `7575aed5` module + new kernel first). Expect: no 11 ms-class
-   `Drawing [0 0 1536 2048]` medians anymore (the old-HWC all-CLIENT state is
-   proven to have been the alpha-gate bug; see HwcFix1110.md static audit -
-   no second display-wide GLES rejection path exists for this scene), and the
-   `flush commands` / postAndWait medians measured as what remains.
-2. If a big `Drawing` persists while the hwc log shows zero downgrades: only
-   then re-armed as fallback - `no_rounded_corners 1` and aconfig
-   `ignore_corner_radius_and_shadows` (both already arms of the script).
-3. Quantify after each: 2x12 cycle (same protocol as all published numbers) -
+1. **Run the split-shade acceptance** (`scripts/shade-splitshade-accept.sh`
+   before -> install `ifive-split-shade-off-module.zip` -> reboot -> after,
+   verdict via `scripts/shade-frame-audit.py --compare`): the contention
+   finding (FOURTH correction above) says removing the non-SystemUI band
+   redraws should collapse the >24 ms gap share; this is the one experiment
+   that turns the causal chain into a measured before/after.
+2. **Confirm the fix removed the SF pass on-device**: same atrace windows
+   answer it as a side effect (expect no full-screen GLES composition and
+   SystemUI's own draws back near their 3.4 ms standalone time).
+3. If a big `Drawing` persists while the hwc log shows zero downgrades and
+   bands are gone: only then re-armed as fallback - `no_rounded_corners 1`
+   and aconfig `ignore_corner_radius_and_shadows` (both already arms of the
+   scene-capture script).
+4. Quantify after each: 2x12 cycle (same protocol as all published numbers) -
    target below 60% janky before any claim is made anywhere.
-4. Taskbar co-commit (37.7 fps during drags): `launcher_taskbar_enabled=0`
-   arm included as a measured option, not a default.
-Offline avenues exhausted tonight: AOSP source-level SystemUI work is not
-possible on this machine (26 G free on /home vs several hundred G required);
-the remaining per-frame cost is SystemUI's own rendering, which no knob found
-so far addresses.
+Offline avenues this pass: AOSP source-level SystemUI work is not possible
+on this machine (26 G free on /home vs several hundred G required), so the
+attack went through the shipped binary instead - jadx decompile of this exact
+SystemUI located the resource-gated split-shade decision
+(`SplitShadeStateControllerImpl.shouldUseSplitNotificationShade`, gating bool
+`config_use_split_notification_shade`, `(sw600dp)/(land)` variants true),
+which is flip-able by static RRO without any source tree. AOSP tree build and
+SystemUI patching remains the only deeper route not taken, deliberately.
 No device partition was ever written; the test tablet still runs the
 22:03 module build and is owed the `7575aed5` module + new kernel.
 
