@@ -73,6 +73,29 @@ experiment only removes the ~10% first-frame-after-idle penalty.
 
 ## What follows from this
 
+### The GPU tuning in the device tree never shipped (found and fixed tonight)
+
+`kernel/arch/arm/boot/dts/rk3288-ifive-mini4s.dts:862-864` (`&gpu` node, line 854) sets `polling-ms = <10>`,
+`upthreshold = <25>`, `downdifferential = <15>` on the gpu node - committed
+11-08 13:28 (`225876134`). Every release kernel.img to date was built Nov 7
+17:53, i.e. **before that commit**: shipped tablets ran kbase's defaults
+(`mali_kbase_devfreq.c:350` `polling_ms = 20`, `DFSO_UPTHRESHOLD = 75`,
+`DFSO_DOWNDIFFERENCTIAL = 5`). With 4.19's
+`devfreq_simple_ondemand_func` (`kernel/drivers/devfreq/governor_simpleondemand.c:21,79-82`:
+utilization above `upthreshold` jumps to `DEVFREQ_MAX_FREQ` outright), a 75%
+bar is unreachable for a 27 ms frame pattern - the 10 ms sample windows
+between frames average 40-60% busy - so the ramp to 594 MHz lags ~0.9 s into
+the drag, which is exactly the 10.3 s of 198 MHz and the 36 ramp-up events in
+the trace. Rebuilding the kernel with the committed device tree moves the
+first-frame ramp into the first sample window. The driver reads all three
+properties from the device tree (`mali_kbase_devfreq.c:352,365-368`), so the
+fix path is verified at both ends; expected effect: the 47/493 animations
+that started below 400 MHz and their ramp-up frames stop being slow. Jank
+magnitude to be measured when device access returns; mechanism and direction
+are not in doubt.
+
+### Floor analysis
+
 Per-frame floor with the current prebuilt SystemUI: 8 ms CPU + 15-18 ms of
 GPU/bandwidth for one 3.1 M px shade surface = ~27 ms, about 37 fps. Reaching
 16.7 ms (60 fps) would need the shade's per-frame work cut by roughly half,
@@ -105,6 +128,32 @@ Options considered and rejected with evidence:
 What was NOT changed: screen resolution, animation durations, frame rate,
 touch settings. The jank percentages in the release README now point here for
 the corrected attribution.
+
+## Next steps
+
+1. **Ship the kernel** (in progress tonight): after the rebuild, verify the
+   compiled device tree carries the values (`dtc -I dtb -O dts
+   rk3288-ifive-mini4s.dtb | grep -A4 gpu@` -> `polling-ms = <0x0a>`,
+   `upthreshold = <0x19>`, `downdifferential = <0x0f>`), then `mkkrnl.py
+   verify` and the release guard as usual.
+2. **On-device confirmation** (when device access returns): re-capture the
+   same atrace set during 10 pull-downs; expected: zero `animation` starts
+   below 400 MHz (was 47/493) and no 0.9 s ramp plateau in the `sclk_gpu`
+   timeline. The jank percentage after the ramp fix is not claimed here - the
+   frame-floor analysis above still applies to the rest.
+3. **Deeper code-level reductions** (research, needs an AOSP/TrebleDroid
+   build machine): the remaining 15-18 ms/frame is HWUI rasterizing the
+   full-screen shade surface. The levers are all inside SystemUI: splitting
+   or shrinking the shade window surface per animation state, skipping
+   row content redraw for occluded rows, cheaper row backgrounds. None is
+   reachable from vendor/build.prop/RRO; a SystemUI rebuild pipeline is the
+   prerequisite and the TrebleDroid sources make it possible in principle
+   (their SystemUI is AOSP + small patches), but requires a full AOSP tree.
+4. **Taskbar**: `launcher_taskbar_enabled` (Settings.Secure, official)
+   removes the Taskbar layer (175 px = 8.6% of screen, re-composited during
+   every drag frame). Expected gain <5 points of jank for a dock the tablet
+   user may want; left enabled by default, users can test with
+   `settings put secure launcher_taskbar_enabled 0` (revert: `= 1`).
 
 ## Reproduce the analysis (host only)
 
