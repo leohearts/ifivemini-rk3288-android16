@@ -163,6 +163,22 @@ stock-like GSI + this vendor stack.
 3. CPU governor/limits were restored to the board's normal state
    (interactive, 408000-1608000) at the end.
 
+## Delivery to devices: two Magisk traps measured today
+
+1. `magisk --install-module` does not place files in `/data/adb/modules/<id>`
+   live; the first reboot moves them out of `.update-modules`, so check module
+   state after one more reboot.
+2. On this tablet, magisk 31.0 magic mount applies a module's `system/`
+   directory (both pre-existing modules work) but **silently skips a module
+   whose content is only under `vendor/`** - no "loading module files" line,
+   no error, three reboots. Fixed in `scripts/make-hwc-module.sh`: the module
+   keeps the .so at its root and binds it onto `/vendor/lib/hw/...` from
+   `post-fs-data.sh` - the same boot stage the tracefs module uses, after
+   /vendor is mounted and before any framework process exists, so the composer
+   HAL maps the replaced file on its very first start. SELinux context of the
+   module dir is `adb_data_file` either way (verified matching the working
+   modules).
+
 ## Rollout
 
 - [ ] `vendor-changes/lib/hw/hwcomposer.rk30board.so` <- new build
