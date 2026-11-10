@@ -219,6 +219,35 @@ the corrected attribution.
    user may want; left enabled by default, users can test with
    `settings put secure launcher_taskbar_enabled 0` (revert: `= 1`).
 
+## Session state at 2026-11-11 00:4x (for the next continuation)
+
+Delivered: kernel (ramp-up tail fix, verified to dtb level), HWC (alpha gate,
+max_scale 6.0, mix-order preference), final release zip sha256 `636a4a77...`,
+module zip sha256 `43892f5e...`, draft release `v2026-11-10` with all assets
+and this analysis referenced, branch through commit `d1eb11700`, capture script
+`scripts/shade-scene-atrace.sh` covering everything below.
+
+Open, in priority order - all need device minutes, all have their exact
+commands inside the capture script:
+1. Why does SF force the shade card client: `dumpsys window` for
+   `NotificationShade` attrs.shadowRadius / mIsTrustedOverlay + one atrace per
+   experiment arm; candidates: `settings put secure no_rounded_corners 1`
+   (affects system corners only - valid test for the card if and only if the
+   card uses system corners, the dump settles which), then aconfig
+   `ignore_corner_radius_and_shadows` (runtime-read path verified in framework
+   bytecode this evening; mutability unknown until `aflags get` runs).
+2. Quantify after each: 2x12 cycle (same protocol as all published numbers) -
+   target below 60% janky before any claim is made anywhere.
+3. Taskbar co-commit (37.7 fps during drags): `launcher_taskbar_enabled=0`
+   arm included as a measured option, not a default.
+Offline avenues exhausted tonight: AOSP source-level SystemUI work is not
+possible on this machine (26 G free on /home vs several hundred G required);
+no SystemUI resource in resources.arsc carries the card's geometry
+(Material component styles only); the client-forcing inputs (shadow radius)
+are runtime window attributes.
+No device partition was ever written; the test tablet still runs the
+22:03 module build and is owed the `7575aed5` module + new kernel.
+
 ## Reproduce the analysis (host only)
 
 ```
