@@ -403,6 +403,29 @@ the app then writes is a raw boot image where the container belongs. The support
 - Powered-off tablet on charger: `reboot -p` with the charger attached was tested; the panel stayed dark, USB charging was observed, and Android did not boot on its own.
 - Charge-boost switch (`persist.vendor.chg.boost`) is verified on device: `vendor.chgpolicy` runs, `high_current_allowed=Y`, and the ADP input current limit rises to 2000000.
 
+## Optional: classic pull-down for less jank (`ifive-split-shade-off-module.zip`)
+
+Published next to this zip, not inside it, and opt-in because it changes how
+the shade looks. This tablet's SystemUI shows the Android 16 split shade - a
+left drawer sliding over the home screen. Under the drawer the launcher
+taskbar strip stays visible and animates, and the app behind the drawer (if
+any) keeps redrawing its exposed band: measured 405 taskbar-strip draws at
+10.6 ms median in one desktop session, 218 app-band draws at 8 ms in another.
+Those frames stack on the same Mali queue as SystemUI's own shade drawing
+(its standalone GPU time is 3.4 ms; under the contention it takes 12-15 ms) -
+which is why the pull-down is the one janky gesture on this tablet.
+
+The module is a static RRO setting `config_use_split_notification_shade` to
+false: the shade becomes the classic full-screen top-down panel, covering
+home and taskbar - covered windows stop rendering (verified on this device:
+zero in-burst full-screen launcher draws while an app is in front). The
+pull-down then runs with the GPU to itself. Install via the Magisk app,
+reboot; remove by disabling/deleting the module. If `cmd overlay lookup`
+still reports true after installing (a base `(sw600dp)` variant winning),
+use the companion module `ifive-split-shade-off-module-B.zip` from the same
+build instead - it ships one overlay per config variant. Build recipe and
+both artifacts: `scripts/rro-split-shade-off/` in the release git repo.
+
 ## Known issues
 - Hard hang: rare, root cause unknown. Most earlier "hangs" were the host-side adb server wedging, not the tablet. The one hang with a kpanic ring behind it stopped at 86.7 s during init (netd/wificond start), with no kernel error.
 - Hardware watchdog verified on the debug kernel: a hard hang resets in about 10–16 s and returns to maskrom via the loader flag. The release kernel runs with `rkwdt=0` — no timed reset and no watchdog, only the kpanic log dump.
