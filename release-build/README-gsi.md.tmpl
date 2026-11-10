@@ -409,22 +409,24 @@ Published next to this zip, not inside it, and opt-in because it changes how
 the shade looks. This tablet's SystemUI shows the Android 16 split shade - a
 left drawer sliding over the home screen. Under the drawer the launcher
 taskbar strip stays visible and animates, and the app behind the drawer (if
-any) keeps redrawing its exposed band: measured 405 taskbar-strip draws at
-10.6 ms median in one desktop session, 218 app-band draws at 8 ms in another.
-Those frames stack on the same Mali queue as SystemUI's own shade drawing
-(its standalone GPU time is 3.4 ms; under the contention it takes 12-15 ms) -
-which is why the pull-down is the one janky gesture on this tablet.
+any) keeps re-rendering its exposed band: measured ~400 taskbar-strip draws
+and ~220 band draws at ~12 ms median per session, stacked on the same Mali
+queue as SystemUI's own work (release cadence data: reports/ShadeJankTrace1110.md).
+Removing them returns GPU time to the shade.
 
 The module is a static RRO setting `config_use_split_notification_shade` to
 false: the shade becomes the classic full-screen top-down panel, covering
 home and taskbar - covered windows stop rendering (verified on this device:
-zero in-burst full-screen launcher draws while an app is in front). The
-pull-down then runs with the GPU to itself. Install via the Magisk app,
-reboot; remove by disabling/deleting the module. If `cmd overlay lookup`
-still reports true after installing (a base `(sw600dp)` variant winning),
-use the companion module `ifive-split-shade-off-module-B.zip` from the same
-build instead - it ships one overlay per config variant. Build recipe and
-both artifacts: `scripts/rro-split-shade-off/` in the release git repo.
+zero in-burst full-screen launcher draws while an app is in front). Install
+via the Magisk app, reboot; remove by disabling/deleting the module. If
+`cmd overlay lookup` still reports true after installing (a base `(sw600dp)`
+variant winning), use the companion module `ifive-split-shade-off-module-B.zip`
+from the same build instead - it ships one overlay per config variant. Build
+recipe and both artifacts: `scripts/rro-split-shade-off/` in the release git
+repo. Measured effect if paired with the release's HWC fixes: the old-HWC GLES
+composition pass (11 ms per frame holding the shade buffer - the primary
+jank cause, fixed in this release's vendor image) goes away, and this module
+removes the remaining app-band redraws on top.
 
 ## Known issues
 - Hard hang: rare, root cause unknown. Most earlier "hangs" were the host-side adb server wedging, not the tablet. The one hang with a kpanic ring behind it stopped at 86.7 s during init (netd/wificond start), with no kernel error.
