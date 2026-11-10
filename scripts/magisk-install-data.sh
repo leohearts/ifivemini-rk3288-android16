@@ -96,13 +96,22 @@ else
 fi
 
 echo "== 4. install the module that disables the GSI's phh su"
-"$HERE/make-no-phh-su-module.sh" "$W/ifive-no-phh-su.zip" "$APK" >/dev/null
-"${ADB[@]}" push -q "$W/ifive-no-phh-su.zip" /data/local/tmp/ifive-no-phh-su.zip
-"${ADB[@]}" shell '/data/adb/magisk/magisk --install-module /data/local/tmp/ifive-no-phh-su.zip; rm -f /data/local/tmp/ifive-no-phh-su.zip' \
-    | sed 's/^/   /'
-[ -n "$("${ADB[@]}" shell 'ls /data/adb/modules 2>/dev/null | grep -x ifive-no-phh-su')" ] \
-    || { echo "STOP: the module is not in /data/adb/modules"; exit 1; }
-echo "   module installed: ifive-no-phh-su"
+# Two modules, one install path and one verification each:
+#   ifive-no-phh-su     - the GSI's phh su daemon hides Magisk's own magisk binary (see the header
+#                         of scripts/make-no-phh-su-module.sh)
+#   ifive-tracefs-perms - /sys/kernel/tracing stays 0700 on a vendor image older than the fix in
+#                         vendor-changes/etc/init/hw/init.rockchip.rc, and then every renderer
+#                         aborts on trace_marker, so no web page draws at all
+for pair in "ifive-no-phh-su:make-no-phh-su-module.sh" "ifive-tracefs-perms:make-tracefs-module.sh"; do
+    id=${pair%%:*}; mk=${pair##*:}
+    "$HERE/$mk" "$W/$id.zip" "$APK" >/dev/null
+    "${ADB[@]}" push -q "$W/$id.zip" "/data/local/tmp/$id.zip"
+    "${ADB[@]}" shell "/data/adb/magisk/magisk --install-module /data/local/tmp/$id.zip; rm -f /data/local/tmp/$id.zip" \
+        | sed 's/^/   /'
+    [ -n "$("${ADB[@]}" shell "ls /data/adb/modules 2>/dev/null | grep -x $id")" ] \
+        || { echo "STOP: $id is not in /data/adb/modules"; exit 1; }
+    echo "   module installed: $id"
+done
 
 echo "== 5. check the boot partition's Magisk config for PREINITDEVICE"
 # Without this key Magisk's env_check returns 2 (assets/app_functions.sh:17-22 needs the block node
@@ -139,11 +148,38 @@ else
     echo "            change) and write it again: rkdeveloptool wl 0x16000 <image>"
 fi
 
+echo "== 6. check the installed app matches the seeded core"
+# env_check returns 3 when the app's own version differs from MAGISK_VER_CODE in
+# /data/adb/magisk/util_functions.sh (assets/app_functions.sh:13-27), and then the app asks for
+# "additional setup" on every start. Rebooting does not help: the only fix is to make both sides
+# the same Magisk, so say so here instead of leaving the user a loop they cannot explain.
+"${ADB[@]}" exec-out "cat /data/adb/magisk/util_functions.sh" > "$W/util_functions.sh"
+read -r CORE_VER CORE_CODE <<EOFV
+$(python3 - "$W/util_functions.sh" <<'PY'
+import re, sys
+t = open(sys.argv[1], errors="replace").read()
+v = re.search(r"^MAGISK_VER=['\"]?([^'\"\n]+)", t, re.M)
+c = re.search(r"^MAGISK_VER_CODE=['\"]?([0-9]+)", t, re.M)
+print((v.group(1) if v else "?"), (c.group(1) if c else "?"))
+PY
+)
+EOFV
+APP_CODE=$("${ADB[@]}" shell 'dumpsys package com.topjohnwu.magisk' 2>/dev/null | grep -m1 -oE 'versionCode=[0-9]+' | cut -d= -f2)
+echo "   seeded core: $CORE_VER ($CORE_CODE)   installed app versionCode: ${APP_CODE:-none}"
+if [ -n "$APP_CODE" ] && [ "$APP_CODE" != "$CORE_CODE" ]; then
+    echo "   MISMATCH: Magisk will report 'Requires additional setup' on every start."
+    echo "            Install the same Magisk this image was built with:"
+    echo "               ${ADB[*]} install -r $APK"
+    echo "            Do NOT use the app's own Direct install / In-place on this tablet: it feeds"
+    echo "            the KRNL container of /dev/block/by-name/boot to magiskboot, which cannot"
+    echo "            unpack it, and a raw boot image would be written over the container."
+fi
+
 echo
 echo "Done. Reboot the tablet (\`${ADB[*]} reboot\`) - the daemon runs this setup only at boot."
 echo "After the reboot:"
 echo "  * magiskd logs boot-complete and /data/adb/magisk.db keeps bootloop=0"
 echo "  * /system/xbin/su is Magisk's own (su -c id -> context u:r:magisk:s0)"
 echo "  * Magisk's own check passes: MAGISKBIN=/data/adb/magisk MAGISKTMP=/debug_ramdisk sh -c \\"
-echo "      '. /data/adb/magisk/app_functions.sh; env_check 31.0 31000'   -> exit 0"
-echo "    (exit 2 there means the boot image still lacks PREINITDEVICE)"
+echo "      '. /data/adb/magisk/app_functions.sh; env_check $CORE_VER $CORE_CODE'   -> exit 0"
+echo "    (exit 2 there means the boot image still lacks PREINITDEVICE, exit 3 a version mismatch)"
