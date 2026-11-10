@@ -1921,10 +1921,34 @@ bool MatchPlanes(
         {
             DrmHwcLayer* first_layer = (iter->second)[0];
 
+            /* A global alpha on the bottom layer is fine: the 4.19 VOP blends
+               GLOBAL_ALPHA on every plane against the black background
+               (rockchip_drm_vop.c:1961-1994), which is pixel-for-pixel what GLES
+               composition would produce. MatchPlane below already rejects
+               individual planes that lack the GLOBAL_ALPHA property for an
+               alpha<0xFF layer (see the b_alpha check), so only reject the whole
+               frame when no supported plane has the property at all. */
             if(first_layer->alpha != 0xFF)
             {
-              ALOGD_IF(log_level(DBG_DEBUG),"%s:line=%d  vop cann't support first layer with global alpha",__FUNCTION__,__LINE__);
-              return false;
+                bool any_alpha_plane = false;
+                for (std::vector<PlaneGroup *>::const_iterator pg = plane_groups.begin();
+                     pg != plane_groups.end() && !any_alpha_plane; ++pg)
+                {
+                    for (std::vector<DrmPlane *>::const_iterator pl = (*pg)->planes.begin();
+                         pl != (*pg)->planes.end(); ++pl)
+                    {
+                        if((*pl)->GetCrtcSupported(*crtc) && (*pl)->alpha_property().id())
+                        {
+                            any_alpha_plane = true;
+                            break;
+                        }
+                    }
+                }
+                if(!any_alpha_plane)
+                {
+                  ALOGD_IF(log_level(DBG_DEBUG),"%s:line=%d  no plane with GLOBAL_ALPHA for first layer alpha=0x%x,go to GLES",__FUNCTION__,__LINE__,first_layer->alpha);
+                  return false;
+                }
             }
         }
         bMatch = MatchPlane(iter->second, &last_zpos, crtc, drm, composition_planes, bMulArea, is_interlaced, fbSize, true);
@@ -1992,19 +2016,43 @@ float getPixelWidthByAndroidFormat(int format)
 static float vop_band_width(hwc_drm_display_t *hd, std::vector<DrmHwcLayer>& layers)
 {
     float scale_factor = 0;
-
+  
     if(hd->mixMode == HWC_MIX_DOWN || hd->mixMode == HWC_MIX_UP ||
         hd->mixMode == HWC_MIX_CROSS)
     {
         scale_factor += 1.0;
     }
-
+  
     for(size_t i = 0; i < layers.size(); ++i)
     {
         scale_factor += layers[i].h_scale_mul * layers[i].v_scale_mul;
     }
-
+  
     return scale_factor;
+}
+
+/* Total-plane bandwidth limit for the scale_factor model above.
+   3.3 is the vendor figure from 1080p tuning. On the iFive Mini 4S
+   (JD9165 dual-DSI 1536x2048@60, VOP big dclk 230MHz) five full-size
+   RGBA planes measured fine at 4.9; the limit lives in
+   vendor.hwc.vop.max_scale (float, read once per HAL start) so it can
+   be tuned without a rebuild. */
+static float vop_band_limit(void)
+{
+    static float cached = -1.0f;
+    if (cached < 0.0f)
+    {
+        char value[PROPERTY_VALUE_MAX];
+        property_get(PROPERTY_TYPE ".hwc.vop.max_scale", value,
+#if defined(RK3288_MID)
+                     "6.0");
+#else
+                     "3.3");
+#endif
+        float f = (float)atof(value);
+        cached = (f > 0.0f) ? f : 3.3f;
+    }
+    return cached;
 }
 
 bool GetCrtcSupported(const DrmCrtc &crtc, uint32_t possible_crtc_mask) {
@@ -2479,8 +2527,9 @@ AllMatch:
     if(iUsePlane >= hd->iPlaneSize && !hd->isHdr)
     {
         float scale_factor = vop_band_width(hd, layers);
+        float band_limit = vop_band_limit();
         float head_factor = 0.0, tail_factor = 0.0;
-        if(scale_factor > 4.5)
+        if(scale_factor > band_limit * 1.36f)
         {
             ALOGD_IF(log_level(DBG_DEBUG), "scale_factor=%f is so big",scale_factor);
             if(layers.size() >= 4 && !bHasSkipLayer)
@@ -2508,7 +2557,7 @@ AllMatch:
                     bAllMatch = try_mix_policy(drm, crtc, hd->is_interlaced, layers, tmp_layers, iPlaneSize, composition_planes,
                                         layer_indices.first, layer_indices.second, fbSize);
                     scale_factor = vop_band_width(hd, layers);
-                    if(bAllMatch && scale_factor <= 3.3)
+                    if(bAllMatch && scale_factor <= band_limit)
                     {
                         return true;
                     }
@@ -2530,7 +2579,7 @@ AllMatch:
                     bAllMatch = try_mix_policy(drm, crtc, hd->is_interlaced, layers, tmp_layers, iPlaneSize, composition_planes,
                                         layer_indices.first, layer_indices.second, fbSize);
                     scale_factor = vop_band_width(hd, layers);
-                    if(bAllMatch && scale_factor <= 3.3)
+                    if(bAllMatch && scale_factor <= band_limit)
                         return true;
                     else
                     {
