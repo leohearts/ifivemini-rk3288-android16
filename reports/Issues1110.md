@@ -70,7 +70,7 @@ agrees through libc: `ping: unknown host dromaius.com` at the same moment `ping 
 resolved to 172.66.157.237. Substituted with the site from the GitHub profile,
 `https://leohearts.com`, which draws fully.
 
-## 2. Where the pull-down shade time goes (still open)
+## 2. Where the pull-down shade time goes (measured; no fix available from this repository)
 
 Reproducible measurement, run twice with the same result: 12 pull-down/close cycles driven by
 `input swipe 768 12 768 950 350` + `input swipe 768 950 768 12 250`, counters read from
@@ -119,6 +119,40 @@ changed nothing either (89% -> 88%), although that test cannot prove SystemUI re
 All of these were reverted; the device was left at `governor=simple_ondemand`,
 `min_freq=198000000`, and the fog key back to `null`.
 
+**Interleaved repeat of the one candidate that looked promising.** The first single run of
+`debug.sf.auto_latch_unsignaled=1` showed 71%, below a control of 89%, which is exactly the kind of
+difference a run-to-run spread of this size can invent. Repeated with the order C T C T C T and a
+SurfaceFlinger restart before every cycle (each run is a fresh counter set):
+
+```
+control (unset): 88%  84%  67%      mean 79.7%   main thread 24/20/20 ms per frame
+latch=1        : 83%  87%  84%      mean 84.7%   main thread 17/23/23 ms per frame
+```
+
+The treated mean is not better than the control mean, and the two ranges overlap. **No effect** - the
+71% was noise. Same verdict for the GPU and the fog key.
+
+**The one thing that does move the number: fewer pixels per frame.** Applied with the override
+verified first (`wm size` printing `Override size: 1152x1536`, `wm density` printing
+`Override density: 180`, `dumpsys window displays` showing `cur=1152x1536`):
+
+```
+native 1536x2048/240 : 87% (W0)  88% (W3)  87% (S3)      <- brackets before and after
+reduced 1152x1536/180: 76%  79%  80%  82%                <- 76 and 79 from the earlier run
+```
+
+Four treated samples all below three control samples, about eight points. So the per-frame pixel
+count times the main-thread cost is the mechanism, which is what the framestats breakdown said.
+It does not come close to fixing the gesture (still >75% janky) and it softens the panel, so nothing
+in the release enables it; `wm size reset` and `wm density reset` undo it, and the tablet was left at
+`Physical size: 1536x2048 / Physical density: 240` (verified at the end of the run).
+
+**Why this release cannot fix it.** The cost is in SystemUI, and SystemUI ships inside the prebuilt
+TrebleDroid GSI: this repository builds the kernel, the device tree, the vendor partition and the
+packaging only. The remaining lever on the app side would be the notification list itself
+(`NotificationShade` held 423 views and 441 kB of render nodes during these runs), which is the
+user's data, not a port defect.
+
 ## 3. Release package 2026-11-10: what was checked
 
 Rebuilt from `out/super-work/system.img` (which contains `BP2A.250605.031.A3`, the same build as the
@@ -140,8 +174,13 @@ same sha256 `4a6d059ef79b0c05...`, so the base is the one already shipped):
   structures at 0x0/0x100000/0x200000/0x300000, `parameter-loader.img` holding 8 at 512 KiB spacing,
   and `head-8M.bin` being byte-identical to the first 4 MiB of `head-4M.bin`.
 - `sha256sum -c SHA256SUMS` inside the package: 13/13 OK. `unzip -tq` on the zip: no errors.
-  Zip sha256 `7db3d3a5f365c26f32208aee42d167fda6375a91b7e13f9904c2b7b06271224b`, matching the
-  sidecar file.
+  Final artifact: 803811637 B, sha256
+  `a77ec2c6b680d9c7ede9a338bffd94077b9807fb239cc1846b18120fca34bb1e`, matching the sidecar file.
+  (Packaged once before the shade entry joined the README - that intermediate zip was
+  `7db3d3a5f365c26f32208aee42d167fda6375a91b7e13f9904c2b7b06271224b`, 803810749 B - then rebuilt;
+  the sha above is the one that ships.)
+- The README inside the package: 418 lines, no unsubstituted `{{ }}`, contains the pull-down shade
+  entry and the `restricted_networking_mode` entry.
 - `images/kernel.img` byte-identical to `out/kernel-gsi-release/kernel.img`; `mkkrnl.py verify`
   reports `KRNL payload 9147768 bytes crc ok`; same for `ramdisk.img` (871334 B crc ok).
 - `images/resource.img` byte-identical to `release-build/resource-release-gsi.img` (built by
