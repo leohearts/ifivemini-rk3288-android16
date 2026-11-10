@@ -242,22 +242,24 @@ and this analysis referenced, branch through commit `d1eb11700`, capture script
 
 Open, in priority order - all need device minutes, all have their exact
 commands inside the capture script:
-1. Why does SF force the shade card client: `dumpsys window` for
-   `NotificationShade` attrs.shadowRadius / mIsTrustedOverlay + one atrace per
-   experiment arm; candidates: `settings put secure no_rounded_corners 1`
-   (affects system corners only - valid test for the card if and only if the
-   card uses system corners, the dump settles which), then aconfig
-   `ignore_corner_radius_and_shadows` (runtime-read path verified in framework
-   bytecode this evening; mutability unknown until `aflags get` runs).
-2. Quantify after each: 2x12 cycle (same protocol as all published numbers) -
+1. **Confirm the fix removed the SF pass on-device**: one 6 s atrace during 10
+   pull-downs on the current module build (22:03 build still on the tablet -
+   flash the `7575aed5` module + new kernel first). Expect: no 11 ms-class
+   `Drawing [0 0 1536 2048]` medians anymore (the old-HWC all-CLIENT state is
+   proven to have been the alpha-gate bug; see HwcFix1110.md static audit -
+   no second display-wide GLES rejection path exists for this scene), and the
+   `flush commands` / postAndWait medians measured as what remains.
+2. If a big `Drawing` persists while the hwc log shows zero downgrades: only
+   then re-armed as fallback - `no_rounded_corners 1` and aconfig
+   `ignore_corner_radius_and_shadows` (both already arms of the script).
+3. Quantify after each: 2x12 cycle (same protocol as all published numbers) -
    target below 60% janky before any claim is made anywhere.
-3. Taskbar co-commit (37.7 fps during drags): `launcher_taskbar_enabled=0`
+4. Taskbar co-commit (37.7 fps during drags): `launcher_taskbar_enabled=0`
    arm included as a measured option, not a default.
 Offline avenues exhausted tonight: AOSP source-level SystemUI work is not
 possible on this machine (26 G free on /home vs several hundred G required);
-no SystemUI resource in resources.arsc carries the card's geometry
-(Material component styles only); the client-forcing inputs (shadow radius)
-are runtime window attributes.
+the remaining per-frame cost is SystemUI's own rendering, which no knob found
+so far addresses.
 No device partition was ever written; the test tablet still runs the
 22:03 module build and is owed the `7575aed5` module + new kernel.
 

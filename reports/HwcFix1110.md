@@ -115,6 +115,27 @@ compose correctly. The "missing wallpaper" scare in one earlier shot was
 FallbackHome's blank home during the first ~20 s after a framework start,
 not a plane bug (confirmed by a clean desktop screenshot at 9:23).
 
+### Static audit of every display-wide GLES rejection branch (is there a second one?)
+
+After the 22:1x zero-downgrade result, all whole-display GLES fallbacks on
+the validate path (`hwcomposer.cpp`, one loop per frame) were enumerated and
+each checked against this device/scene:
+
+| line | condition | status here |
+|---|---|---|
+| :2994 `!crtc->get_alpha_scale()` | any RGBA/BGRA layer scaled or with global alpha -> GLES | **inactive**: our kernel's `rk3288_vop_big`/`_lit` both set `VOP_FEATURE_ALPHA_SCALE` (`kernel/drivers/gpu/drm/rockchip/rockchip_vop_reg.c:353,365`), the driver reports the `ALPHA_SCALE` crtc property = 1 (`rockchip_drm_vop.c:4067`), so `can_alpha_scale_` is true (`drmcrtc.cpp:113-122`) |
+| :3036 scale & width > 2560 | compiled in (`RK_RGA_SCALE_AND_ROTATE` undefined -> `#if !` branch) | panel is 1536 wide -> unreachable |
+| :3055 more than one rotate/scale layer | `iRgaCnt > 1` -> GLES | sf dump shows no rotation and 1:1 scale on shade layers -> 0 counted |
+| :3063 `mix_policy failed` | the fixed path (alpha gate + bandwidth limit) | fixed, see above |
+| per-plane rejects in `MatchPlanes` (`hwc_rockchip.cpp:1660-1718`) | plane feature checks incl. the old global-alpha `continue` | the alpha gate is removed (comment at :1924); remaining checks (format/size) pass for RGBA/BGRA full-size surfaces |
+
+The branches that *could* have fired all log at the same `DBG_DEBUG` level as
+the ones that demonstrably did fire in the old build, so the new build's 307
+animated windows with **zero** `go to GPU GLES` lines are evidence that none
+of them fired, not merely that the counter missed them. This closes the
+"second rejection point" question for this scene: the alpha gate + bandwidth
+cap were the whole story of the GLES fallback during pull-down.
+
 ### Jank (what the fix does NOT change)
 
 Protocol: 12 pull-down/close cycles, `gfxinfo com.android.systemui`.
