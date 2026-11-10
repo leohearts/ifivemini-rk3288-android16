@@ -36,7 +36,26 @@ Core placement: c3 48%, c2 27%, c1 15%, c0 9%. Across the whole 29.5 s the
 system had 65 idle core-seconds out of 118 - the CPU is not the constrained
 resource during the drag.
 
-## What the 18 ms of waiting is
+A counterexample that must be faced, not hidden: on this same tablet, the
+older Android 11 GSI - which has NO split-shade drawer at all, so no
+band-contention - also measured Janky 89-95% on shade drags
+(`Data/rk3288-a11/backup-2026-11-09/FINDINGS.md:715-719`), with `Slow UI
+thread` on ~90% of frames and the GPU idle at 198 MHz. Two things follow.
+First, high jank% is not automatically contention: A11's SystemUI was slow
+in its own main-thread work, a different bottleneck with the same metric.
+Second, the same A11 report contains one run at 37.4% jank "in the same
+composition state" that the author could not explain, concluding "what is on
+screen behind the shade changes how much work each frame is" - measured
+independently two years of stack apart, that is the contention effect.
+So the honest scope of this fix: it removes a measured, reproducible GPU
+occupancy (302-311 frames of band/strip draws per session on A16) and the
+queue wait it causes (SystemUI draws: 12.3-14.8 ms in situ vs 3.4 ms alone);
+whether the headline jank% lands at 20% or 60% is exactly what the
+acceptance decides, and the script's PARTIAL verdict ("bands gone, jank not
+improved") exists for the case where A16's own app-side work turns out to
+dominate - the same lesson A11 already taught.
+
+### What the 18 ms of waiting is
 
 RenderThread (`flush commands` = display list submitted to the driver) starts
 **median 18.0 ms, p90 40.5 ms** after the `animation` callback begins. The work

@@ -18,7 +18,7 @@ phase=${1:-before}
 
 mkdir -p $D
 [ "$phase" = before ] && rm -rf $D
-pair(){ dumpsys gfxinfo $P 2>/dev/null | awk '/Total frames rendered/{t=$3} /Janky frames:/{print "jank", t, $3, $4}'; }
+pair(){ dumpsys gfxinfo $P 2>/dev/null | awk '/Total frames rendered/{t=$3} /Janky frames:/{j=$3" "$4} /Slow UI thread/{u=$4} END{print "jank", t, j, "slowUI", u}'; }
 drag12(){
   i=0
   while [ $i -lt 12 ]; do
@@ -56,8 +56,11 @@ if ! grep -aq false $D/lookup_after.txt; then
   exit 2
 fi
 run_phase after
-J_B=$(awk '/jank/{print $3}' $D/jank_before.txt | head -1)
-J_A=$(awk '/jank/{print $3}' $D/jank_after.txt | head -1)
+J_B=$(awk '/jank/{gsub(/[()%]/,"",$4); print $4}' $D/jank_before.txt | head -1)
+J_A=$(awk '/jank/{gsub(/[()%]/,"",$4); print $4}' $D/jank_after.txt | head -1)
+U_B=$(awk '/jank/{print $6}' $D/jank_before.txt | head -1)
+U_A=$(awk '/jank/{print $6}' $D/jank_after.txt | head -1)
+say "slow-UI-thread frames: before=${U_B:-?} after=${U_A:-?}  (if jank stays high while slowUI stays ~90%, the A11-style app-side bottleneck applies)"
 say "jank before=${J_B}% after=${J_A}%  (band verdict: run host-side shade-frame-audit.py --compare on the two traces)"
 tar -czf $D-after.tar.gz -C $D . 2>/dev/null
 say "pull back: adb pull $D-after.tar.gz"
