@@ -362,12 +362,8 @@ def check_sha256sums(tree):
                 if rel not in listed:
                     fail(f"{sums}: {rel} is not listed in SHA256SUMS")
                 print(f"ok SHA256SUMS covers {rel}")
-            # the loader head is what write-loader-head.sh writes: it must be
-            # covered by the checksum file as well
-            head = f"devices/{board}/head-4M.bin"
-            if os.path.isfile(os.path.join(tree, head)) and head not in listed:
-                fail(f"{sums}: {head} is not listed in SHA256SUMS")
-            print(f"ok SHA256SUMS covers {head}")
+            # no separate check for devices/<board>/head-4M.bin here: the loop above
+            # already walks every file of the board directory, the loader head included.
     script = "write-loader-head.sh"
     if os.path.isfile(os.path.join(tree, script)):
         if script not in listed:
