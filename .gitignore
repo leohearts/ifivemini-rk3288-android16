@@ -13,3 +13,4 @@ __pycache__/
 # build inputs: the downloaded GSI image and the packed super.img (gigabytes, never committed)
 inputs/
 inputs-*/
+scripts/rro-split-shade-off/out/

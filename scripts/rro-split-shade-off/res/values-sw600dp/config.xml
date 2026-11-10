@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Classic full-screen top-down shade instead of the tablet left drawer:
+         keeps background apps and the taskbar from re-rendering full-width
+         bands under the drawer animation (measured 3 s of extra GPU work per
+         pull-down on this tablet). -->
+    <bool name="config_use_split_notification_shade">false</bool>
+</resources>

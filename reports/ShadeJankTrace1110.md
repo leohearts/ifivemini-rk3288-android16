@@ -80,10 +80,34 @@ The all-CLIENT state in sf.txt is the **old HWC build's** doing, layer by
 layer - every layer rejected in `validate()`. That is the same alpha-gate bug
 fixed at 21:44 (`4b03399d6`): the full log line `vop cann't support first
 layer with global alpha` appears 727 times across the afternoon's hwc
-captures (`pull-hwclog.txt`), and the 11.13 ms `Drawing [0 0 1536 2048]`
-measured in trace2 is the consequence: old HWC rejects -> SF GLES-composites
-the whole screen every frame - exactly the 9.2 ms-vs-4.9 ms pattern published
-by another GSI project for the same mechanism.
+captures (`pull-hwclog.txt`), and the old HWC GLES-composited the whole
+screen every frame - exactly the 9.2 ms-vs-4.9 ms pattern published by
+another GSI project for the same mechanism.
+
+FOURTH correction (2026-11-11 late, slice ownership by pid): every "Drawing
+WxH" atrace slice belongs to the process that named the marker - HWUI's
+RenderThread names its GPU drawing pass `Drawing x y w h`; SurfaceFlinger's
+composition pass has no `Drawing` slice. Sorting the >3 ms `Drawing` slices
+in trace2 by owning pid gives the true map of one pull-down:
+
+| drawing process | window | region | n | median | p90 |
+|---|---|---|---|---|---|
+| 21010 SystemUI | NotificationShade | full 1536x2048 | 232 | **12.3 ms** | 37.5 |
+| 21365 Launcher | Taskbar strip | 1536x175 | 115 | **14.5 ms** | 54.7 |
+| 6915 Settings | exposed band | 558x2048 (x134) + 978x2048 (x29) | 163 | 8.0 ms | 15.9 |
+
+The earlier "11.13 ms median" mixed these populations: it is not one SF pass
+and never was. All 167 Settings frames fall inside one 2.8 s burst
+(9471.8-9474.6 s of uptime) = a single pull-down animation.
+
+**Root cause of the residual jank (with numbers that close):** SystemUI's
+shade GPU draw alone runs 3.4 ms (its flush-commands queue-drain measure);
+its Drawing slices show 12.3 ms - about 9 ms of that is GPU queue contention
+against the Launcher's taskbar strip and, in split-shade form, theSettings
+window behind the drawer band, all re-rendering every frame of the same
+drag. The full-width `1536x175` taskbar redraws at 14.5 ms median were
+previously discounted as a small co-commit; as GPU-queue occupants they are
+not small.
 
 The new build's validate behaviour was captured at 22:1x with
 `vendor.hwc.log=2` over 307 composition windows: **zero GLES downgrades, zero
@@ -98,17 +122,36 @@ of its removal still owed", via the atrace arms of
 remain in the script as fallbacks: they only matter if the on-device trace
 still shows a big `Drawing` with zero downgrades in the hwc log.
 
-What the residual 84% jank is then, under the fixed HWC: main thread 8 ms CPU
-+ HWUI's own render/submission waits (`flush commands` 4.4 ms + postAndWait
-3.0 ms medians) + normal vsync pacing - with jank re-measured at 83.9/84.9%
-after the HWC fix, no single removable item remains in these numbers.
-The three shipped fixes (alpha gate + bandwidth cap + device-tree ramp-up)
-each remove a *measured* waste - whole-screen GLES per frame, bandwidth
-rejections, cold-start clock tail - without moving the aggregate jank
-percentage yet. The remaining budget belongs to SystemUI's per-frame work
-(3 shade surfaces committing at 199 fps aggregate + taskbar co-commits),
-which needs SystemUI-source work this machine cannot do (26 G free on /home
-vs hundreds of G for an AOSP tree) - stated plainly, not hidden.
+What the residual jank is then, under the fixed HWC - and what removes it:
+the janky pull-down is GPU **contention** between three processes that all
+redraw full-width bands during the same gesture (table above). Two of the
+three occupants exist only because this build shows the shade in
+**split-shade (left-drawer) form**:
+`com.android.wm.shell.R.bool.config_use_split_notification_shade` resolves
+true, so the sliding drawer leaves a band of the app behind exposed (the
+Settings window under it: 163 frames x 8.0 ms inside one 2.8 s pull-down
+burst) and the launcher taskbar stays visible and animates under the drawer
+(115 frames x 14.5 ms, p90 54.7). With the drawer form off, the shade is the
+classic full-screen top-down panel: it fully occludes the app behind it (an
+occluded window stops submitting) and covers the taskbar likewise. The
+decision is read live from resources in
+`SplitShadeStateControllerImpl.shouldUseSplitNotificationShade()` (jadx
+decompile of this exact SystemUI), and the fallback branch is an unreleased
+aconfig flag (`lockscreen.enable.landscape`, default off) - so one static
+RRO setting the bool to false flips the form deterministically.
+
+Expected effect from the same measurements: the shade's own GPU pass alone
+drains in 3.4 ms (`flush commands` medians) while its Drawing slices average
+12.3 ms - ~9 ms per frame is queue wait behind the other two redrawers.
+Removing ~3.0 s of overlapping GPU submissions per pull-down (163x8 + 115x14.5
+ms) leaves SystemUI's chain (8.7 ms main + ~4 ms GPU) inside the 16.6 ms
+period. That is the mechanism-level reason to expect jank to collapse; the
+numbers are from before/after the same app code, the only changed quantity is
+who else touches the GPU. Acceptance protocol on device: fabricate the
+overlay (reversible, `cmd overlay fabricate`, no install), run the 2x12 cycle
+plus `scripts/shade-frame-audit.py`; PASS requires the non-SystemUI band
+`Drawing` counts inside pull-down bursts to drop to ~0 and the >24 ms gap
+share to fall accordingly.
 
 ### User-side confirmation (2026-11-11 00:2x)
 
