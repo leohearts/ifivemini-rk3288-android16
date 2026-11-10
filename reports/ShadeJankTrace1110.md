@@ -72,10 +72,23 @@ visible layers exceed 5 planes; minimizing simultaneous windows is the user-side
 lever, and plane-count-aware mix priority (sacrifice colorfade/pointer overlays
 first) is the next hwc-side candidate.
 
+### User-side confirmation (2026-11-11 00:2x)
+
+The owner independently reports: the jank is specific to pulling the shade
+down from the home screen; other scrolling/animation is smooth. The trace
+supports the mechanism split: during drag clusters the home launcher and
+background app surfaces commit 0 fps (QuickstepLauncher 166 commits all
+outside drags), the Taskbar commits at the full 37.7 fps drag cadence, and
+NotificationShade pushes 199.3 fps across its three BLAST surfaces (#87 at
+1776, #89 and #90 at 304 each) - i.e. the pull-down is one of the few
+gestures where SystemUI animates multiple full-screen-ish surfaces per
+vsync at once; nothing else on the tablet does that, matching the user's
+observation that no other interaction is affected.
+
 ## GPU frequency: measured ceiling, not a tuning gap
 
 `sclk_gpu` events over the trace window (27.1 s): 10.3 s at 198 MHz (mostly
-screen-off/idle stretches), 16.7 s at 594 MHz. Every one of the 36 ramp-up
+screen-off/idle periods), 16.7 s at 594 MHz. Every one of the 36 ramp-up
 events was 198 -> 594. At the instant an `animation` callback fires, the GPU
 is already at 594 MHz for 90% of frames (47/493 start below 400 MHz - the
 first frame after wake-from-idle).
@@ -101,16 +114,24 @@ experiment only removes the ~10% first-frame-after-idle penalty.
 `DFSO_DOWNDIFFERENCTIAL = 5`). With 4.19's
 `devfreq_simple_ondemand_func` (`kernel/drivers/devfreq/governor_simpleondemand.c:21,79-82`:
 utilization above `upthreshold` jumps to `DEVFREQ_MAX_FREQ` outright), a 75%
-bar is unreachable for a 27 ms frame pattern - the 10 ms sample windows
-between frames average 40-60% busy - so the ramp to 594 MHz lags ~0.9 s into
-the drag, which is exactly the 10.3 s of 198 MHz and the 36 ramp-up events in
-the trace. Rebuilding the kernel with the committed device tree moves the
-first-frame ramp into the first sample window. The driver reads all three
-properties from the device tree (`mali_kbase_devfreq.c:352,365-368`), so the
-fix path is verified at both ends; expected effect: the 47/493 animations
-that started below 400 MHz and their ramp-up frames stop being slow. Jank
-magnitude to be measured when device access returns; mechanism and direction
-are not in doubt.
+bar is often not met in the first sampling periods of a drag (10 ms samples,
+between-frame GPU busy averaging 40-60%). Full distribution over the 48
+low-start animations (replacing the single 0.88 s example first quoted here):
+time from animation start until `sclk_gpu` reaches 594 MHz = median 0.04 s,
+p90 0.09 s, **max 1.82 s** - the ~0.9 s figure is a tail case, not the norm;
+the 10.3 s at 198 MHz mostly belong to screen-off/idle periods.
+The penalty that IS confirmed by direct frame-gap statistics: the first five
+frames of a low-start animation exceed 50 ms in 20% of samples (n=229) vs
+11% for animations starting at 594 MHz (n=2217); medians barely differ
+(28.0 vs 26.7 ms) - the cost is in the heavy tail, matching the user-side
+report that the first beat of the pull-down is the worst.
+The driver reads all three device-tree properties
+(`mali_kbase_devfreq.c:352,365-368`), so shipping the committed values is
+verified end to end. Honest effect bound: the 47/493 cold-starts and their
+tail frames lose their extra penalty (20% -> ~11% heavy-frame rate for those
+animations); the overall jank percentage gain of the kernel fix alone is
+small - it is a tail-firming change, not a frame-budget halving. Both
+numbers await on-device confirmation.
 
 ### Floor analysis
 
