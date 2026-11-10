@@ -11,6 +11,13 @@
 # images (debugfs ea_set takes the octal escape \000). The mode/owner/label values in
 # the table were read out of the vendor partition that boots on the tablet
 # (debugfs -R stat, 2026-11-08), so a patched image matches what the device expects.
+#
+# Constraint measured on this tablet (2026-11-10): the vendor filesystem has "Free blocks: 0".
+# A replacement file must therefore stay within the number of blocks the original used, or
+# debugfs silently writes a truncated file - mode/owner/label still read back correct, only the
+# byte comparison below catches it (seen with /etc/init/hw/init.rockchip.rc at 4408 B: written
+# back as exactly 4096 B). If a change genuinely needs more room, shrink another file or grow the
+# partition in the parameter table; do not ship a vendor image this script reports as OK.
 
 set -euo pipefail
 
@@ -30,6 +37,7 @@ bin/chgpolicy.sh                  0100755  0:0     u:object_r:vendor_shell_exec:
 bin/hw/android.hardware.power-service.rockchip 0100755 0:2000 u:object_r:hal_power_default_exec:s0
 lib/hw/hwcomposer.rk30board.so    0100644  0:0     u:object_r:vendor_hal_file:s0
 etc/init/hw/init.rk3288.rc        0100644  0:0     u:object_r:vendor_configs_file:s0
+etc/init/hw/init.rockchip.rc      0100644  0:0     u:object_r:vendor_configs_file:s0
 etc/vintf/manifest.xml            0100644  0:0     u:object_r:vendor_configs_file:s0
 "
 
@@ -53,8 +61,24 @@ done <<< "$TABLE"
 
 echo "== read-back check"
 fail=0
+# debugfs reports exit code 0 even when a write failed midway (measured: "Could not allocate
+# block in ext2 filesystem" while the file was silently cut at 4096 B), and mode/owner/label all
+# still look right afterwards. Only a byte-for-byte comparison against the source catches that,
+# so it runs first: a truncated .rc or a short .so must stop the build here, not on the tablet.
+dumpe2fs -h "$OUT" 2>/dev/null | grep -iE "^Free blocks:" | sed 's/^/   /' || true
+RB=$(mktemp) || { echo "STOP: mktemp failed"; exit 1; }
+trap 'rm -f "$RB"' EXIT
 while read -r path mode owner label; do
     [ -n "$path" ] || continue
+    # </dev/null matters twice over: debugfs asks for confirmation when the dump target already
+    # exists, and inside this loop that prompt would be answered from the remaining TABLE lines.
+    rm -f "$RB"
+    debugfs -R "dump /$path $RB" "$OUT" </dev/null >/dev/null 2>&1
+    if ! cmp -s "$ROOT/vendor-changes/$path" "$RB"; then
+        echo "   FAIL /$path content: image holds $(wc -c <"$RB") B, source has $(wc -c <"$ROOT/vendor-changes/$path") B"
+        echo "        (the filesystem is out of free blocks or the write was interrupted)"
+        fail=1; continue
+    fi
     st=$(debugfs -R "stat /$path" "$OUT" 2>/dev/null)
     got_mode=$(sed -n 's/.*Mode:[[:space:]]*\([0-7]\{3,4\}\).*/\1/p' <<< "$st" | head -1)
     got_user=$(sed -n 's/.*User:[[:space:]]*\([0-9]\{1,\}\)[[:space:]]*Group:[[:space:]]*\([0-9]\{1,\}\).*/\1:\2/p' <<< "$st" | head -1)
