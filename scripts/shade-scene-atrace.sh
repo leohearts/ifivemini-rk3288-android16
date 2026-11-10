@@ -64,6 +64,36 @@ grab_gpu idle
 i=1; while [ $i -le 3 ]; do input swipe 768 12 768 950 350 >/dev/null 2>&1; sleep 8; i=$((i+1)); done
 touch $D/.done_idle
 
+say "=== exp1: no_rounded_corners A/B (home scene) ==="
+# experiment 1 from reports/ShadeJankTrace1110.md: does squaring SYSTEM corners
+# move the shade card off SF's GLES path? only valid if the card uses system
+# corners - the atrace comparison decides, this script just captures both states.
+input keyevent KEYCODE_HOME; sleep 3
+cycle round_off_baseline
+settings put secure no_rounded_corners 1; sleep 3
+grab_scene rounded_off
+atrace -t 6 -b 16384 gfx sched freq idle power > $D/atrace_rounded_off.txt 2>/dev/null &
+sleep 0.5; input swipe 768 12 768 950 350; sleep 1; input swipe 768 950 768 12 250; wait
+cycle rounded_on
+settings put secure no_rounded_corners 0; sleep 3   # restore user state
+say "=== exp2: aflags mutability probe (read-only if set fails) ==="
+aflags list 2>/dev/null | grep -aiE 'ignore_corner|corner_radius' > $D/aflags_flags.txt
+aflags get com.android.window.flags ignore_corner_radius_and_shadows > $D/aflags_get.txt 2>&1
+aflags set com.android.window.flags ignore_corner_radius_and_shadows true > $D/aflags_set.txt 2>&1
+RC=$?
+if [ $RC -eq 0 ]; then
+  am force-stop $P; sleep 25
+  grab_scene flag_off
+  atrace -t 6 -b 16384 gfx sched freq idle power > $D/atrace_flag_off.txt 2>/dev/null &
+  sleep 0.5; input swipe 768 12 768 950 350; sleep 1; input swipe 768 950 768 12 250; wait
+  cycle flag_off
+  aflags set com.android.window.flags ignore_corner_radius_and_shadows false >$D/aflags_restore.txt 2>&1
+  am force-stop $P; sleep 20
+else
+  echo "aflags set rc=$RC (immutable or unavailable) - see aflags_set.txt" >> $D/aflags_get.txt
+fi
+
 svc power stayon false
 tar -czf $D.tar.gz -C $D . 2>/dev/null && echo "OUTPUT: $D.tar.gz"
+# host-side one-glance diff after pulling: grep -c 'Drawing' atrace_*.txt; grep 'Drawing' | awk median
 echo "== done =="
