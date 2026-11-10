@@ -10,7 +10,9 @@
 #     A/B samples against clock/burst variance. Mode is chosen only if
 #     `cmd overlay lookup` CONFIRMS the flip (the base (sw600dp) variant might
 #     outrank the fabricate's default-variant entry - then lookup stays true
-#     and the script refuses this mode).
+#     and the script refuses this mode). Takes effect without restart:
+#     NSSL.onConfigurationChanged() re-runs updateSplitNotificationShade(),
+#     and enabling an overlay is itself a config change to the target.
 #   MODULE mode (fallback): needs the reboot between phases; supports only
 #     before(N) then after(N) - still interleaved by reboot only once.
 #
