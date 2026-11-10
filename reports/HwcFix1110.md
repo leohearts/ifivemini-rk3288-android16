@@ -181,7 +181,8 @@ stock-like GSI + this vendor stack.
 
 ## Rollout
 
-- [ ] `vendor-changes/lib/hw/hwcomposer.rk30board.so` <- new build
-- [ ] release README vendor-changes line + new sha
-- [ ] Issues1110.md section 2 rewritten (points here)
-- [ ] rebuild zip, guard, draft release assets swap
+- [x] `vendor-changes/lib/hw/hwcomposer.rk30board.so` <- new build (370484 B, sha256 528bb260..., commit 9d5ccb169)
+- [x] release README vendor-changes line + new sha
+- [x] Issues1110.md section 2 rewritten (points here)
+- [x] rebuild zip, guard, draft release assets swap (zip sha256 66279cfc...; super.img inside the final zip unpacked and checked: lib/hw/hwcomposer.rk30board.so = 370484 B / 528bb260...)
+- [x] module installed on the test tablet and soaked (2026-11-10 22:10-22:30: 2x12 pull-down jank runs 83.90%/84.91%, 100-cycle swipe stress, 15 min screen-off idle; composer/surfaceflinger/system_server pids unchanged from boot, tombstones stayed at 32, dmesg clean; live .so verified 370484/528bb260 via post-fs-data bind)
