@@ -140,7 +140,9 @@ are also flat:
   is no clock to gain — jank 84.4/82.8% vs 80.7% baseline.
 
 Reading together with the frame-attribution data from the morning
-session (one SystemUI thread at 20-26 ms CPU per frame, four cores only
+session (SystemUI main thread at 8.0 ms CPU per frame, then an 18 ms wait for
+GPU rasterization of the full-screen shade surface - the per-frame breakdown
+with the earlier 20-26 ms figure corrected is in `ShadeJankTrace1110.md`, four cores only
 30-37% busy): SystemUI's per-frame UI traversal against the 16.7 ms
 deadline is what remains. Composition, vsync, GPU clock and CPU clock
 have each been measured and ruled out with the levers that exist on
