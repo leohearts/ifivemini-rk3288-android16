@@ -64,7 +64,26 @@ description=Forces the full-screen notification shade instead of the tablet left
 PROP
 (cd "$MOD" && zip -qr "$OUT/ifive-split-shade-off-module.zip" .)
 
+# Variant-B module: the four single-config overlays as one module, for the
+# case where the device check shows the base (sw600dp) variant beating the
+# default-only overlay.
+MOD2=$OUT/module-split
+rm -rf "$MOD2"; mkdir -p "$MOD2/system/product/overlay"
+for i in 1 2 3 4; do
+    cp "$OUT/split/IfiveSplitShadeOffOverlay-$i.apk" "$MOD2/system/product/overlay/"
+done
+cat > "$MOD2/module.prop" <<'PROP'
+id=ifive_splitshadeoff_b
+name=iFive split-shade off (per-variant overlays)
+version=1.0
+versionCode=1
+author=leohearts
+description=Fallback build: one static RRO APK per config variant (default, land, sw600dp, sw600dp-land), each setting config_use_split_notification_shade=false. Use only if the single-APK module does not flip cmd overlay lookup.
+PROP
+(cd "$MOD2" && zip -qr "$OUT/ifive-split-shade-off-module-B.zip" .)
+
 echo "== overlay metadata check =="
 "$BT/aapt2" dump badging "$OUT/IfiveSplitShadeOffOverlay.apk" | grep -a overlay || true
-echo "module zip: $OUT/ifive-split-shade-off-module.zip"
+echo "module zip A: $OUT/ifive-split-shade-off-module.zip
+    variant-B (fallback): $OUT/ifive-split-shade-off-module-B.zip"
 sha256sum "$OUT/ifive-split-shade-off-module.zip" | sed 's/^/  /'

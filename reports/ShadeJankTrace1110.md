@@ -100,14 +100,33 @@ The earlier "11.13 ms median" mixed these populations: it is not one SF pass
 and never was. All 167 Settings frames fall inside one 2.8 s burst
 (9471.8-9474.6 s of uptime) = a single pull-down animation.
 
-**Root cause of the residual jank (with numbers that close):** SystemUI's
-shade GPU draw alone runs 3.4 ms (its flush-commands queue-drain measure);
-its Drawing slices show 12.3 ms - about 9 ms of that is GPU queue contention
-against the Launcher's taskbar strip and, in split-shade form, theSettings
-window behind the drawer band, all re-rendering every frame of the same
-drag. The full-width `1536x175` taskbar redraws at 14.5 ms median were
-previously discounted as a small co-commit; as GPU-queue occupants they are
-not small.
+The same audit on trace3.txt - the HOME scene, i.e. the user's exact
+complaint (pull-down from the desktop) - is worse, not better. Counting
+`Drawing` slices >3 ms by owner and shape (FULL = w>1000 and h>1000,
+STRIP = w>1000 h<300, band = tall strips h>1000 w<1000):
+
+| capture | SystemUI(21010) | Launcher(21365) | app behind |
+|---|---|---|---|
+| trace2 (Settings behind drawer) | FULL 461 | STRIP 212, FULL 39 (all outside bursts: the Settings launch) | Settings(6915): tall bands 218 (558/978 px wide) |
+| trace3 (home behind drawer) | FULL 305 | STRIP 405, FULL 1 | - |
+
+The contention is the taskbar strip: 405 draws at 10.6 ms median during the
+home-scene session, 212 in the app-scene one - the taskbar animates (lifts /
+fades) under the drawer on every frame of every pull-down, in the Launcher
+process, on the same Mali queue as SystemUI's shade. And the app behind the
+drawer (Settings in trace2) re-renders its exposed vertical band 218 times
+at 8 ms. SystemUI's own shade draws run 12-15 ms in the same captures while
+their standalone flush-commands time is ~3.4 ms: roughly 9-11 ms of each
+frame is queue wait behind these other painters.
+
+A fully-covering shade makes both occupants idle: it hides the home/app
+window behind it, and it hides the taskbar. The "occluded windows stop
+submitting" premise is measured on this device, not assumed: in trace2 the
+Launcher's home surface is covered by Settings and its FULL-frame count
+inside the pull-down bursts is exactly 1 for the whole session (the 39
+full-screen draws are the Settings launch, outside the bursts) - covered =
+idle. The taskbar stays busy there because Settings does not cover it; the
+shade does.
 
 The new build's validate behaviour was captured at 22:1x with
 `vendor.hwc.log=2` over 307 composition windows: **zero GLES downgrades, zero
@@ -123,17 +142,19 @@ remain in the script as fallbacks: they only matter if the on-device trace
 still shows a big `Drawing` with zero downgrades in the hwc log.
 
 What the residual jank is then, under the fixed HWC - and what removes it:
-the janky pull-down is GPU **contention** between three processes that all
-redraw full-width bands during the same gesture (table above). Two of the
-three occupants exist only because this build shows the shade in
-**split-shade (left-drawer) form**:
+the janky pull-down is GPU **contention** with the taskbar strip (and, when
+an app is behind the drawer, that app's exposed band) - the per-pid counts
+in the table above. Both occupants exist only because this build shows the
+shade in **split-shade (left-drawer) form**:
 `com.android.wm.shell.R.bool.config_use_split_notification_shade` resolves
-true, so the sliding drawer leaves a band of the app behind exposed (the
-Settings window under it: 163 frames x 8.0 ms inside one 2.8 s pull-down
-burst) and the launcher taskbar stays visible and animates under the drawer
-(115 frames x 14.5 ms, p90 54.7). With the drawer form off, the shade is the
-classic full-screen top-down panel: it fully occludes the app behind it (an
-occluded window stops submitting) and covers the taskbar likewise. The
+true (its `(sw600dp)`/`(land)` variants), so the launcher taskbar stays
+visible and animates under the drawer (405 draws x 10.6 ms in the home
+scene, 212 in the app scene) and the sliding drawer leaves a band of the
+app behind exposed (Settings: 218 tall-band draws x 8 ms in one session).
+With the drawer form off, the shade is the classic full-screen top-down
+panel: it fully occludes the app behind it (an
+occluded window stops submitting - measured, see above) and covers the
+taskbar likewise. The
 decision is read live from resources in
 `SplitShadeStateControllerImpl.shouldUseSplitNotificationShade()` (jadx
 decompile of this exact SystemUI), and the fallback branch is an unreleased
@@ -142,16 +163,20 @@ RRO setting the bool to false flips the form deterministically.
 
 Expected effect from the same measurements: the shade's own GPU pass alone
 drains in 3.4 ms (`flush commands` medians) while its Drawing slices average
-12.3 ms - ~9 ms per frame is queue wait behind the other two redrawers.
-Removing ~3.0 s of overlapping GPU submissions per pull-down (163x8 + 115x14.5
-ms) leaves SystemUI's chain (8.7 ms main + ~4 ms GPU) inside the 16.6 ms
-period. That is the mechanism-level reason to expect jank to collapse; the
-numbers are from before/after the same app code, the only changed quantity is
-who else touches the GPU. Acceptance protocol on device: fabricate the
-overlay (reversible, `cmd overlay fabricate`, no install), run the 2x12 cycle
-plus `scripts/shade-frame-audit.py`; PASS requires the non-SystemUI band
-`Drawing` counts inside pull-down bursts to drop to ~0 and the >24 ms gap
-share to fall accordingly.
+12.3-14.8 ms - ~9-11 ms per frame is queue wait behind the taskbar-strip (and
+app-band) painters. Removing 4.3 s of overlapping GPU submissions from the
+home-scene session (405 x 10.6 ms) leaves SystemUI's chain (8.7 ms main +
+~4 ms GPU) inside the 16.6 ms period. That is the mechanism-level reason to
+expect jank to collapse; the numbers are from before/after the same app
+code, the only changed quantity is who else touches the GPU. Acceptance
+protocol on device (`scripts/shade-splitshade-accept.sh`): `before` phase
+(2x12 cycle + 6 s atrace) -> install `ifive-split-shade-off-module.zip` ->
+reboot -> `after` phase; the `after` phase first asserts
+`cmd overlay lookup com.android.systemui com.android.systemui:bool/config_use_split_notification_shade`
+resolves false (if the base `(sw600dp)` variant still wins there, swap in
+the per-variant module B from the same build). PASS requires the
+non-SystemUI STRIP/band `Drawing` counts inside pull-down bursts to drop to
+~0 (`scripts/shade-frame-audit.py --compare`), with jank% as the headline.
 
 ### User-side confirmation (2026-11-11 00:2x)
 
