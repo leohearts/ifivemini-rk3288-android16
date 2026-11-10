@@ -54,7 +54,7 @@ being waited on is GPU rasterization of the shade window:
 - Wallpaper layers were `invisible (hidden by parent)` in the same dump: the
   opaque shade background replaces wallpaper draw, no wallpaper cost.
 
-### What the 11.13 ms `Drawing` pass really is (corrected twice; final version)
+### What the 11.13 ms `Drawing` pass really is (corrected four times - read the last table)
 
 First read of this data blamed the wallpaper; parsing sf.txt's visible/invisible
 flags properly disproves that: with the shade open, **only 4 layers are visible
@@ -87,18 +87,22 @@ another GSI project for the same mechanism.
 FOURTH correction (2026-11-11 late, slice ownership by pid): every "Drawing
 WxH" atrace slice belongs to the process that named the marker - HWUI's
 RenderThread names its GPU drawing pass `Drawing x y w h`; SurfaceFlinger's
-composition pass has no `Drawing` slice. Sorting the >3 ms `Drawing` slices
-in trace2 by owning pid gives the true map of one pull-down:
+composition pass has no `Drawing` slice. Counting EVERY `Drawing` slice in
+trace2 (no duration threshold) by owner and exact region:
 
-| drawing process | window | region | n | median | p90 |
-|---|---|---|---|---|---|
-| 21010 SystemUI | NotificationShade | full 1536x2048 | 232 | **12.3 ms** | 37.5 |
-| 21365 Launcher | Taskbar strip | 1536x175 | 115 | **14.5 ms** | 54.7 |
-| 6915 Settings | exposed band | 558x2048 (x134) + 978x2048 (x29) | 163 | 8.0 ms | 15.9 |
+| drawing process | window | region | n |
+|---|---|---|---|
+| 21010 SystemUI | NotificationShade | 1536x2048 | 461 |
+| 21010 SystemUI | StatusBar | 1536x42 | 20 |
+| 21365 Launcher | Taskbar strip | 1536x175 | 169 |
+| 21365 Launcher | Taskbar strip | 1536x201 | 43 |
+| 21365 Launcher | home surface | 1536x2048 | 39 (all outside the pull-down bursts) |
+| 6915 Settings | exposed band | 558x2048 | 167 |
+| 6915 Settings | exposed band | 978x2048 | 51 |
 
 The earlier "11.13 ms median" mixed these populations: it is not one SF pass
-and never was. All 167 Settings frames fall inside one 2.8 s burst
-(9471.8-9474.6 s of uptime) = a single pull-down animation.
+and never was. All 167 of the 558-wide Settings frames fall inside one 2.8 s
+burst (9471.8-9474.6 s of uptime) = a single pull-down animation.
 
 The same audit on trace3.txt - the HOME scene, i.e. the user's exact
 complaint (pull-down from the desktop) - is worse, not better. Counting
@@ -239,15 +243,18 @@ animations); the overall jank percentage gain of the kernel fix alone is
 small - it is a tail-firming change, not a frame-budget halving. Both
 numbers await on-device confirmation.
 
-### Floor analysis
+### Floor analysis (superseded 2026-11-11 - kept for the correction chain)
 
-Per-frame floor with the current prebuilt SystemUI: 8 ms CPU + 15-18 ms of
-GPU/bandwidth for one 3.1 M px shade surface = ~27 ms, about 37 fps. Reaching
-16.7 ms (60 fps) would need the shade's per-frame work cut by roughly half,
-which is only possible by changing what SystemUI draws (smaller shade surface,
-less overdraw, cheaper rows) - the GSI's SystemUI.apk is a prebuilt we do not
-build here, and no build.prop/Settings/flag switch on this image changes the
-shade surface size.
+The earlier version of this section claimed a ~27 ms floor (8 ms CPU + 15-18
+ms GPU) from prebuilt SystemUI and concluded only source-level changes could
+help. Both halves are wrong: the 15-18 ms GPU figure measured the shade's
+draws *while the Launcher's taskbar strip and the app band were drawing on
+the same queue*, and the shade's own GPU time is 3.4 ms (flush-commands
+medians, this same trace). Removing the other painters is possible without
+touching SystemUI's code - the split-shade overlay above. The real floor is
+therefore 8 ms main thread + ~4 ms GPU ≈ 12 ms < 16.6 ms, i.e. 60 fps is
+arithmetically in reach for the pull-down once contention is gone; the
+on-device acceptance measures whether it is.
 
 Options considered and rejected with evidence:
 - window-level/cross-window blur: `CROSS_WINDOW_BLUR_SUPPORTED` =
