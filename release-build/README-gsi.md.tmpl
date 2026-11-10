@@ -371,9 +371,33 @@ not in effect; not touching the file keeps the mount exactly as it works today.
 The `magiskboot cpio` command list and the `.backup/.magisk` config written here follow Magisk
 31.0's `assets/boot_patch.sh`; compared with 29.0 the list is the same and one line (`VENDORBOOT=false`)
 was added to the config.
-Verified offline only: `magiskboot cpio test` reports the ramdisk as Magisk patched,
-`mkkrnl.py verify` reports the CRC, and unpacking the finished file gives the same members.
-Not tested on the tablet.
+Checked offline on the finished file: `magiskboot cpio test` reports the ramdisk as Magisk patched,
+`mkkrnl.py verify` reports the payload CRC, and unpacking the file gives the same members.
+The tablet currently runs a Magisk boot image from this pipeline: seeded core `MAGISK_VER='31.0'
+MAGISK_VER_CODE=31000`, `su -c id -Z` answers `u:r:magisk:s0`, and `/data/adb/modules` holds
+`ifive-no-phh-su` and `ifive-tracefs-perms`. Whether that exact image came from the current
+`scripts/make-magisk-boot.sh` (which derives `PREINITDEVICE` from the package's own partition table)
+or from the earlier hand-set value is not recorded here; the derived value is `mmcblk0p13`, the same
+one the script used to hard-code.
+
+### One Magisk version on both sides
+
+The patched boot image and the installed app have to come from the same Magisk release.
+`env_check()` (Magisk's `assets/app_functions.sh:13-27`) compares the app's own version against
+`MAGISK_VER` / `MAGISK_VER_CODE` in `/data/adb/magisk/util_functions.sh`; on a mismatch it returns
+3 and the app shows "Requires additional setup" on every start. Rebooting does not clear it - only
+making the two sides equal does. `scripts/magisk-install-data.sh` passes one APK argument to both
+sides (step 4 installs the modules built from it, and it patches the boot image from the same file)
+and its step 6 prints `seeded core` and `installed app versionCode` and names the fix on a mismatch.
+Measured on the tablet after that procedure: `MAGISK_VER='31.0' MAGISK_VER_CODE=31000` and
+`versionName=31.0 versionCode=31000` - equal, so `env_check 31.0 31000` exits 0 and the dialog stays
+away.
+
+Do not use the app's own "Direct install" / "In-place" on this tablet. That path hands
+`/dev/block/by-name/boot` to `magiskboot unpack`, and this boot partition is a `KRNL` container with
+no `ANDROID!` boot image header (see above), so `unpack` cannot get a ramdisk out of it; whatever
+the app then writes is a raw boot image where the container belongs. The supported way is
+`scripts/make-magisk-boot.sh` plus `rkdeveloptool wl 0x16000 <image>`.
 
 ## Charging policy
 - Powered-off tablet on charger: `reboot -p` with the charger attached was tested; the panel stayed dark, USB charging was observed, and Android did not boot on its own.
@@ -383,3 +407,11 @@ Not tested on the tablet.
 - Hard hang: rare, root cause unknown. Most earlier "hangs" were the host-side adb server wedging, not the tablet. The one hang with a kpanic ring behind it stopped at 86.7 s during init (netd/wificond start), with no kernel error.
 - Hardware watchdog verified on the debug kernel: a hard hang resets in about 10–16 s and returns to maskrom via the loader flag. The release kernel runs with `rkwdt=0` — no timed reset and no watchdog, only the kpanic log dump.
 - The native HWC2 port (drm_hwcomposer) does not initialise on this VOP (`init_success_=0`, plane 0 keeps the fbcon frame), so it was reverted; the release uses the patched HWC1 through the hwc2on1adapter.
+- Every Chromium- or WebView-based app draws a black page (empty window, no text, no image). The GSI mounts tracefs at `/sys/kernel/tracing` with `gid=3012` (`init.rc:76`) and repairs its mode in `on late-fs` (`init.rc:678`), but on this tablet the directory stays `drwx------`, so when an app zygote forks a renderer it re-opens the inherited `trace_marker` descriptor, fails, and aborts: `JNI FatalError called: (zygote) Failed open(/sys/kernel/tracing/trace_marker, 1): Permission denied` (six identical SIGABRTs in `/data/tombstones/`, one per renderer start). This release carries the repair in `/vendor/etc/init/hw/init.rockchip.rc` (`chmod 0755 /sys/kernel/tracing` on the post-fs-data trigger, written by `scripts/patch-vendor.sh`); `scripts/make-tracefs-module.sh` builds the same repair as a Magisk module for tablets whose `/vendor` predates it. Check: `ls -ld /sys/kernel/tracing` → `drwxr-xr-x`.
+- "This site can't be reached" / `ERR_NAME_NOT_RESOLVED` in the browser, while other apps still use the network. This tablet was found with `Settings.Global.restricted_networking_mode = 1` — Android's restricted networking mode, which firewalls every uid that does not hold `CONNECTIVITY_USE_RESTRICTED_NETWORKS` (`dumpsys netpolicy` prints `Restricted networking mode: true` and `UID=<app> policy=262144 (REJECT_ALL)`, and the per-uid line reads `effective=RESTRICTED_MODE`). Under it the system reports no default network to those uids, so a browser that reads its resolver addresses from the system fails with `Failed to read DnsConfig` in logcat, while an app that resolves through bionic's resolver keeps working and the fault looks browser-specific. No script on the tablet writes that key (no match for the name in `/data/adb/service.d`, `/data/adb/post-fs-data.d`, `/data/adb/modules`, `/system/bin`, `/system/xbin`, `/system/etc`, `/system_ext/etc`, `/vendor/etc`, `/odm/etc`); what set it to 1 is unknown.
+  Fix, from a host shell — nothing in the browser is touched:
+  ```sh
+  adb shell settings get global restricted_networking_mode     # 1
+  adb shell settings put global restricted_networking_mode 0
+  ```
+  Verified on device: the per-uid `effective` loses `RESTRICTED_MODE`, `Failed to read DnsConfig` stops appearing, and `https://example.org` plus `https://github.com` draw full page content (screenshots taken on the tablet). The value is stored in `/data` and stays 0 across a reboot, so one command is enough.

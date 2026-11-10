@@ -20,6 +20,8 @@ The flashable package is on the Releases page: `ifive-mini4s-android16-gsi-<date
 ## Known issues
 - Rare hard hang (screen freezes, USB gone); root cause not found. The release kernel writes a periodic dmesg dump to the kpanic partition for post-mortem.
 - Native HWC2 port (drmhwc2) does not initialise on this VOP; the release uses the patched HWC1 through hwc2on1adapter.
+- tracefs at `/sys/kernel/tracing` stays `drwx------` on this tablet, so an app zygote aborts when a renderer fork re-opens `trace_marker`: every Chromium/WebView app draws a black page. Repaired in `/vendor/etc/init/hw/init.rockchip.rc` (`chmod 0755`, post-fs-data) by `scripts/patch-vendor.sh`; `scripts/make-tracefs-module.sh` ships it as a Magisk module for older `/vendor`.
+- `Settings.Global.restricted_networking_mode` was found set to 1, which firewalls every uid without `CONNECTIVITY_USE_RESTRICTED_NETWORKS`; user apps then get no default network from `ConnectivityService`, a browser reports `Failed to read DnsConfig` and fails every domain, while bionic-resolving apps keep working. Nothing on the tablet writes the key and its origin is unknown. Fix: `adb shell settings put global restricted_networking_mode 0` (survives reboot, no browser setting involved).
 
 ## Screen*shot*s
 
