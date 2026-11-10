@@ -127,10 +127,35 @@ echo "== 4. patch the ramdisk (KEEPVERITY=$KEEPVERITY KEEPFORCEENCRYPT=$KEEPFORC
 # env_check (assets/app_functions.sh) returns 2 without that block device - the app then shows
 # "Requires additional setup / your device needs reflash Magisk" on every start. Upstream
 # boot_patch.sh fills it in with `magisk --preinit-device` because it runs on the device; building
-# on a host cannot, so this is the measured answer for this tablet: mmcblk0p13, the userdata
-# partition (find_preinit_device() in native/src/core/mount.rs may take /data because
-# ro.crypto.state is "unsupported", i.e. not encrypted). Override with PREINITDEVICE=<name>.
-PREINITDEVICE=${PREINITDEVICE:-mmcblk0p13}
+# on a host cannot, so the name is read out of the package's own partition table instead: the
+# kernel numbers blkdevparts entries in list order, so the 1-based position of the userdata entry
+# is its /dev/mmcblk0pN suffix. (find_preinit_device() in native/src/core/mount.rs would pick
+# /data here, because ro.crypto.state is "unsupported", i.e. the data partition is not encrypted.)
+# A package given as a bare ramdisk image carries no device tree, so those need
+# PREINITDEVICE=<name> from the caller.
+if [ -z "${PREINITDEVICE:-}" ]; then
+    PREINITDEVICE=$(python3 - "$PKG" "$ROOT/release-build" <<'PY'
+import importlib.util, os, sys
+package, lib = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("derive_layout", os.path.join(lib, "derive-layout.py"))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+try:
+    order = m.build_dtb_layout(package)["dtb_order"]
+except Exception as e:
+    sys.stderr.write("%s\n" % e)
+    raise SystemExit(1)
+try:
+    n = order.index("userdata") + 1
+except ValueError:
+    sys.stderr.write("the blkdevparts table has no userdata entry: %s\n" % " ".join(order))
+    raise SystemExit(1)
+print("mmcblk0p%d" % n)
+PY
+) || true
+fi
+[ -n "$PREINITDEVICE" ] || { echo "STOP: cannot derive PREINITDEVICE from $PKG/images/resource.img."; echo "      pass it explicitly: PREINITDEVICE=mmcblk0pN $0 ..."; exit 1; }
+echo "   PREINITDEVICE=$PREINITDEVICE"
 printf 'KEEPVERITY=%s\nKEEPFORCEENCRYPT=%s\nRECOVERYMODE=%s\nVENDORBOOT=%s\nPREINITDEVICE=%s\n' "$KEEPVERITY" "$KEEPFORCEENCRYPT" "$RECOVERYMODE" "${VENDORBOOT:-false}" "$PREINITDEVICE" > config
 chmod 644 config
 ./magiskboot cpio ramdisk.cpio \
