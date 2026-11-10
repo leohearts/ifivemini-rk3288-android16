@@ -181,6 +181,35 @@ stock-like GSI + this vendor stack.
    module dir is `adb_data_file` either way (verified matching the working
    modules).
 
+## Third fix (23:52): the mix window expanded the wrong way and put the wallpaper on the GPU
+
+The ftrace analysis (`ShadeJankTrace1110.md`) measured SurfaceFlinger spending a
+median **11.13 ms per frame** on `Drawing 0.0 0.0 558.0 2048.0` - GPU
+re-rasterizing the exposed part of `com.android.systemui.ImageWallpaper`, which
+was composited CLIENT while the 175 px taskbar and the pointer overlays held
+overlay planes. Root cause in `hwc/src-a16/hwc_rockchip.cpp` `mix_policy()`:
+when the skip range plus other layers exceed the plane count, the old code
+widened the mix window **downwards first** (`skip_layer_indices.first = 0`) -
+which always swallows z=0, the full-screen wallpaper - and only tried widening
+upwards as a fallback. Reordered: **widen upwards first** (status bar /
+taskbar / overlay strips, all small and dynamic anyway), fall back to
+downwards, then fail as before. Same mechanism, same feasibility checks, only
+the preference order changed; the upward path already existed as the old
+second choice so no new code path runs for the first time.
+
+New library: 370484 B, sha256 `7575aed5...` (size unchanged, decision order
+only). Both channels rebuilt: vendor image -> super.img, and the
+`ifive-hwc-composition` Magisk module (zip sha256 `767d22b4...`).
+
+Expected effect (from the trace's own numbers): the wallpaper's 11.13 ms
+GLES pass moves to an overlay plane, cutting the 27 ms frame period toward
+~16-18 ms; with the kernel ramp-up fix (previous section) removing the
+drag-start 198 MHz stall, this is the second half of the path back toward
+60 fps. On-device confirmation pending device access; the mechanism
+(layer -> plane instead of per-frame GLES) is visible in `dumpsys SurfaceFlinger`
+per-layer composition lines and in the SF `Drawing` region shrinking to the
+actually-mixed strips.
+
 ## Rollout
 
 - [x] `vendor-changes/lib/hw/hwcomposer.rk30board.so` <- new build (370484 B, sha256 528bb260..., commit 9d5ccb169)

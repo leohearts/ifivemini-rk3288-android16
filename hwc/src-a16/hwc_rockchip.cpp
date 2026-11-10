@@ -2275,24 +2275,53 @@ bool mix_policy(DrmResources* drm, DrmCrtc *crtc, hwc_drm_display_t *hd,
     //OPT: Adjust skip_layer_indices.first and skip_layer_indices.second to limit in iPlaneSize.
     if(!hd->is_3d && bHasSkipLayer && ((int)layers.size() - skipCnt + 1) > iPlaneSize)
     {
-        int tmp_index = -1;
         if(skip_layer_indices.first != 0)
         {
-            tmp_index = skip_layer_indices.first;
-            //try decrease first skip index to 0.
-            skip_layer_indices.first = 0;
-            skipCnt = skip_layer_indices.second - skip_layer_indices.first + 1;
-            if(((int)layers.size() - skipCnt + 1) > iPlaneSize && skip_layer_indices.second != (int)layers.size()-1)
+            /*
+             * Two ways to make the mix window feasible: widen it upwards
+             * (second -> last index, mixing the layers above the skip range) or
+             * downwards (first -> 0, mixing everything under it, wallpaper included).
+             *
+             * Try upwards FIRST. z=0 is ImageWallpaper on this tablet: the biggest
+             * (full-screen) and one of the most static layers, while the layers on
+             * top of the skip range are the status bar, the 175 px taskbar strip and
+             * the pointer overlays. Mixing the wallpaper forced SF to re-rasterize a
+             * full-screen RGBx layer every drag frame (measured from the 2026-11-10
+             * ftrace: "Drawing 0.0 0.0 558.0 2048.0" median 11.1 ms per frame with
+             * the wallpaper left in CLIENT); mixing the small upper strips instead
+             * costs a fraction of that. The old order (downwards first) is what put
+             * the wallpaper on the GPU.
+             */
+            bool expanded_up = false;
+            if(skip_layer_indices.second != (int)layers.size() - 1)
             {
-                skip_layer_indices.first = tmp_index;
-                tmp_index = skip_layer_indices.second;
+                int tmp_second = skip_layer_indices.second;
                 //try increase second skip index to last index.
-                skip_layer_indices.second = layers.size()-1;
+                skip_layer_indices.second = layers.size() - 1;
                 skipCnt = skip_layer_indices.second - skip_layer_indices.first + 1;
-                if(((int)layers.size() - skipCnt + 1) > iPlaneSize)
+                if(((int)layers.size() - skipCnt + 1) <= iPlaneSize)
+                    expanded_up = true;
+                else
+                    skip_layer_indices.second = tmp_second;
+            }
+            if(!expanded_up)
+            {
+                int tmp_index = skip_layer_indices.first;
+                //try decrease first skip index to 0.
+                skip_layer_indices.first = 0;
+                skipCnt = skip_layer_indices.second - skip_layer_indices.first + 1;
+                if(((int)layers.size() - skipCnt + 1) > iPlaneSize && skip_layer_indices.second != (int)layers.size()-1)
                 {
-                    ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d fail match (%d,%d)",__FUNCTION__,__LINE__,skip_layer_indices.first, tmp_index);
-                    goto FailMatch;
+                    skip_layer_indices.first = tmp_index;
+                    tmp_index = skip_layer_indices.second;
+                    //try increase second skip index to last index.
+                    skip_layer_indices.second = layers.size()-1;
+                    skipCnt = skip_layer_indices.second - skip_layer_indices.first + 1;
+                    if(((int)layers.size() - skipCnt + 1) > iPlaneSize)
+                    {
+                        ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d fail match (%d,%d)",__FUNCTION__,__LINE__,skip_layer_indices.first, tmp_index);
+                        goto FailMatch;
+                    }
                 }
             }
         }
@@ -2305,13 +2334,13 @@ bool mix_policy(DrmResources* drm, DrmCrtc *crtc, hwc_drm_display_t *hd,
                 skipCnt = skip_layer_indices.second + 1;
                 if(((int)layers.size() - skipCnt + 1) > iPlaneSize)
                 {
-                    ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d fail match (%d,%d)",__FUNCTION__,__LINE__,skip_layer_indices.first, tmp_index);
+                    ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d fail match (%d,%d)",__FUNCTION__,__LINE__,skip_layer_indices.first, -1);
                     goto FailMatch;
                 }
             }
             else
             {
-                ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d fail match (%d,%d)",__FUNCTION__,__LINE__,skip_layer_indices.first, tmp_index);
+                ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d fail match (%d,%d)",__FUNCTION__,__LINE__,skip_layer_indices.first, -1);
                 goto FailMatch;
             }
         }
