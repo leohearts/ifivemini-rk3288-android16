@@ -8,6 +8,8 @@ hwc/hdr/vndk30/
 hwc/out/
 out/
 release/
+# written when the release scripts call their python helpers
+__pycache__/
 # build inputs: the downloaded GSI image and the packed super.img (gigabytes, never committed)
 inputs/
 inputs-*/
