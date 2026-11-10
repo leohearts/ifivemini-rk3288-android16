@@ -33,7 +33,7 @@ PAT = re.compile(
 def scan(path):
     """Return (traversal_windows, drawings_by_pid, sysui_pid)."""
     trav = []
-    draws = defaultdict(list)   # pid -> [(start, dur_ms, region)]
+    draws = defaultdict(list)   # pid -> [(start, dur_ms, shape)]
     stacks = defaultdict(list)
     sysui = None
     with open(path, errors='replace') as f:
@@ -56,7 +56,17 @@ def scan(path):
                 if b0 == 'traversal' and pid == sysui:
                     trav.append((t0, ts))
                 elif b0.startswith('Drawing') and d > 3:
-                    draws[pid].append((t0, d, b0[:32]))
+                    mm = re.match(r'Drawing\s+([0-9.]+)\s+([0-9.]+)\s+'
+                                  r'([0-9.]+)\s+([0-9.]+)', b0)
+                    shape = 'FULL'
+                    if mm:
+                        x0, y0, x1, y1 = map(float, mm.groups())
+                        w, h = x1 - x0, y1 - y0
+                        if w > 1000 and h < 300:
+                            shape = 'STRIP'      # taskbar strip
+                        elif h > 1000 and w < 1000:
+                            shape = 'BAND'       # drawer-exposed band
+                    draws[pid].append((t0, d, shape))
     return trav, draws, sysui
 
 
@@ -87,14 +97,17 @@ def report(path):
     for pid, ds in sorted(draws.items(), key=lambda kv: -len(kv[1])):
         if pid == sysui:
             continue
-        med = statistics.median(d for _, d, _ in ds)
-        print(f'  band redraws pid={pid}: n={len(ds)} med={med:.1f}ms '
-              f'regions={sorted({r for _, _, r in ds})[:3]}')
-        band_total += len(ds)
+        occ = [x for x in ds if x[2] in ('STRIP', 'BAND')]
+        med = statistics.median([d for _, d, _ in occ]) if occ else 0
+        shapes = {s: sum(1 for x in ds if x[2] == s) for s in ('STRIP', 'BAND', 'FULL')}
+        print(f'  contention pid={pid}: STRIP={shapes["STRIP"]} '
+              f'BAND={shapes["BAND"]} FULL={shapes["FULL"]} '
+              f'med(occ)={med:.1f}ms')
+        band_total += len(occ)
     sd = draws.get(sysui, [])
     print(f'  SystemUI own big draws: n={len(sd)} '
           f'med={statistics.median([d for _, d, _ in sd]) if sd else 0:.1f}ms')
-    print(f'  BAND_TOTAL={band_total}')
+    print(f'  CONTENTION_TOTAL={band_total}')
     return band_total
 
 
@@ -109,12 +122,12 @@ def main():
         if a is None or b is None:
             return 1
         if a == 0:
-            print('VERDICT: cannot judge (before had no band redraws)')
+            print('VERDICT: cannot judge (before had no contention draws)')
             return 1
         frac = b / a
         verdict = ('PASS' if frac <= 0.2 else
                    'PARTIAL' if frac <= 0.6 else 'FAIL')
-        print(f'VERDICT: {verdict} - band redraws {a} -> {b} '
+        print(f'VERDICT: {verdict} - contention draws {a} -> {b} '
               f'({100*frac:.0f}% remaining)')
         return 0 if verdict == 'PASS' else 2
     v = report(args[0])
