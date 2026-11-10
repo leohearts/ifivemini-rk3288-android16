@@ -54,6 +54,24 @@ being waited on is GPU rasterization of the shade window:
 - Wallpaper layers were `invisible (hidden by parent)` in the same dump: the
   opaque shade background replaces wallpaper draw, no wallpaper cost.
 
+### What the 11.13 ms `Drawing` pass really is (simulation, 23:5x)
+
+Reconstructing the validate input from sf.txt (z-order, visible only): wallpaper,
+launcher, SettingsHomepage, SubSettings, taskbar, status bar, shade(SKIP),
+colorfade(SKIP) = **8 layers against 5 VOP planes** - the capture happened with
+two Settings windows stacked. Simulating `mix_policy()` window selection on that
+stack (see commit `ca81d5e78` discussion in `HwcFix1110.md`): the skip window
+must widen to cover all 8 indices under both old and new orderings, i.e. SF
+composites **the entire visible stack** into one GLES frame each vsync - the 11 ms
+is full-screen whole-stack composition, not a single wallpaper layer. For
+non-overlaid stacks (one app + launcher + shade = 6-7 layers with the skip
+range in the middle) the new upward-first preference keeps low-z content on
+planes where the old code would have mixed it; that is the scene the change
+targets. The general lesson stands: on this SoC jank crosses a threshold when
+visible layers exceed 5 planes; minimizing simultaneous windows is the user-side
+lever, and plane-count-aware mix priority (sacrifice colorfade/pointer overlays
+first) is the next hwc-side candidate.
+
 ## GPU frequency: measured ceiling, not a tuning gap
 
 `sclk_gpu` events over the trace window (27.1 s): 10.3 s at 198 MHz (mostly
