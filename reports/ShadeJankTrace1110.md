@@ -73,7 +73,7 @@ being waited on is GPU rasterization of the shade window:
 - Wallpaper layers were `invisible (hidden by parent)` in the same dump: the
   opaque shade background replaces wallpaper draw, no wallpaper cost.
 
-### What the 11.13 ms `Drawing` pass really is (corrected four times - read the last table)
+### What the 11.13 ms `Drawing` pass really is (corrected five times - the last table is the release-cadence one)
 
 First read of this data blamed the wallpaper; parsing sf.txt's visible/invisible
 flags properly disproves that: with the shade open, **only 4 layers are visible
@@ -184,22 +184,49 @@ decompile of this exact SystemUI), and the fallback branch is an unreleased
 aconfig flag (`lockscreen.enable.landscape`, default off) - so one static
 RRO setting the bool to false flips the form deterministically.
 
-Expected effect from the same measurements: the shade's own GPU pass alone
-drains in 3.4 ms (`flush commands` medians) while its Drawing slices average
-12.3-14.8 ms - ~9-11 ms per frame is queue wait behind the taskbar-strip (and
-app-band) painters. Removing 4.3 s of overlapping GPU submissions from the
-home-scene session (405 x 10.6 ms) leaves SystemUI's chain (8.7 ms main +
-~4 ms GPU) inside the 16.6 ms period. That is the mechanism-level reason to
-expect jank to collapse; the numbers are from before/after the same app
-code, the only changed quantity is who else touches the GPU. Acceptance
-protocol on device (`scripts/shade-splitshade-accept.sh`): `before` phase
-(2x12 cycle + 6 s atrace) -> install `ifive-split-shade-off-module.zip` ->
-reboot -> `after` phase; the `after` phase first asserts
-`cmd overlay lookup com.android.systemui com.android.systemui:bool/config_use_split_notification_shade`
-resolves false (if the base `(sw600dp)` variant still wins there, swap in
-the per-variant module B from the same build). PASS requires the
-non-SystemUI STRIP/band `Drawing` counts inside pull-down bursts to drop to
-~0 (`scripts/shade-frame-audit.py --compare`), with jank% as the headline.
+FIFTH correction - a parser bug found while writing scripts/shade-frame-audit.py
+v2, and the measurement that replaced the contention theory:
+
+B/E slices must be paired PER THREAD (ftrace comm-tid), not per pid. SystemUI
+has a main thread and a RenderThread both tracing into the same pid stream,
+and cross-thread pairing fabricated durations: the "median 11.13/12.3/14.5 ms
+Drawing" numbers in every version above come from a pid-level stack - with
+the stack split per tid, the same slice set reads med 12.2 ms (461 slices)
+- so the numbers survived, but the theory needs a better test.
+
+The test that replaced the app-vs-app contention story: app-side buffer
+RELEASE cadence per surface (intervals between `releaseBufferCallback`
+events - that is SF telling the app "your old frame is done, buffer is
+yours again"), because a slow release is what makes `Drawing` slices that
+include eglSwapBuffers wait:
+
+    trace2 (old HWC, Settings behind drawer):
+      VRI[NotificationShade]     med 29.0 ms, 58% of gaps >24 ms
+      VRI[Taskbar]               med 18.5 ms
+      VRI[SettingsHomepage...]   med 16.6 ms
+    trace3 (old HWC, home behind drawer):
+      VRI[NotificationShade]     med 33.9 ms, 72% slow
+      VRI[Taskbar]               med 22.6 ms
+
+The shade surface - and only it - releases at half rate. That is SF holding
+the shade's buffer while it GLES-composites the screen for 11 ms (old HWC),
+and everything the app-side numbers showed (drawing slices ~12 ms, ~31 fps
+actual) follows from it. The uniform ~12 ms floor across very different
+surface sizes (shade 3.1 Mpx, taskbar 0.27 Mpx) is queue delay behind SF's
+GPU work, not fill rate: 0.27 Mpx cannot cost 12 ms of pixels.
+
+Corrected causal chain: old HWC rejects -> SF GLES pass (11 ms) holds the
+shade buffer -> shade releases at 29-34 ms -> SystemUI swap waits inside
+its Drawing slice -> frame period ~32 ms, 2x12 protocol reports 84-95%
+janky. The HWC fix removes the first link by measured fact (zero downgrades
+in 307 composition windows on the fixed build). What the fix does NOT
+remove is the split-shade app-band redraw (Settings band: 218 draws, med
+11.6 ms, all inside the drawer gesture) - that costs GPU queue time for
+everyone and is what the split-shade RRO targets. Both changes are in the
+release; which fraction of jank each removes is decided by ONE on-device
+atrace through the audit tool's decision table (release cadence healthy?
+contention draws gone?), and no further host-side reasoning substitutes
+for that measurement.
 
 ### User-side confirmation (2026-11-11 00:2x)
 
