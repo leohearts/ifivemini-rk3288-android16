@@ -1,23 +1,29 @@
 #!/system/bin/sh
-# shade-splitshade-accept.sh - PASS/FAIL of the split-shade-off module, two phases.
-# Run ON the tablet:  sh /data/local/tmp/shade-splitshade-accept.sh before
-#                     (then install ifive-split-shade-off-module.zip, reboot)
-#                     sh /data/local/tmp/shade-splitshade-accept.sh after
-# No partition writes; the only system change is the standard Magisk module.
+# shade-splitshade-accept.sh - A/B of the split-shade overlay on device.
+# Run ON the tablet:  sh /data/local/tmp/shade-splitshade-accept.sh <rounds>
+#   rounds = number of A/B pairs (default 3). Each pair ~2 min.
 #
-# before phase: jank 2x12 + 6 s atrace of 12 pull-downs; counts full-width
-#   band `Drawing` slices from NON-SystemUI pids (taskbar strip + exposed
-#   band of the app behind the drawer). Saves state to /data/local/tmp.
-# after phase:  same measurements + verdict + `cmd overlay lookup` truth.
-#   PASS: band count <= 20% of before, and jank% not worse than before.
+# Two modes, auto-selected:
+#   FABRICATE mode (preferred): `cmd overlay fabricate` flips
+#     config_use_split_notification_shade in RAM, no install, no reboot, and
+#     can be toggled between every measurement round - giving interleaved
+#     A/B samples against clock/burst variance. Mode is chosen only if
+#     `cmd overlay lookup` CONFIRMS the flip (the base (sw600dp) variant might
+#     outrank the fabricate's default-variant entry - then lookup stays true
+#     and the script refuses this mode).
+#   MODULE mode (fallback): needs the reboot between phases; supports only
+#     before(N) then after(N) - still interleaved by reboot only once.
+#
+# Per round: reset gfxinfo -> 6 s atrace during 12 slow pull-downs ->
+# jank line + shade release-cadence line printed per round (host tool
+# scripts/shade-frame-audit.py computes medians from the saved traces).
+# No partition writes, no settings changes; overlay torn down at the end.
 D=/data/local/tmp/splitaccept
-S=$D/state
 P=com.android.systemui
+R=${1:-3}
 say(){ echo "[$(date +%T)] $*"; }
-phase=${1:-before}
 
-mkdir -p $D
-[ "$phase" = before ] && rm -rf $D
+rm -rf $D; mkdir -p $D
 pair(){ dumpsys gfxinfo $P 2>/dev/null | awk '/Total frames rendered/{t=$3} /Janky frames:/{j=$3" "$4} /Slow UI thread/{u=$4} END{print "jank", t, j, "slowUI", u}'; }
 drag12(){
   i=0
@@ -27,40 +33,60 @@ drag12(){
     i=$((i+1))
   done
 }
-run_phase(){ # $1=tag   (band counting happens on the host: shade-frame-audit.py)
-  am force-stop com.android.settings 2>/dev/null || true
-  input keyevent KEYCODE_HOME; sleep 3
+grab(){ # $1=rounddir
   dumpsys gfxinfo $P reset >/dev/null 2>&1
-  atrace -t 6 -b 16000 gfx sched freq idle am wm view > $D/trace_$1.txt 2>$D/atrace_$1.log &
-  APID=$!
-  sleep 0.4; drag12; wait $APID 2>/dev/null
-  pair > $D/jank_$1.txt
-  say "phase $1 jank: $(tr '\n' ' ' < $D/jank_$1.txt)"
+  atrace -t 6 -b 16000 gfx sched freq idle am wm view > "$1/trace.txt" 2>"$1/atrace.err" &
+  A=$!
+  sleep 0.4; drag12; wait $A 2>/dev/null
+  pair > "$1/jank.txt"
+  cat "$1/jank.txt" | tr '\n' ' ' | sed 's/^/    /'; echo ""
 }
+setmode(){ # $1=false|true via fabricate; echoes resulting lookup value
+  if [ "$1" = off ]; then
+    cmd overlay fabricate --target $P --name splitA $P:bool/config_use_split_notification_shade bool false >/dev/null 2>&1
+    cmd overlay enable com.android.shell:splitA >/dev/null 2>&1
+  else
+    cmd overlay disable com.android.shell:splitA >/dev/null 2>&1
+    cmd overlay destroy com.android.shell:splitA >/dev/null 2>&1
+  fi
+  sleep 2
+  cmd overlay lookup $P $P:bool/config_use_split_notification_shade 2>/dev/null
+}
+home(){ am force-stop com.android.settings 2>/dev/null || true; input keyevent KEYCODE_HOME; sleep 2; }
 
-if [ "$phase" = before ]; then
-  run_phase before
-  echo ok > $S
-  tar -czf $D-before.tar.gz -C $D . 2>/dev/null
-  say "now: install module zip (magisk --install-module), reboot, rerun with 'after'"
-  exit 0
+MODE=fabricate
+say "probe fabricate mode..."
+V=$(setmode off)
+say "  lookup with overlay off-request: $V"
+case "$V" in *false*) : ;; *) MODE=module; say "  fabricate cannot flip (variant wins) -> MODULE mode (install + reboot flow)";; esac
+cmd overlay disable com.android.shell:splitA >/dev/null 2>&1; cmd overlay destroy com.android.shell:splitA >/dev/null 2>&1
+
+if [ "$MODE" = fabricate ]; then
+  i=1
+  while [ $i -le $R ]; do
+    say "== round $i/$R : A (drawer, overlay off) =="
+    setmode on > $D/lookup_A$i.txt; home
+    mkdir -p $D/A$i; grab $D/A$i
+    say "== round $i/$R : B (classic, overlay on) =="
+    setmode off > $D/lookup_B$i.txt; home
+    mkdir -p $D/B$i; grab $D/B$i
+    i=$((i+1))
+  done
+  setmode on >/dev/null 2>&1   # ensure no leftover fabricate
+  cmd overlay disable com.android.shell:splitA 2>/dev/null
+  cmd overlay destroy com.android.shell:splitA 2>/dev/null
+else
+  # module mode: two invocations, before / after
+  case "$2" in
+    before) say "before phase x$R"; i=1; while [ $i -le $R ]; do mkdir -p $D/A$i; home; grab $D/A$i; i=$((i+1)); done; echo ok> $D/state ;;
+    after)  [ -f $D/state ] || { say "FATAL: no before state"; exit 1; }
+            V=$(cmd overlay lookup $P $P:bool/config_use_split_notification_shade 2>/dev/null)
+            say "lookup after module install: $V"
+            case "$V" in *false*) : ;; *) say "FAIL: overlay not active"; exit 2;; esac
+            i=1; while [ $i -le $R ]; do mkdir -p $D/B$i; home; grab $D/B$i; i=$((i+1)); done ;;
+    *) say "module mode usage: $0 <rounds> before|after"; exit 1 ;;
+  esac
 fi
 
-[ -f $S ] || { say "FATAL: no before-phase state on device"; exit 1; }
-say "=== overlay truth ==="
-cmd overlay lookup $P $P:bool/config_use_split_notification_shade > $D/lookup_after.txt 2>&1
-cmd overlay list $P | grep -ai splitshade >> $D/lookup_after.txt 2>&1
-cat $D/lookup_after.txt | sed 's/^/  /'
-if ! grep -aq false $D/lookup_after.txt; then
-  say "FAIL: resource still resolves true (overlay not active or variant beats it)"
-  exit 2
-fi
-run_phase after
-J_B=$(awk '/jank/{gsub(/[()%]/,"",$4); print $4}' $D/jank_before.txt | head -1)
-J_A=$(awk '/jank/{gsub(/[()%]/,"",$4); print $4}' $D/jank_after.txt | head -1)
-U_B=$(awk '/jank/{print $6}' $D/jank_before.txt | head -1)
-U_A=$(awk '/jank/{print $6}' $D/jank_after.txt | head -1)
-say "slow-UI-thread frames: before=${U_B:-?} after=${U_A:-?}  (if jank stays high while slowUI stays ~90%, the A11-style app-side bottleneck applies)"
-say "jank before=${J_B}% after=${J_A}%  (band verdict: run host-side shade-frame-audit.py --compare on the two traces)"
-tar -czf $D-after.tar.gz -C $D . 2>/dev/null
-say "pull back: adb pull $D-after.tar.gz"
+tar -czf $D.tar.gz -C $D . 2>/dev/null
+say "host analysis: adb pull $D.tar.gz && for f in A1 B1 A2 B2...: shade-frame-audit.py trace ; compare shade release cadence medians"
