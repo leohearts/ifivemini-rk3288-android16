@@ -15,10 +15,16 @@
 #      is now vop_band_limit(): property vendor.hwc.vop.max_scale (float, read
 #      once per composer start), default 6.0 on RK3288_MID, 3.3 elsewhere.
 #
-# Measured after both: a 307-frame pull-down composes on VOP overlay planes with
-# 0 downgrades to GLES and no dmesg warnings. Shade jank is UNCHANGED (82-88%,
-# same as before) - the remaining cost is one SystemUI thread. This module is a
-# correctness/power fix, not a smoothness claim.
+# Measured after both (device, 2026-11-11/12). Note: the module installed on the
+# tablet before 2026-11-12 behaved as if the cap were still 3.3 (one "so big"
+# per drag frame in logcat); a clean rebuild + install made the rejections stop
+# and the numbers below drop out. build.sh once defined -DRK_MID where the code
+# checks #ifdef RK3288_MID; the correct -DRK3288_MID is in the DEFs today:
+#   shade buffer release cadence median 16.8 ms (was 29-36 ms), >24 ms frames 9%
+#   (was 75-83%); SystemUI jank over the 2x12-drag protocol 6.9-7.2% (was 84-96%);
+#   background redraws under the shade 31-45 -> 2 per session. This IS the
+#   smoothness fix. In the first ~5 min after a cold boot the cadence measures
+#   ~21 ms (GPU clock gating / devfreq ramp), settles by itself.
 #
 # WARNING - loading path: take a plain reboot. Do NOT swap the .so under a
 # running composer (umount of a mapped bind mount SEGVs the HAL; a composer
@@ -64,10 +70,10 @@ chmod 755 "$W/m/post-fs-data.sh"
 cat > "$W/m/module.prop" <<PROP
 id=$ID
 name=iFive mini 4S: HWC composition fixes
-version=v2026-11-10
-versionCode=1
+version=v2026-11-12
+versionCode=2
 author=leohearts
-description=Replaces /vendor/lib/hw/hwcomposer.rk30board.so with the build that stops rejecting hardware-plane composition (bottom-layer global alpha gate; 1080p-tuned 3.3 bandwidth cap -> vendor.hwc.vop.max_scale, 6.0 default here; mix window widened upwards first so the full-screen wallpaper keeps a VOP plane instead of costing SF ~11 ms of GLES per pull-down frame). Shade frames compose on VOP planes instead of full-screen GLES. See reports/HwcFix1110.md for the measured composition changes and reports/ShadeJankTrace1110.md for the frame budget; the end-to-end jank effect of this module + the 2026-11-10 kernel is pending re-measurement. sha256 $SO_SHA
+description=Replaces /vendor/lib/hw/hwcomposer.rk30board.so with the build that stops rejecting hardware-plane composition (bottom-layer global alpha gate; 1080p-tuned 3.3 bandwidth cap -> vendor.hwc.vop.max_scale, 6.0 default here; mix window widened upwards first so the full-screen wallpaper keeps a VOP plane instead of costing SF ~11 ms of GLES per pull-down frame). Measured on device 2026-11-12: shade release cadence median 16.8 ms (was 29-36), SystemUI jank 6.9-7.2% over the 2x12-drag protocol (was 84-96%), background redraws 31-45 -> 2 per session. See reports/HwcFix1110.md and reports/ShadeJankTrace1110.md. Check after install: logcat during a shade drag must print no "so big". sha256 $SO_SHA
 PROP
 
 unzip -p "$APK" assets/module_installer.sh > "$W/m/META-INF/com/google/android/update-binary"

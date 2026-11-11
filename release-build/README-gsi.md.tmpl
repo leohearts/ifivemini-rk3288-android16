@@ -402,39 +402,48 @@ the app then writes is a raw boot image where the container belongs. The support
 ## Charging policy
 - Powered-off tablet on charger: `reboot -p` with the charger attached was tested; the panel stayed dark, USB charging was observed, and Android did not boot on its own.
 - Charge-boost switch (`persist.vendor.chg.boost`) is verified on device: `vendor.chgpolicy` runs, `high_current_allowed=Y`, and the ADP input current limit rises to 2000000.
-
-## Optional: classic pull-down for less jank (`ifive-split-shade-off-module.zip`)
-
-Published next to this zip, not inside it, and opt-in because it changes how
-the shade looks. This tablet's SystemUI shows the Android 16 split shade - a
-left drawer sliding over the home screen. Under the drawer the launcher
-taskbar strip stays visible and animates, and the app behind the drawer (if
-any) keeps re-rendering its exposed band: measured ~400 taskbar-strip draws
-and ~220 band draws at ~12 ms median per session, stacked on the same Mali
-queue as SystemUI's own work (release cadence data: reports/ShadeJankTrace1110.md).
-Removing them returns GPU time to the shade.
-
-The module is a static RRO setting `config_use_split_notification_shade` to
-false: the shade becomes the classic full-screen top-down panel, covering
-home and taskbar - covered windows stop rendering (verified on this device:
-zero in-burst full-screen launcher draws while an app is in front). Install
-via the Magisk app, reboot; remove by disabling/deleting the module. If
-`cmd overlay lookup` still reports true after installing (a base `(sw600dp)`
-variant winning), use the companion module `ifive-split-shade-off-module-B.zip`
-from the same build instead - it ships one overlay per config variant. Build
-recipe and both artifacts: `scripts/rro-split-shade-off/` in the release git
-repo. Measured effect if paired with the release's HWC fixes: the old-HWC GLES
-composition pass (11 ms per frame holding the shade buffer - the primary
-jank cause, fixed in this release's vendor image) goes away, and this module
-removes the remaining app-band redraws on top.
-
-## Known issues
 - Hard hang: rare, root cause unknown. Most earlier "hangs" were the host-side adb server wedging, not the tablet. The one hang with a kpanic ring behind it stopped at 86.7 s during init (netd/wificond start), with no kernel error.
 - Hardware watchdog verified on the debug kernel: a hard hang resets in about 10–16 s and returns to maskrom via the loader flag. The release kernel runs with `rkwdt=0` — no timed reset and no watchdog, only the kpanic log dump.
 - The native HWC2 port (drm_hwcomposer) does not initialise on this VOP (`init_success_=0`, plane 0 keeps the fbcon frame), so it was reverted; the release uses the patched HWC1 through the hwc2on1adapter.
 - Every Chromium- or WebView-based app draws a black page (empty window, no text, no image). The GSI mounts tracefs at `/sys/kernel/tracing` with `gid=3012` (`init.rc:76`) and repairs its mode in `on late-fs` (`init.rc:678`), but on this tablet the directory stays `drwx------`, so when an app zygote forks a renderer it re-opens the inherited `trace_marker` descriptor, fails, and aborts: `JNI FatalError called: (zygote) Failed open(/sys/kernel/tracing/trace_marker, 1): Permission denied` (six identical SIGABRTs in `/data/tombstones/`, one per renderer start). This release carries the repair in `/vendor/etc/init/hw/init.rockchip.rc` (`chmod 0755 /sys/kernel/tracing` on the post-fs-data trigger, written by `scripts/patch-vendor.sh`); `scripts/make-tracefs-module.sh` builds the same repair as a Magisk module for tablets whose `/vendor` predates it. Check: `ls -ld /sys/kernel/tracing` → `drwxr-xr-x`.
-- Pull-down of the notification shade is not smooth. Chasing it turned up two real bugs in this release's HWC, both fixed here: `MatchPlanes` rejected the whole frame whenever the bottom layer had a global alpha ("vop cann't support first layer with global alpha" — the 4.19 VOP actually exposes GLOBAL_ALPHA on every plane and blends against black exactly like GLES composition does), and the plane-overflow bandwidth cap was hardcoded to 3.3, a vendor figure from 1080p boards, which rejected this panel's 5-layer shade scene (~4.9) frame after frame. Before the fix every animated frame was GPU-composited by SurfaceFlinger; now it composes on VOP overlay planes (307-frame pull-down: 0 downgrades, 445 overlay commits, no dmesg warnings, pixels unchanged). The cap is tunable via `vendor.hwc.vop.max_scale` (default 6.0 on this board). Jank did not improve: 82-88% over interleaved runs, the same as the pre-fix 76-89%. A second round of analysis (evening ftrace, `reports/ShadeJankTrace1110.md`) located where the missing time actually goes, and found a heavier per-frame cost still open: SurfaceFlinger re-composites the shade card itself (a ~558 px wide left-anchored panel on this portrait display) through GLES at a median 11.13 ms per drag frame - visible during the pull-down and only there, matching the report that other animations on the tablet are smooth. Why that one layer is forced to client composition is the next investigation (corner radius is the leading candidate, testable with the official `no_rounded_corners` setting); the same analysis retracted an earlier wallpaper claim and a plane-exhaustion story - both wrong, corrections in `reports/ShadeJankTrace1110.md`. This release's HWC (sha256 `7575aed5...`) additionally prefers widening its mix range upwards first - a strictly-safer ordering with no measured scene where it changes today's outcome, so no jank claim attaches to it. What else was measured and is flat: GPU clock (`devfreq min_freq` 198->594 MHz and `governor=performance`), CPU clock — the cpufreq policy already runs all four cores at their 1.608 GHz cap mid-swipe, so there is no clock to win —, SF pipeline phase (`debug.sf.early/late.app.duration` 16.6 vs 33.2 ms), and `debug.sf.auto_latch_unsignaled`. The remaining cost is the render pipeline, measured per frame from the afternoon's ftrace capture: SystemUI's main thread burns only 8.0 ms of CPU per shade frame and then waits 18 ms for the GPU (`reports/ShadeJankTrace1110.md` has the breakdown and corrects this README's earlier 20-26 ms CPU figure); the shade is one full-screen 2048x1536 surface being rasterized at the board's 594 MHz GPU clock ceiling, which puts a ~27 ms floor under the frame time - 37 fps - for anything this package can configure. Rendering fewer pixels is the only lever that moves it consistently: `wm size 1152x1536` + `wm density 180` gave 76/79/80/82% against 87/88/87% native in the same session — about eight points, at visibly softer text; nothing in this package enables it, `wm size reset` + `wm density reset` undo it. Cutting the per-frame thread work would mean changing SystemUI, which ships inside the prebuilt TrebleDroid GSI; this repository builds the kernel, device tree, vendor partition and packaging. Full numbers and protocol: `reports/HwcFix1110.md` and `reports/Issues1110.md`.
-  A tablet already flashed with the 2026-11-08 release does not need a reflash: install `ifive-hwc-composition.zip` (same release page) in the Magisk app or with `magisk --install-module`, reboot **twice** (the first boot only moves the module into place), and check with a root shell — `stat -c %s /vendor/lib/hw/hwcomposer.rk30board.so` must print `370484` (370240 means the old file is still live).
+- Pull-down jank of the notification shade: fixed in this release and measured on device
+  2026-11-11/12. Chasing it turned up three bugs:
+  1. `MatchPlanes` rejected the whole frame whenever the bottom layer had a global alpha
+     ("vop cann't support first layer with global alpha" - the 4.19 VOP actually exposes
+     GLOBAL_ALPHA on every plane and blends against black exactly like GLES composition does).
+  2. The plane-overflow bandwidth cap was hardcoded to 3.3, a vendor figure from 1080p boards.
+     This panel's full-screen shade scene (three full-size planes + two thin bars)
+     scores 5.0 on the vendor's scale_factor model, so every animated frame was rejected
+     ("scale_factor=5.0 is so big") and re-composited by SurfaceFlinger through GLES,
+     which held the shade's buffer ~29-36 ms instead of the ~16.6 ms one 60 Hz frame takes.
+     The cap is now `vendor.hwc.vop.max_scale` (property, read once per HAL start,
+     default 6.0 on this board).
+  3. Acceptance lag: the .so that was actually loaded on test tablets through
+     2026-11-11 still behaved as if the cap were 3.3 (one `so big` rejection per
+     drag frame in logcat), so the 2026-11-10 acceptance run measured 82-88% jank
+     and concluded the fix was inert. A clean rebuild + module install on
+     2026-11-12 (`hwc/build.sh` once defined `-DRK_MID` where the code checks
+     `#ifdef RK3288_MID`; the correct define is in the DEFs today) removed the
+     rejections and the numbers below are the result.
+  Measured after the fix, same tools and gestures as the pre-fix runs:
+  - shade buffer release cadence: median 16.8 ms (was 29-36 ms), frames slower than
+    24 ms: 9% (was 75-83%), SurfaceFlinger per-frame GLES re-composite: gone;
+  - SystemUI jank over the full 2x12-drag protocol: 6.9-7.2% janky frames
+    (was 84-96%);
+  - background redraws under the shade dropped from 31-45 per session to 2 - the
+    "split shade wastes GPU on exposed bands" story was itself a symptom of the GLES
+    pass, not a separate cause.
+  In the first ~5 minutes after a cold boot the shade release cadence measures ~21 ms
+  (~45% slow frames): the Mali devfreq clock-gates between gestures and the ondemand
+  governor has not ramped 198->594 MHz yet; it settles by itself and does not need
+  any configuration. Full protocol and per-frame data: `reports/ShadeJankTrace1110.md`.
+  A tablet already flashed with the 2026-11-08/09/10 release does not need a reflash:
+  install `ifive-hwc-composition.zip` (same release page, rebuilt 2026-11-12 with the
+  macro fix; sha256 `7575aed5...`) in the Magisk app or with `magisk --install-module`,
+  reboot **twice** (the first boot only moves the module into place), and check with a
+  root shell: `stat -c %s /vendor/lib/hw/hwcomposer.rk30board.so` must print `370484`
+  (370240 means the old file is still live), and dragging the shade down with
+  `logcat | grep "so big"` must print nothing.
 - "This site can't be reached" / `ERR_NAME_NOT_RESOLVED` in the browser, while other apps still use the network. This tablet was found with `Settings.Global.restricted_networking_mode = 1` — Android's restricted networking mode, which firewalls every uid that does not hold `CONNECTIVITY_USE_RESTRICTED_NETWORKS` (`dumpsys netpolicy` prints `Restricted networking mode: true` and `UID=<app> policy=262144 (REJECT_ALL)`, and the per-uid line reads `effective=RESTRICTED_MODE`). Under it the system reports no default network to those uids, so a browser that reads its resolver addresses from the system fails with `Failed to read DnsConfig` in logcat, while an app that resolves through bionic's resolver keeps working and the fault looks browser-specific. No script on the tablet writes that key (no match for the name in `/data/adb/service.d`, `/data/adb/post-fs-data.d`, `/data/adb/modules`, `/system/bin`, `/system/xbin`, `/system/etc`, `/system_ext/etc`, `/vendor/etc`, `/odm/etc`); what set it to 1 is unknown.
   Fix, from a host shell — nothing in the browser is touched:
   ```sh

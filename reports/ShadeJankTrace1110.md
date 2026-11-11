@@ -397,3 +397,62 @@ python3: parse tracing_mark_write B|21010|animation / flush commands gaps,
          clk_set_rate: sclk_gpu state machine - see commands in this report's
          session; inputs /tmp/perf1/trace2.txt, sf.txt, sf2.txt
 ```
+
+## Update 2026-11-12 (late night): the fix went live, final numbers
+
+**Sixth correction - and the one that closed the case.** The evening's plan was to
+re-run the split-shade acceptance protocol against the new HWC. Before that, the
+module .so itself was re-verified byte by byte, which uncovered why the 2026-11-10
+acceptance had measured "jank unchanged (82-88%)":
+
+- The .so actually running on the tablet until tonight behaved as if the cap were
+  still 3.3 (device log, one `so big` per drag frame). A clean rebuild from the
+  current tree (`hwc/out`, 2026-11-11 23:05, md5 `a602d212...`) behaves as 6.0.
+  `hwc/build.sh` historically defined `-DRK_MID` while `vop_band_limit()` checks
+  `#ifdef RK3288_MID`; the correct `-DRK3288_MID` sits in the DEFs today (line 67,
+  `-DRK_MID` on line 64 is dead but harmless). Why the module that was installed
+  before tonight kept 3.3 behavior - stale artifact from before the macro landed
+  or a build that missed it - is not recoverable from today's evidence. Either way
+  the 2026-11-10 "jank unchanged" acceptance was measuring a binary whose cap
+  never moved, not a wrong theory.
+- Device-side proof after loading the corrected build (md5 `a602d212...`,
+  sha256 `7575aed5...`): `logcat | grep "so big"` went from one line per drag frame
+  (`scale_factor=5.0 is so big`, cap check `5.0 > 3.3 x 1.36 = 4.49`) to silence;
+  `getprop vendor.hwc.vop.max_scale` empty on the device means the built-in 6.0
+  default is live (`6.0 x 1.36 = 8.16` accepts 5.0). No runtime property is needed.
+
+**Warm-up caveat found the same night.** The first measurement round (t9, device
+up ~5 min) showed a worse cadence than daytime runs: 21.7 ms median, 45% slow,
+jank 42.9%. ftrace during that drag showed `clk_enable/clk_disable: sclk_gpu`
+toggling between frames - the Mali devfreq clock-gated between gestures and the
+ondemand governor had not ramped to 594 MHz yet. After the device sat idle until
+`cur_freq` = 594000000, the same protocol measured:
+
+| metric | before fix (daytime baseline) | after fix, warm (t10) |
+|---|---|---|
+| shade release cadence median | 29-36 ms | 16.8 ms |
+| frames slower than 24 ms | 75-83% | 9% (`CADENCE_OK=True`) |
+| SystemUI janky frames (2x12 drags) | 84-96% | 6.9-7.2% |
+| background strip/band draws per session | 31-45 | 2 |
+| `so big` rejections during drag | every frame | none |
+
+Boot-internal 5 min: expect ~21 ms / ~45%; it settles by itself, no config needed.
+
+**split-shade module withdrawn from the release.** With the HWC fix live, the
+exposed-band redraws it was meant to remove dropped to 2 per session on their
+own - the "drawer costs GPU" story was itself a symptom of the GLES composition
+pass. Artifacts stay archived under `scripts/rro-split-shade-off/`; the README
+no longer recommends them and the release page does not ship them.
+
+**Release package check.** `super.img` of the 2026-11-11 release carries the
+vendor .so at md5 `a602d212...` (= the 6.0 build; unpacked offline: 7z reads the
+LP metadata at 4096 and extracts `vendor.ext` directly). Fresh flash needs no
+module at all; the module exists only for tablets flashed 2026-11-08..11.
+Module zip rebuilt 2026-11-12 (versionCode 2, sha256 `8ee4954f...`).
+
+**Open observation (not blocking).** On the pre-fix boot, SurfaceFlinger ran on
+a synthetic vsync for the whole session - the "Disabling synthetic vsync" line
+never appeared in logcat and count lines showed `synthetic=...` climbing. After
+the fix + reboot the cadence is a true 60 Hz regardless; whether the synthetic
+vsync was a consequence of the GLES fallback path or independent was not
+isolated. Left here as an unexplained datum, no conclusion attached.
