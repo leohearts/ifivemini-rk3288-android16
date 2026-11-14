@@ -107,9 +107,12 @@ fi
 OBJS=(); for f in "${SRCS[@]}" tinyxml2; do OBJS+=("$OBJ/$f.o"); done
 LIBC=$SYSROOT/usr/lib/arm-linux-androideabi/30
 mkdir -p "$OUT/stubs"
+# --icf / packed relocations (DT_ANDROID_REL, bionic API 23+) keep the .so small enough to
+# replace the vendor original in place: the vendor ext4 image has 0 free blocks.
 "$CXX" --target=$TARGET --sysroot=$SYSROOT -shared -nostdlib++ -fuse-ld=lld \
   -Wl,-soname,hwcomposer.rk30board.so -Wl,--gc-sections -Wl,--hash-style=gnu -Wl,-z,noexecstack \
   -Wl,--no-undefined -Wl,--allow-shlib-undefined -Wl,--build-id=sha1 -Wl,--as-needed \
+  -Wl,--icf=all -Wl,--pack-dyn-relocs=android \
   -o "$OUT/hwcomposer.rk30board.so" "${OBJS[@]}" \
   -L"$VENDOR_LIB" -L"$SYSLIB" -L"$LIBC" \
   -l:libcutils.so -l:libdrm.so -l:libEGL.so -l:libGLESv2.so -l:libhardware.so -l:liblog.so -l:libui.so \

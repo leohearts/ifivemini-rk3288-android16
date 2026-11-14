@@ -238,6 +238,14 @@ typedef struct hwc_drm_display {
     int rgaBuffer_index;
     DrmRgaBuffer rgaBuffers[MaxRgaBuffers];
     bool mUseRga;
+    /* Last RGA pre-rotation, reused while the source layer is unchanged. */
+    bool rgaRotValid;
+    int rgaRotIndex;
+    uint64_t rgaRotBufferId;
+    float rgaRotCrop[4];
+    int rgaRotDst[4];
+    uint32_t rgaRotTransform;
+    int rgaRotFormat;
 #endif
     int transform_nv12;
     int transform_normal;

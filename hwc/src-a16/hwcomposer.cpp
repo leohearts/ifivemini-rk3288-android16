@@ -1941,7 +1941,13 @@ static bool is_use_gles_comp(struct hwc_context_t *ctx, DrmConnector *connector,
 #endif
         }
     }
-    if(hd->transform_nv12 > 1 || hd->transform_normal > 0)
+    /*
+     * With RGA, one rotated layer (NV12 video or RGB, e.g. the wallpaper in
+     * landscape) is pre-rotated in hwc_prepare and scanned out by a VOP window;
+     * only more than one goes to GLES. Without RGA any RGB rotation needs GLES.
+     */
+    if(hd->transform_nv12 + hd->transform_normal > 1 ||
+       (hd->transform_normal > 0 && !ctx->drm.isSupportRkRga()))
     {
         ALOGD_IF(log_level(DBG_DEBUG), "too many rotate layers,go to GPU GLES at line=%d", __LINE__);
         return true;
@@ -2328,6 +2334,22 @@ static bool set_hdmi_hdr_meta(struct hwc_context_t *ctx, DrmConnector *connector
 
 
 #if RK_RGA_PREPARE_ASYNC
+//instead of the original DrmHwcLayer, scan out the RGA output buffer
+static void UseRgaBuffer(DrmRgaBuffer &rgaBuffer, DrmHwcLayer &layer) {
+    layer.is_rotate_by_rga = true;
+    layer.buffer.Clear();
+    layer.source_crop = DrmHwcRect<float>(0, 0, rgaBuffer.buffer()->getWidth(),
+                                          rgaBuffer.buffer()->getHeight());
+    //The dst layer's format is NV12.
+    if(layer.format == HAL_PIXEL_FORMAT_YCrCb_NV12_10)
+        layer.format = HAL_PIXEL_FORMAT_YCrCb_NV12;
+    layer.sf_handle = rgaBuffer.buffer()->handle;
+#if RK_VIDEO_SKIP_LINE
+    layer.SkipLine = 0;
+#endif
+    layer.rga_handle = rgaBuffer.buffer()->handle;
+}
+
 static int PrepareRgaBuffer(DrmRgaBuffer &rgaBuffer, DrmHwcLayer &layer) {
     int rga_transform = 0;
     int src_l=0,src_t=0,src_w=0,src_h=0;
@@ -2468,45 +2490,55 @@ static int PrepareRgaBuffer(DrmRgaBuffer &rgaBuffer, DrmHwcLayer &layer) {
 
     DumpLayer("rga", dst.hnd);
 
-    //instead of the original DrmHwcLayer
-    layer.is_rotate_by_rga = true;
-    layer.buffer.Clear();
-    layer.source_crop = DrmHwcRect<float>(dst_l,dst_t,dst_w,dst_h);
-    //The dst layer's format is NV12.
-    if(layer.format == HAL_PIXEL_FORMAT_YCrCb_NV12_10)
-        layer.format = HAL_PIXEL_FORMAT_YCrCb_NV12;
-    layer.sf_handle = rgaBuffer.buffer()->handle;
-
-#if RK_VIDEO_SKIP_LINE
-    layer.SkipLine = 0;
-#endif
-
-    layer.rga_handle = rgaBuffer.buffer()->handle;
+    UseRgaBuffer(rgaBuffer, layer);
 
     return ret;
 }
 
 
+/*
+ * Pre-rotate one layer with RGA into hd->rgaBuffers. The result is reused while
+ * the source buffer (gralloc buffer id), crop, destination rect, transform and
+ * format are unchanged: a BufferQueue producer can only queue new content into a
+ * buffer SurfaceFlinger has released, so the buffer that is still on screen keeps
+ * its content. A static rotated layer (the wallpaper in landscape) then costs one
+ * RGA pass instead of one per frame.
+ */
 static int ApplyPreRotate(hwc_drm_display_t *hd, DrmHwcLayer &layer) {
   int ret = 0;
+  uint64_t id = 0;
+  const float crop[4] = {layer.source_crop.left, layer.source_crop.top,
+                         layer.source_crop.right, layer.source_crop.bottom};
+  const int dst[4] = {layer.rect_merge.left, layer.rect_merge.top,
+                      layer.rect_merge.right, layer.rect_merge.bottom};
+  bool cacheable = gralloc4::get_buffer_id(layer.sf_handle, &id) == android::OK && id != 0;
+
+  if (cacheable && hd->rgaRotValid && hd->rgaRotBufferId == id &&
+      hd->rgaRotTransform == layer.transform && hd->rgaRotFormat == layer.format &&
+      !memcmp(hd->rgaRotCrop, crop, sizeof(crop)) && !memcmp(hd->rgaRotDst, dst, sizeof(dst))) {
+    UseRgaBuffer(hd->rgaBuffers[hd->rgaRotIndex], layer);
+    return 0;
+  }
 
   ALOGD_IF(log_level(DBG_DEBUG), "%s:rgaBuffer_index=%d", __FUNCTION__, hd->rgaBuffer_index);
 
+  hd->rgaRotValid = false;
   DrmRgaBuffer &rga_buffer = hd->rgaBuffers[hd->rgaBuffer_index];
   ret = PrepareRgaBuffer(rga_buffer, layer);
   if (ret) {
     ALOGE("Failed to prepare rga buffer for RGA rotate %d", ret);
     return ret;
   }
-#if 0
-  ret = display_comp->CreateNextTimelineFence("ApplyPreRotate");
-  if (ret <= 0) {
-    ALOGE("Failed to create RGA rotate release fence %d", ret);
-    return ret;
+  if (cacheable) {
+    hd->rgaRotValid = true;
+    hd->rgaRotIndex = hd->rgaBuffer_index;
+    hd->rgaRotBufferId = id;
+    hd->rgaRotTransform = layer.transform;
+    hd->rgaRotFormat = layer.format;
+    memcpy(hd->rgaRotCrop, crop, sizeof(crop));
+    memcpy(hd->rgaRotDst, dst, sizeof(dst));
   }
-
-  rga_buffer.set_release_fence_fd(ret);
-#endif
+  hd->rgaBuffer_index = (hd->rgaBuffer_index + 1) % MaxRgaBuffers;
   return 0;
 }
 
@@ -2514,6 +2546,7 @@ static void freeRgaBuffers(hwc_drm_display_t *hd) {
     for(int i = 0; i < MaxRgaBuffers; i++) {
         hd->rgaBuffers[i].Clear();
     }
+    hd->rgaRotValid = false;
 }
 #endif
 
@@ -3130,7 +3163,7 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t num_displays,
         for (size_t j = 0; j < layer_content.layers.size(); j++) {
             DrmHwcLayer& layer = layer_content.layers[j];
 
-            if((layer.is_yuv && layer.transform!=DrmHwcTransform::kRotate0))
+            if(layer.transform!=DrmHwcTransform::kRotate0)
             {
                 ret = ApplyPreRotate(hd,layer);
                 if (ret)
@@ -3140,7 +3173,6 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t num_displays,
                     return ret;
                 }
 
-                hd->rgaBuffer_index = (hd->rgaBuffer_index + 1) % MaxRgaBuffers;
                 bUseRga = true;
                 hd->mUseRga = hd->mUseRga ? hd->mUseRga : true;
             }
@@ -4218,6 +4250,7 @@ static int hwc_initialize_display(struct hwc_context_t *ctx, int display) {
 #if RK_RGA_PREPARE_ASYNC
     hd->rgaBuffer_index = 0;
     hd->mUseRga = false;
+    hd->rgaRotValid = false;
 #endif
 #if RK_ROTATE_VIDEO_MODE
     hd->bRotateVideoMode = false;

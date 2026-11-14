@@ -999,7 +999,7 @@ int DrmDisplayCompositor::PrepareFrame(DrmDisplayComposition *display_comp) {
         {
             DrmHwcLayer &layer = layers[source_layers.front()];
 
-            if((layer.is_yuv && layer.transform!=DrmHwcTransform::kRotate0))
+            if(layer.is_rotate_by_rga)
             {
                 RockchipRga& rkRga(RockchipRga::get());
                 ret = rkRga.RkRgaFlush();
