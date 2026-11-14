@@ -1064,6 +1064,47 @@
 		phandle = <0xd1>;
 	};
 
+	/*
+	 * Trust-free DDR DVFS (ChromeOS rk3288 dmc port, CONFIG_ARM_RK3288_DMC_DEVFREQ).
+	 * The Rockchip BSP node above stays disabled: its driver needs SIP calls.
+	 * The driver boots on the "userspace" devfreq governor and keeps the
+	 * bootloader's 396 MHz; vendor init.rk3288.rc sets 456 MHz (the stock 3.10
+	 * firmware's NORMAL rate) once boot completes.
+	 * operating-points: kHz, vdd_logic uV from the stock 3.10 DTB
+	 * (dvfs/pd_ddr/clk_ddr). 528 MHz (stock PERFORMANCE) is left out: on this
+	 * board it ended in SurfaceFlinger SIGILL under load within ~1.5 min.
+	 * The driver never sets vdd_logic below the voltage found at boot and
+	 * restores exactly that voltage at the boot rate.
+	 * auto-power-down-cnt 64 / auto-self-refresh-cnt 0 = stock PD_IDLE 0x40 /
+	 * SR_IDLE 0 (ddr_rk32.c); pd-enable-freq covers every OPP like stock.
+	 * odt/dll-disable-freq, ddr-speed-bin, trcd, trp are DDR3-only inputs
+	 * (ChromeOS veyron values), unused on LPDDR2.
+	 */
+	dmc-cros@ff610000 {
+		compatible = "rockchip,rk3288-cros-dmc";
+		reg = <0x0 0xff610000 0x0 0x3fc 0x0 0xff620000 0x0 0x294 0x0 0xff630000 0x0 0x3fc 0x0 0xff640000 0x0 0x294>;
+		rockchip,cru = <0x7>;
+		rockchip,grf = <0x44>;
+		rockchip,pmu = <0x6>;
+		rockchip,sgrf = <0x48>;
+		rockchip,service_bus = <0x49>;
+		rockchip,sram = <0x4a>;
+		clocks = <0x7 0x16c 0x7 0x16d 0x7 0x16e 0x7 0x16f>;
+		clock-names = "pclk_ddrupctl0", "pclk_publ0", "pclk_ddrupctl1", "pclk_publ1";
+		logic-supply = <0xb9>;
+		operating-points = <396000 1075000 456000 1150000>;
+		rockchip,odt-disable-freq = <333000000>;
+		rockchip,dll-disable-freq = <333000000>;
+		rockchip,sr-enable-freq = <333000000>;
+		rockchip,pd-enable-freq = <600000000>;
+		rockchip,auto-self-refresh-cnt = <0x0>;
+		rockchip,auto-power-down-cnt = <0x40>;
+		rockchip,ddr-speed-bin = <0x15>;
+		rockchip,trcd = <0xa>;
+		rockchip,trp = <0xa>;
+		status = "okay";
+	};
+
 	i2c@ff660000 {
 		compatible = "rockchip,rk3288-i2c";
 		reg = <0x0 0xff660000 0x0 0x1000>;

@@ -22,6 +22,12 @@ on property:sys.boot_completed=1
     write /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor interactive
     write /dev/video_state n
 
+# DDR: the kernel keeps the bootloader's 396 MHz (rk3288 cros DMC, userspace
+# devfreq governor). 456 MHz is the stock firmware's NORMAL rate; the memory bus
+# saturates at 396 MHz during UI animations. One switch, after boot.
+on property:sys.boot_completed=1
+    write /sys/class/devfreq/ff610000.dmc-cros/userspace/set_freq 456000000
+
 on boot
 
     # update foreground cpuset now that processors are up

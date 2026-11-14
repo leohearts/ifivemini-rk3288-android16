@@ -1,0 +1,19 @@
+config ARM_RK3288_DMC_DEVFREQ
+	tristate "ARM RK3288 DMC DEVFREQ Driver (trust-free, ChromeOS)"
+	depends on ARCH_ROCKCHIP && ARM && !CPU_BIG_ENDIAN
+	select PM_OPP
+	select DEVFREQ_GOV_USERSPACE
+	help
+	  This adds the DEVFREQ driver for the RK3288 dmc ported from the
+	  ChromeOS 4.19 kernel. The DDR frequency is changed by code copied
+	  into on-chip SRAM, without any secure firmware (no SIP calls).
+
+	  The driver registers with the "userspace" governor and never changes
+	  the DDR frequency on its own: the rate the bootloader left stays in
+	  place until userspace writes devfreq's set_freq.
+
+	  The display sync (dmc-sync, VOP hook), the SRAM blob and the MMU-off
+	  call helper are always built in when this is enabled; they stay inert
+	  until the driver registers. With M, the drivers are the modules
+	  clk-rk3288-dmc and rk3288_dmc (load in that order); they cannot be
+	  unloaded.

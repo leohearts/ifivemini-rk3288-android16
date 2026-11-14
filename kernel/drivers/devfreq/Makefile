@@ -12,6 +12,7 @@ obj-$(CONFIG_ARM_EXYNOS_BUS_DEVFREQ)	+= exynos-bus.o
 obj-$(CONFIG_ARM_ROCKCHIP_BUS_DEVFREQ)	+= rockchip_bus.o
 obj-$(CONFIG_ARM_ROCKCHIP_DMC_DEVFREQ)	+= rockchip_dmc.o
 obj-$(CONFIG_ARM_ROCKCHIP_DMC_DEBUG)	+= rockchip_dmc_dbg.o
+obj-$(CONFIG_ARM_RK3288_DMC_DEVFREQ)	+= rockchip/
 obj-$(CONFIG_ARM_TEGRA_DEVFREQ)		+= tegra-devfreq.o
 
 # DEVFREQ Event Drivers

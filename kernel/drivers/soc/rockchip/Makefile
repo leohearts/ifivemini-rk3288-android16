@@ -4,6 +4,8 @@
 obj-$(CONFIG_ROCKCHIP_CPUINFO)	+= rockchip-cpuinfo.o
 obj-$(CONFIG_ROCKCHIP_GRF) += grf.o
 obj-$(CONFIG_ROCKCHIP_HW_DECOMPRESS) += rockchip_decompress.o
+# Built in even when the RK3288 DMC driver is a module: the VOP driver uses it.
+obj-$(subst m,y,$(CONFIG_ARM_RK3288_DMC_DEVFREQ)) += dmc-sync.o
 obj-$(CONFIG_ROCKCHIP_PM_DOMAINS) += pm_domains.o
 obj-$(CONFIG_FIQ_DEBUGGER) += rk_fiq_debugger.o
 obj-y += rk_vendor_storage.o
