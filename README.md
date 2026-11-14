@@ -12,6 +12,26 @@ LineageOS 23.2 (Android 16 GSI, arm32_binder64) on the iFive mini 4S tablet: RK3
 2. Put the tablet in download mode: power it off, hold Volume Down and plug in the USB cable.
 3. `./flash.sh --yes` (`--keep-userdata` keeps `/data`). A wiped tablet: `./restore.sh`.
 
+## Changes for this tablet
+Kernel (Linux 4.19):
+- DDR frequency driver ported from the ChromeOS 4.19 RK3288 DMC; the memory runs at 456 MHz after boot instead of the loader's 396 MHz. Notification-shade janky frames 42-43% -> 34%.
+- RK3288 timer enabled as tick broadcast device, so high-resolution timers work. SurfaceFlinger missed frames per 72 s test 423-733 -> 0-44.
+- 128 MiB CMA and the Mali power-on reset fix.
+- Board drivers: touch, bcmdhd Wi-Fi, audio, camera, RC5T619 charging policy + JEITA, lsm330, watchdog with a kernel log dump to `kpanic`.
+
+Display composition (Rockchip HWC1, `hwc/src-a16`):
+- Landscape wallpaper rotated once by RGA and shown on a VOP window. Landscape app drawer: GPU-composed frames 383 -> 0, janky frames 68-71% -> 44-47%.
+- Unchanged bottom layers go into the client target when layers outnumber VOP windows. Landscape shade janky frames 72-74% -> 47-50%.
+- Status bar and task bar in one VOP window, with every layer of a window group checked for shared scanlines (this fixed vertical stripes and a black panel after screen off/on).
+- Per-frame TEST_ONLY commit removed; framebuffers cached by gralloc buffer id; debug strings built only when logging.
+
+Vendor partition (`vendor-changes/`):
+- `ro.surface_flinger.max_frame_buffer_acquired_buffers=3`. Recents opened from an app: janky frames 78-84% -> 43-47%.
+- Rockchip Power HAL, charging policy service (`persist.vendor.chg.boost`), 456 MHz DDR switch in `init.rk3288.rc`.
+- `build.prop` identity: iFive mini 4S.
+
+Flashing: `flash.sh` and `restore.sh` write in verified pieces, resume an interrupted flash, and restore a tablet with an erased partition table or a blank eMMC.
+
 ## Screenshots
 
 <img height="300px" alt="PXL_20261108_175240621 jpg" src="https://github.com/user-attachments/assets/6c9ac10f-92d0-43e6-826b-8f162be20d14" />
