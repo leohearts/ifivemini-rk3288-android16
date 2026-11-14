@@ -10,7 +10,8 @@ LineageOS 23.2 (Android 16 GSI, arm32_binder64) on the iFive mini 4S tablet: RK3
 ## Usage
 1. Unzip the package, `sha256sum -c SHA256SUMS`.
 2. Put the tablet in download mode: power it off, hold Volume Down and plug in the USB cable.
-3. `./flash.sh --yes` (`--keep-userdata` keeps `/data`). A wiped tablet: `./restore.sh`.
+3. A tablet on the stock Android 6 firmware, or a wiped one: `./restore.sh`. It writes the GSI partition table first; the stock table gives `system` 1536 MiB, too small for this super image.
+4. A tablet already running a package from this repository: `./flash.sh --yes` (`--keep-userdata` keeps `/data`).
 
 ## Changes for this tablet
 Kernel (Linux 4.19):

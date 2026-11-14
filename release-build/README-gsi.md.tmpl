@@ -15,6 +15,8 @@
 All write addresses come from `manifest.json`, which the build derives from the partition table in `images/resource.img` and the parameter structure of each board.
 
 ## Flashing
+On a tablet with the stock Android 6 firmware use `restore.sh` (next section): `flash.sh` writes the images at the GSI partition table's addresses, and the stock table gives `system` 1536 MiB and puts every later partition 0x300000 sectors lower. `flash.sh` is for tablets already running a package from this repository.
+
 Needs Linux x86_64 with libusb-1.0. `tools/rkdeveloptool` is used; set `RKDEVELOPTOOL` to use another build.
 
 1. Put the tablet in Rockchip download mode (USB `2207:320a`): power it off, hold Volume Down and plug in the USB cable. `./tools/rkdeveloptool ld` prints `Loader` or `Maskrom`.
@@ -29,7 +31,7 @@ Needs Linux x86_64 with libusb-1.0. `tools/rkdeveloptool` is used; set `RKDEVELO
 `--keep-userdata` keeps `/data` readable because `/data` on this tablet is plain ext4 on `mmcblk0p13` (`ro.crypto.state=unsupported`).
 
 ## Restoring a wiped tablet
-`restore.sh` restores a tablet whose bootloader is intact but whose parameter structures (partition table) are erased. The tablet then still enumerates in Loader mode.
+`restore.sh` writes the GSI partition table (parameter structures) and then all images. Use it on a tablet with the stock firmware and on a tablet whose parameter structures are erased but whose bootloader is intact (it still enumerates in Loader mode).
 
 ```sh
 ./restore.sh --plan              # print the write map
