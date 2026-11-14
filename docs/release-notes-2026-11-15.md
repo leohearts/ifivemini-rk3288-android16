@@ -6,8 +6,6 @@ Assets:
 - `ifive-mini4s-android16-boot-magisk-v31.img` (+ `.sha256`) — optional Magisk 31.0 boot partition,
   written instead of `images/ramdisk.img` at tool LBA `0x16000` (see "Magisk root" in the package
   README).
-- `ifive-no-phh-su.zip` (+ `.sha256`) — the Magisk module that stops the GSI's phh-su from taking
-  over su (same file as in the 2026-11-08 release); part of the Magisk setup in the package README.
 
 Built from a clean checkout of branch `release-2026-11-15-r2`:
 

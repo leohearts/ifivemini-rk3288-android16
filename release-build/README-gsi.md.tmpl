@@ -299,7 +299,9 @@ flashed, `magiskd` starts but stops in its post-fs-data stage every boot with
 boot image - which it cannot do here, because this boot partition is a KRNL container
 (`magiskboot unpack` rejects it).
 
-A second thing gets in the way. The TrebleDroid GSI ships `/system/etc/init/su.rc`:
+A second thing gets in the way on the TrebleDroid GSI only (the LineageOS 23.2 GSI ships neither
+`su.rc` nor `phh-su`, so on it the module below changes nothing). The TrebleDroid GSI ships
+`/system/etc/init/su.rc`:
 
 ```
 service sudaemon /system/bin/phh-su --daemon
