@@ -6,7 +6,7 @@ set -euo pipefail
 H=$(cd "$(dirname "$0")" && pwd)
 SRC=${SRC:-$H/src-a16}
 OUT=${OUT:-$H/out}
-NDK=${NDK:-/home/leohearts/Android/Sdk/ndk/25.0.8775105}
+NDK=${NDK:-$HOME/Android/Sdk/ndk/25.0.8775105}
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 SYSROOT=$TC/sysroot
 CXX=$TC/bin/clang++

@@ -5,12 +5,11 @@ LineageOS 23.2 (Android 16 GSI, arm32_binder64) on the iFive mini 4S tablet: RK3
 ## Release assets
 - `ifive-mini4s-android16-gsi-<date>-lineage232.zip` + `.sha256`: the flashable package (super, kernel, resource, boot ramdisk, loader, per-board rescue data, `flash.sh`, `restore.sh`, `write-loader-head.sh`, bundled `rkdeveloptool`). Its `README.md` is the flashing guide.
 - `ifive-mini4s-android16-boot-magisk-v31.img` + `.sha256`: the boot partition with Magisk 31.0, written at tool LBA 0x16000.
-- `stock-backup.tar.gz`: raw dump of the original Android 6 partitions.
 - `vndk30.tar.gz`: VNDK-30 link libraries used by `hwc/build.sh`.
 
 ## Usage
 1. Unzip the package, `sha256sum -c SHA256SUMS`.
-2. Put the tablet in download mode (`adb reboot loader`).
+2. Put the tablet in download mode: power it off, hold Volume Down and plug in the USB cable.
 3. `./flash.sh --yes` (`--keep-userdata` keeps `/data`). A wiped tablet: `./restore.sh`.
 
 ## Screenshots
@@ -25,7 +24,7 @@ LineageOS 23.2 (Android 16 GSI, arm32_binder64) on the iFive mini 4S tablet: RK3
 - `vendor-changes/`: files replaced in the Tinker Board vendor image: `init.rk3288.rc`, `chgpolicy.sh`, Rockchip Power HAL + VINTF manifest, HWC `.so`, `build.prop`.
 - `release-build/`: packaging (`make-release.sh`, `guard-release.py`, `flash.sh.src`, `restore-full.sh.src`, `write-loader-head.sh.src`), release DTS and resource image, stock loader, board rescue definitions, `mkkrnl.py`, `resource_tool`, `dtc`, `rkdeveloptool`.
 - `scripts/`: image build helpers (`patch-vendor.sh`, `patch-identity.sh`, `build-super.sh`), Magisk (`make-magisk-boot.sh`, `magisk-install-data.sh`), `parse-logdump.py` (kpanic log dump reader), `restore-symlinks.py`.
-- `stock-backup/`: the original partitions and the decoded parameter file.
+- `stock-backup/`: the stock p1 parameter partition and the first 8 MiB of the eMMC (bootloader), used for the rescue data in the package.
 - `docs/`: release notes.
 
 ## Building

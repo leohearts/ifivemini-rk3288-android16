@@ -1,8 +1,8 @@
 #!/bin/bash
 # restore.sh - restore a wiped Rockchip tablet from this release package with rkdeveloptool (Linux).
 #
-# The tablet must be enumerated as a Rockchip USB device (2207:320a). The owner
-# enters download mode; from a running system `adb reboot loader` does it.
+# The tablet must be enumerated as a Rockchip USB device (2207:320a): power it off,
+# hold Volume Down and plug in the USB cable.
 #
 #   ./restore.sh [--board ID] [--yes] [--parameters-only] [--plan] [--maskrom]
 #                [--chunk KiB] [--gap SECONDS] [--fresh]

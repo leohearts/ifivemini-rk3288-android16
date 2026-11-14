@@ -17,7 +17,7 @@ All write addresses come from `manifest.json`, which the build derives from the 
 ## Flashing
 Needs Linux x86_64 with libusb-1.0. `tools/rkdeveloptool` is used; set `RKDEVELOPTOOL` to use another build.
 
-1. Put the tablet in Rockchip download mode (USB `2207:320a`): `adb reboot loader` from a running system. `./tools/rkdeveloptool ld` prints `Loader` or `Maskrom`.
+1. Put the tablet in Rockchip download mode (USB `2207:320a`): power it off, hold Volume Down and plug in the USB cable. `./tools/rkdeveloptool ld` prints `Loader` or `Maskrom`.
 2. Run:
    ```sh
    ./flash.sh --dry-run                 # print every command
