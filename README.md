@@ -13,6 +13,22 @@ LineageOS 23.2 (Android 16 GSI, arm32_binder64) on the iFive mini 4S tablet: RK3
 3. A tablet on the stock Android 6 firmware, or a wiped one: `./restore.sh`. It writes the GSI partition table first; the stock table gives `system` 1536 MiB, too small for this super image.
 4. A tablet already running a package from this repository: `./flash.sh --yes` (`--keep-userdata` keeps `/data`).
 
+## Screenshots
+
+<img height="300px" alt="PXL_20261108_175240621 jpg" src="https://github.com/user-attachments/assets/6c9ac10f-92d0-43e6-826b-8f162be20d14" />
+<img height="300px" alt="PXL_20261108_175035032 jpg" src="https://github.com/user-attachments/assets/14219f6f-d90c-48e2-b879-8fb2313e87eb" />
+
+## Layout
+- `kernel/`: Linux 4.19 tree with the board changes (touch, bcmdhd Wi-Fi, audio, camera, RC5T619 charging policy + JEITA, lsm330, RK3288 DDR frequency driver, `rk_wdt_backstop` watchdog/log dump).
+- `kernel-configs/`: `gsi-release.config` (release kernel), `dev.config` (debug kernel with watchdog and log dump).
+- `hwc/`: Rockchip drm_hwcomposer 0.66 for HWC1, patched (`src-a16`), `build.sh` (NDK r25), `checkso.py`, headers and link libraries; `hwc/test/` holds the frame-drop measurements.
+- `vendor-changes/`: files replaced in the Tinker Board vendor image: `init.rk3288.rc`, `chgpolicy.sh`, Rockchip Power HAL + VINTF manifest, HWC `.so`, `build.prop`.
+- `release-build/`: packaging (`make-release.sh`, `guard-release.py`, `flash.sh.src`, `restore-full.sh.src`, `write-loader-head.sh.src`), release DTS and resource image, stock loader, board rescue definitions, `mkkrnl.py`, `resource_tool`, `dtc`, `rkdeveloptool`.
+- `scripts/`: image build helpers (`patch-vendor.sh`, `patch-identity.sh`, `build-super.sh`), Magisk (`make-magisk-boot.sh`, `magisk-install-data.sh`), `parse-logdump.py` (kpanic log dump reader), `restore-symlinks.py`.
+- `stock-backup/`: the stock p1 parameter partition and the first 8 MiB of the eMMC (bootloader), used for the rescue data in the package.
+- `docs/`: release notes.
+
+
 ## Changes for this tablet
 Kernel (Linux 4.19):
 - DDR frequency driver ported from the ChromeOS 4.19 RK3288 DMC; the memory runs at 456 MHz after boot instead of the loader's 396 MHz. Notification-shade janky frames 42-43% -> 34%.
@@ -33,20 +49,6 @@ Vendor partition (`vendor-changes/`):
 
 Flashing: `flash.sh` and `restore.sh` write in verified pieces, resume an interrupted flash, and restore a tablet with an erased partition table or a blank eMMC.
 
-## Screenshots
-
-<img height="300px" alt="PXL_20261108_175240621 jpg" src="https://github.com/user-attachments/assets/6c9ac10f-92d0-43e6-826b-8f162be20d14" />
-<img height="300px" alt="PXL_20261108_175035032 jpg" src="https://github.com/user-attachments/assets/14219f6f-d90c-48e2-b879-8fb2313e87eb" />
-
-## Layout
-- `kernel/`: Linux 4.19 tree with the board changes (touch, bcmdhd Wi-Fi, audio, camera, RC5T619 charging policy + JEITA, lsm330, RK3288 DDR frequency driver, `rk_wdt_backstop` watchdog/log dump).
-- `kernel-configs/`: `gsi-release.config` (release kernel), `dev.config` (debug kernel with watchdog and log dump).
-- `hwc/`: Rockchip drm_hwcomposer 0.66 for HWC1, patched (`src-a16`), `build.sh` (NDK r25), `checkso.py`, headers and link libraries; `hwc/test/` holds the frame-drop measurements.
-- `vendor-changes/`: files replaced in the Tinker Board vendor image: `init.rk3288.rc`, `chgpolicy.sh`, Rockchip Power HAL + VINTF manifest, HWC `.so`, `build.prop`.
-- `release-build/`: packaging (`make-release.sh`, `guard-release.py`, `flash.sh.src`, `restore-full.sh.src`, `write-loader-head.sh.src`), release DTS and resource image, stock loader, board rescue definitions, `mkkrnl.py`, `resource_tool`, `dtc`, `rkdeveloptool`.
-- `scripts/`: image build helpers (`patch-vendor.sh`, `patch-identity.sh`, `build-super.sh`), Magisk (`make-magisk-boot.sh`, `magisk-install-data.sh`), `parse-logdump.py` (kpanic log dump reader), `restore-symlinks.py`.
-- `stock-backup/`: the stock p1 parameter partition and the first 8 MiB of the eMMC (bootloader), used for the rescue data in the package.
-- `docs/`: release notes.
 
 ## Building
 
