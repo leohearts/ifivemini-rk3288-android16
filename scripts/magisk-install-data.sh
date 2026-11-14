@@ -95,14 +95,18 @@ else
     echo "STOP: the files on the tablet differ from the ones built here"; diff "$W/host.sha256" "$W/dev.sha256"; exit 1
 fi
 
-echo "== 4. install the module that disables the GSI's phh su"
-"$HERE/make-no-phh-su-module.sh" "$W/ifive-no-phh-su.zip" "$APK" >/dev/null
-"${ADB[@]}" push -q "$W/ifive-no-phh-su.zip" /data/local/tmp/ifive-no-phh-su.zip
-"${ADB[@]}" shell '/data/adb/magisk/magisk --install-module /data/local/tmp/ifive-no-phh-su.zip; rm -f /data/local/tmp/ifive-no-phh-su.zip' \
-    | sed 's/^/   /'
-[ -n "$("${ADB[@]}" shell 'ls /data/adb/modules 2>/dev/null | grep -x ifive-no-phh-su')" ] \
-    || { echo "STOP: the module is not in /data/adb/modules"; exit 1; }
-echo "   module installed: ifive-no-phh-su"
+echo "== 4. install the module that disables the GSI's phh su (only if the GSI has one)"
+if [ -z "$("${ADB[@]}" shell 'ls /system/etc/init/su.rc 2>/dev/null')" ]; then
+    echo "   no /system/etc/init/su.rc (e.g. LineageOS GSI): skipped"
+else
+    "$HERE/make-no-phh-su-module.sh" "$W/ifive-no-phh-su.zip" "$APK" >/dev/null
+    "${ADB[@]}" push -q "$W/ifive-no-phh-su.zip" /data/local/tmp/ifive-no-phh-su.zip
+    "${ADB[@]}" shell '/data/adb/magisk/magisk --install-module /data/local/tmp/ifive-no-phh-su.zip; rm -f /data/local/tmp/ifive-no-phh-su.zip' \
+        | sed 's/^/   /'
+    [ -n "$("${ADB[@]}" shell 'ls /data/adb/modules 2>/dev/null | grep -x ifive-no-phh-su')" ] \
+        || { echo "STOP: the module is not in /data/adb/modules"; exit 1; }
+    echo "   module installed: ifive-no-phh-su"
+fi
 
 echo "== 5. check the boot partition's Magisk config for PREINITDEVICE"
 # Without this key Magisk's env_check returns 2 (assets/app_functions.sh:17-22 needs the block node
