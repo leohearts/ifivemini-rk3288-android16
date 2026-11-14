@@ -1,14 +1,16 @@
 # iFive mini 4S — Android 16 GSI release {{DATE}}
 
 Partition map: GSI layout (system 3072 MiB @ 296 MiB, metadata 16 MiB @ 3368 MiB, userdata @ 3448 MiB).
-Super image: Android 16 GSI (TrebleDroid a64_bvS) + Tinker Board vendor partition with the patched HWC (HWC1 mix-policy + fence fix, sha 83101dff) and the charging policy service. Kernel: 4.19 release config.
+Super image: Android 16 GSI ({{SYSTEM}}) + Tinker Board vendor partition with the files of the repository's `vendor-changes/` (patched HWC1 with RGA pre-rotation and the status-bar/taskbar combine fix, three client-target buffers, the DDR rate switch, the charging policy service). Kernel: 4.19 release config with the DDR frequency driver; the memory runs at 456 MHz after boot (see "Memory clock").
+Boot partition (`images/ramdisk.img`): {{BOOT}}.
 
 ## Contents
 - `images/resource.img` (RSCE, GSI blkdevparts), `images/kernel.img` (KRNL), `images/ramdisk.img` (KRNL)
 - `images/super.img` (liblp, system/vendor/odm/product), `images/metadata.img`, `images/userdata-head-zero.img`
 - `loader/RK3288UbootLoader_V2.30.10.bin`
+- `loader/rk3288_loader_v1.12.263.bin` — the Maskrom `db` image (ddr+miniloader merged; `rkdeveloptool db` hangs on the UbootLoader file)
 - `devices/<board>/` — the per-board rescue data (see "Restoring a wiped tablet")
-- `flash.sh` (whole-image flash), `restore.sh` (wiped-tablet restore), `write-loader-head.sh` (loader-area restore), `manifest.json` (the write map derived at build time), `tools/rkdeveloptool`, `SHA256SUMS` (every images/*.img, loader/*.bin and devices/* file), `BUILD-INFO.txt`
+- `flash.sh` (whole-image flash), `restore.sh` (wiped-tablet restore), `write-loader-head.sh` (loader-area restore), `manifest.json` (the write map derived at build time), `tools/rkdeveloptool`, `SHA256SUMS` (every images/*.img, loader/*.bin, devices/* file and `write-loader-head.sh`), `BUILD-INFO.txt`
 
 This package holds the GSI image set and the Rockchip parameter structures of the supported boards only. It contains **no stock Android 11 partition images** (no system, boot, recovery, vendor from the original firmware). The original stock backup stays on the owner's machine; the copy in this package is the part that is needed to make a wiped tablet bootable again.
 
@@ -19,7 +21,7 @@ Linux x86_64 with libusb-1.0; rkdeveloptool is bundled (set RKDEVELOPTOOL to use
 1. Put the tablet in Rockchip download mode, so it enumerates as USB `2207:320a`. From a running system `adb reboot loader` does it; check with `./tools/rkdeveloptool ld`, which prints `Loader` or `Maskrom`. `flash.sh` accepts either state (the Maskrom steps are in "A tablet with a blank eMMC").
 2. `./flash.sh --dry-run` (no device touched), then `./flash.sh --yes`.
    `./flash.sh --keep-userdata` leaves `/data` alone: it skips the two writes that destroy it (the `metadata` partition and the first 1 MiB of `userdata`, which holds the ext4 superblock) and still replaces system, vendor, odm, kernel, ramdisk and the device tree. `/data` on this tablet is a plain ext4 with no encryption behind it (`ro.crypto.state=unsupported`, `/dev/block/mmcblk0p13` mounted directly), so it stays readable when those two writes are skipped. Measured here: after a `--keep-userdata` flash of a package whose `build.prop` identity keys had changed, the oldest app data directories in `/data/data` still dated from the boot before the flash (10 hours earlier) and all 8 user-installed apps were still installed - Android did not factory reset itself. Still, back up anything you cannot lose: that is one tablet, one boot.
-3. Script verifies SHA-256, writes each image, reads back and compares, then resets. First boot takes several minutes.
+3. Script verifies SHA-256, writes each image, clears the leftover download-mode boot command by writing 1 MiB of zeros over the misc partition (skip with `--no-clear-misc`), reads back and compares, then resets. First boot takes several minutes.
 
 ## Restoring a wiped tablet
 
@@ -192,8 +194,8 @@ A board entry is one directory under `devices/` plus one JSON file that describe
 ### The order of the recovery
 
 1. **Maskrom → Loader mode.** While the tablet is in Maskrom mode not one eMMC sector can be read or written: the Rockchip loader has to run from RAM first.
-   - `./restore.sh --maskrom` does that: it pushes the bundled loader (`loader/RK3288UbootLoader_V2.30.10.bin`) into the tablet's RAM with `rkdeveloptool db` and continues with the normal flow. It is off by default, and it has failed on this tablet (see below).
-   - The documented route is RKDevTool/AFPTool on Windows (Advanced Function → Download Boot with `loader/RK3288UbootLoader_V2.30.10.bin`); that leaves the tablet in Loader mode as well.
+   - `./restore.sh --maskrom` does that: it pushes `loader/rk3288_loader_v1.12.263.bin` into the tablet's RAM with `rkdeveloptool db` and continues with the normal flow. (Before 2026-11-12 it pushed `loader/RK3288UbootLoader_V2.30.10.bin` instead - that file is not a `db` image and the download hangs; fixed.)
+   - The documented route is RKDevTool/AFPTool on Windows (Advanced Function → Download Boot with `loader/rk3288_loader_v1.12.263.bin`); that leaves the tablet in Loader mode as well.
 2. **The loader area** (idblock + `u-boot.itb`, raw eMMC sectors 0x0000..0x1FFF): `./write-loader-head.sh --board <id>`, or RKDevTool/AFPTool on Windows ("write by address 0") with `devices/<board>/head-4M.bin` — 4 MiB at eMMC sector 0.
 3. **The parameter structures**: `./restore.sh --board <id> --parameters-only` (the loader-area parameter copy to tool LBA 0x0000, the p1 parameter partition to tool LBA 0x2000).
 4. **The GSI images**: `./restore.sh --board <id>`.
@@ -251,6 +253,8 @@ The loader area (raw 0x0000..0x1FFF) is therefore at tool LBA −0x2000..−1, b
 
 The base of the LBA numbering is **established, never guessed**: the script reads the loader head back from the two candidate addresses (tool LBA 0x0000 and tool LBA 0x2000, both read from `devices/<board>/device.json`) and compares it with `head-4M.bin`. On a blank tablet both read as zeros, so the script refuses to write, says that the base cannot be detected and asks for `--lba-base`.
 
+For a blank **iFive mini 4S** use `--lba-base tool`. The evidence is every release flash of 2026-10/11 with this package's `tools/rkdeveloptool`: `resource.img` was written at tool LBA 0x6000 and the tablet booted each time, which is only possible if tool LBA 0 corresponds to raw eMMC sector 0x2000 (the "tool" base in the script's naming). A wrong choice is not fatal: the loader area is overwritten in place, the same file can be written again after the next boot into Maskrom, and the script reports any readback mismatch before it writes anything else - it writes no other region.
+
 The script writes the loader area and nothing else: it writes `devices/<board>/head-4M.bin`, reads the region back, compares it byte for byte, checks the `RK32` tag at byte offset 0x8800, and never resets the tablet. It refuses to run when the tablet is not enumerated, when `devices/<board>/head-4M.bin` is missing, and it asks for the word `restore` before it writes.
 
 
@@ -273,18 +277,19 @@ changed through `ID_BRAND` / `ID_MANUFACTURER` / `ID_MODEL` / `ID_NAME` / `ID_DE
 `ro.vendor.build.fingerprint` and `ro.bootimage.build.fingerprint` stay the ASUS Tinker Board
 Android 11 strings, because those blobs really are that build.
 
-## Optional: Magisk root (replacement boot partition)
-Published next to this zip, not inside it: `ifive-mini4s-android16-boot-magisk-v31.img` with its
-`.sha256` (Magisk 31.0, whose APK sha256 is `2c8a488b9a5293e578e95ae4f07e3c57aba4feec4a52ca4dd852a2692d6dd4e8`).
-It replaces `images/ramdisk.img` at tool LBA `0x16000` — the same partition flash.sh writes:
+## Magisk root (boot partition)
+When the "Boot partition" line at the top of this file names Magisk, `images/ramdisk.img` already is
+the Magisk-patched boot partition and `flash.sh` writes it; continue with the two steps below. A
+package built without Magisk writes the generic ramdisk; the Magisk image is then published next to
+the zip as `ifive-mini4s-android16-boot-magisk-v31.img` with its `.sha256` (Magisk 31.0, APK sha256
+`2c8a488b9a5293e578e95ae4f07e3c57aba4feec4a52ca4dd852a2692d6dd4e8`) and replaces `images/ramdisk.img`
+at tool LBA `0x16000` — the same partition flash.sh writes:
 
 ```sh
 sha256sum -c ifive-mini4s-android16-boot-magisk-v31.img.sha256
 rkdeveloptool wl 0x16000 ifive-mini4s-android16-boot-magisk-v31.img
 rkdeveloptool rd
 ```
-
-Run `flash.sh` again to go back to the unrooted boot partition.
 
 **The boot image alone is not a complete Magisk install on this tablet.** With only that partition
 flashed, `magiskd` starts but stops in its post-fs-data stage every boot with
@@ -375,11 +380,34 @@ Verified offline only: `magiskboot cpio test` reports the ramdisk as Magisk patc
 `mkkrnl.py verify` reports the CRC, and unpacking the finished file gives the same members.
 Not tested on the tablet.
 
+## Memory clock (DDR)
+- The loader leaves the LPDDR2 at 396 MHz. The kernel carries a DDR frequency driver that needs no secure firmware (`CONFIG_ARM_RK3288_DMC_DEVFREQ`, ported from the ChromeOS 4.19 RK3288 DMC; device tree node `dmc-cros@ff610000`). It boots on the devfreq `userspace` governor and never changes the rate on its own.
+- `/vendor/etc/init/hw/init.rk3288.rc` writes 456 MHz (the stock 3.10 firmware's normal rate, vdd_logic 1.15 V) to `/sys/class/devfreq/ff610000.dmc-cros/userspace/set_freq` once boot completes.
+- Why: during notification-shade animations the memory bus hits its limit at 396 MHz (the DDR monitor's busy share stops at 71%). Same-session A/B with Settings in the foreground, 16 shade animations per arm: janky frames 42.0% and 43.3% at 396 MHz, 33.9% and 34.5% at 456 MHz.
+- 528 MHz (the stock firmware's performance rate) is not offered: on this board SurfaceFlinger died with SIGILL under load about 1.5 minutes after switching to it.
+- A rate switch can corrupt the top lines of one frame, because the panel's vertical blank (194 µs) is shorter than a switch. It happens once per boot.
+- Back to 396 MHz until the next boot (root): `echo 396000000 > /sys/class/devfreq/ff610000.dmc-cros/userspace/set_freq`.
+
+## Kernel timers
+- The device tree enables the RK3288 timer `timer@ff6b0000` (`rockchip,rk3288-timer`, driver `CONFIG_ROCKCHIP_TIMER`) as the tick broadcast device.
+- Why: the ARM arch timer node has no `always-on`, so the kernel treats it as stopping in idle and only leaves the periodic 300 Hz tick when a oneshot broadcast device exists. With the timer node disabled (as in earlier packages) `/proc/timer_list` showed `hres_active: 0` and a 3.33 ms resolution on every CPU, so every `timerfd`/`nanosleep`/hrtimer (including SurfaceFlinger's vsync wake-ups and `simpleperf` sampling) was rounded to tick boundaries.
+- Measured after a cold boot with Settings in the foreground: SurfaceFlinger `missedFrames` per 72 s arm went from 423-733 to 0-44; the shade janky-frame share stayed at about 33%. `simpleperf -c 250000` now records one sample per 0.25 ms of thread CPU (5929 samples for 1492 ms) instead of about one per jiffy.
+- Check (root): `grep -m1 -A1 "^Broadcast device" /proc/timer_list` shows `rk_timer`.
+
+## Landscape composition (HWC)
+- In landscape the wallpaper buffer (2048x2048) needs a 90° rotation. The VOP windows cannot rotate, and the stock HWC sent the whole frame to GPU composition whenever one RGB layer was rotated. The HWC now pre-rotates that one layer with RGA and scans the result out on a VOP window; the RGA output is reused while the wallpaper buffer, crop and destination are unchanged, so a static wallpaper costs one RGA pass, not one per frame. More than one rotated layer still goes to GPU composition.
+- When a frame has more layers than VOP windows (landscape shade: wallpaper, launcher, status bar, shade, taskbar), the HWC puts the bottom layers into the client target if none of them changed since the previous frame, so SurfaceFlinger reuses its client composition and the changing top layers keep their windows.
+- Measured on the same boot (8 rounds per scene, 6 background tasks), stock HWC vs this HWC: landscape app drawer janky frames 68-71% -> 44-47%, GPU-composed frames 383/383 -> 0; landscape shade 72-74% -> 47-50%; portrait recents 13-15% -> 12-13%.
+- The vendor ext4 image has no free blocks, so `hwc/build.sh` links with `--icf=all --pack-dyn-relocs=android` to keep the HAL no larger than the one it replaces.
+- The HWC no longer sends a DRM TEST_ONLY commit on every frame whose geometry changed (every frame of a shade animation). Its result only fed a squash path that was disabled, and the test waited on the previous commit's vblank for up to 33 ms, delaying the next frame on the composite thread. Same-boot A/B in the landscape shade: SurfaceFlinger missed frames 110-329 -> 72-76, janky frames 48.5-48.7% -> 46.3-48.2%.
+- `vendor/build.prop` sets `ro.surface_flinger.max_frame_buffer_acquired_buffers=3`, so SurfaceFlinger allocates three client-target (FramebufferSurface) buffers instead of two. With two, GPU composition had to wait inside the Mali driver until the display released the other buffer at the next vblank (RenderEngine slept about 6 ms per rounded-corner draw). Recents opened from a running app shows that app as a rounded tile, which SurfaceFlinger must compose on the GPU. Same-boot A/B there (6 swipes, 3 rounds per arm, 2 arms each): janky frames 78-84% -> 43-47%. Cost: one more 12 MiB buffer.
+- Status bar + task bar share one VOP window (multi-area). The pairing in `combine_layer()` first checked a new layer only against the first layer of the group, so a 108x108 layer over the task bar joined it and two areas of one window shared scanlines (y 1940–2048). On that boot the VOP IOMMU took a read fault 48 KiB past the end of a window buffer and stayed in the fault state: vertical stripes, then a black panel after screen off/on (`Failed to attach iommu device`). The pairing now checks every layer in the group and every group the layer is moved below. The overlap → fault link is inferred from the register dump; the overlapping areas are in the dump itself.
+
 ## Charging policy
 - Powered-off tablet on charger: `reboot -p` with the charger attached was tested; the panel stayed dark, USB charging was observed, and Android did not boot on its own.
 - Charge-boost switch (`persist.vendor.chg.boost`) is verified on device: `vendor.chgpolicy` runs, `high_current_allowed=Y`, and the ADP input current limit rises to 2000000.
 
 ## Known issues
 - Hard hang: rare, root cause unknown. Most earlier "hangs" were the host-side adb server wedging, not the tablet. The one hang with a kpanic ring behind it stopped at 86.7 s during init (netd/wificond start), with no kernel error.
-- Hardware watchdog verified on the debug kernel: a hard hang resets in about 10–16 s and returns to maskrom via the loader flag. The release kernel runs with `rkwdt=0` — no timed reset and no watchdog, only the kpanic log dump.
+- Hardware watchdog verified on the debug kernel: a hard hang resets in about 10–16 s and returns to maskrom via the loader flag. The release kernel runs with `rkwdt=0` — no timed reset and no watchdog, only the kpanic log dump. To arm it, also pass `rkwdt_sgrf=0x00420000`: on current boots `SGRF_SOC_CON0` reads `0x0000000f`, and with bit 1 (the watchdog clock gate) set the backstop leaves the watchdog alone.
 - The native HWC2 port (drm_hwcomposer) does not initialise on this VOP (`init_success_=0`, plane 0 keeps the fbcon frame), so it was reverted; the release uses the patched HWC1 through the hwc2on1adapter.
