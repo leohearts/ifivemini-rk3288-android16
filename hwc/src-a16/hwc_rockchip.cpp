@@ -1264,6 +1264,37 @@ int is_x_intersect(DrmHwcRect<int>* rec,DrmHwcRect<int>* rec2)
 }
 
 
+// Pair a vertically stacked layer with the base layer for plane-group
+// combine: same non-YUV format, same alpha, neither scaled, rects do not
+// overlap, and the upper rect ends at/before the lower rect starts
+// (e.g. status bar above the task bar on the same column).
+static bool is_layer_pair_vertical(DrmHwcLayer *layer_one,DrmHwcLayer *layer_two)
+{
+    if(layer_one->format >= HAL_PIXEL_FORMAT_YCrCb_NV12
+        || layer_two->format >= HAL_PIXEL_FORMAT_YCrCb_NV12
+        || (layer_one->format != layer_two->format)
+        || layer_one->alpha != layer_two->alpha
+        || layer_one->is_scale || layer_two->is_scale
+        || is_rec1_intersect_rec2(&layer_one->display_frame,&layer_two->display_frame))
+    {
+        return false;
+    }
+
+    if(layer_one->display_frame.top == layer_two->display_frame.top)
+        return false;
+
+    DrmHwcRect<int> *upper,*lower;
+    if(layer_one->display_frame.top < layer_two->display_frame.top) {
+        upper = &layer_one->display_frame;
+        lower = &layer_two->display_frame;
+    } else {
+        upper = &layer_two->display_frame;
+        lower = &layer_one->display_frame;
+    }
+
+    return upper->bottom <= lower->top;
+}
+
 static bool is_layer_combine(DrmHwcLayer * layer_one,DrmHwcLayer * layer_two)
 {
 #if USE_MULTI_AREAS==0
@@ -1457,6 +1488,42 @@ static int combine_layer(LayerMap& layer_map,std::vector<DrmHwcLayer>& layers,
         }
   }
 #endif
+
+  // Combine adjacent singleton groups whose layers stack vertically without
+  // overlap into one group (chained: one base pairs with several below it),
+  // so a single plane group covers e.g. status bar + task bar.
+  // The candidate must be vertically separate from every layer already in the
+  // group, not only from the base: VOP multi-area windows need areas that do not
+  // share scanlines, and pairing against the base alone let a 108x108 layer over
+  // the task bar join the status bar + task bar group. It must also not overlap
+  // any group it is moved below in z-order.
+  for (LayerMap::iterator iter = layer_map.begin();
+       iter != layer_map.end(); ++iter) {
+        if(iter->second.size() != 1)
+            continue;
+
+        LayerMap::iterator next = iter;
+        ++next;
+        while(next != layer_map.end()) {
+            bool ok = next->second.size() == 1;
+            for(size_t m = 0; ok && m < iter->second.size(); m++)
+                ok = is_layer_pair_vertical(iter->second[m], next->second[0]);
+            for(LayerMap::iterator mid = std::next(iter); ok && mid != next; ++mid)
+                for(DrmHwcLayer *l : mid->second)
+                    if(is_rec1_intersect_rec2(&l->display_frame, &next->second[0]->display_frame)) {
+                        ok = false;
+                        break;
+                    }
+            if(ok) {
+                ALOGD_IF(log_level(DBG_DEBUG),"pair %s with %s",
+                    iter->second[0]->name.c_str(), next->second[0]->name.c_str());
+                iter->second.emplace_back(next->second[0]);
+                next = layer_map.erase(next);
+            } else {
+                ++next;
+            }
+        }
+  }
 
   for (LayerMap::iterator iter = layer_map.begin();
        iter != layer_map.end(); ++iter) {
@@ -2181,6 +2248,19 @@ void resore_tmp_layers_except_fb(std::vector<DrmHwcLayer>& layers, std::vector<D
     move_fb_layer_to_tmp(layers, tmp_layers);
 }
 
+/* rev-note: present in FIXED binary as one local helper (0x4b7b0, property_get+atof,
+ * float default passed in s0) called once per frame for each property below -
+ * the values are NOT cached across frames. */
+static float hwc_get_float_property(const char *key, const char *def_value)
+{
+    char value[PROPERTY_VALUE_MAX] = {0};
+
+    if (property_get(key, value, def_value) > 1)
+        return atof(value);
+
+    return (float)atof(def_value);
+}
+
 bool mix_policy(DrmResources* drm, DrmCrtc *crtc, hwc_drm_display_t *hd,
                 std::vector<DrmHwcLayer>& layers, int iPlaneSize, int fbSize,
                 std::vector<DrmCompositionPlane>& composition_planes)
@@ -2479,8 +2559,17 @@ AllMatch:
     if(iUsePlane >= hd->iPlaneSize && !hd->isHdr)
     {
         float scale_factor = vop_band_width(hd, layers);
+        /* rev-note: FIXED binary compares bandwidth against two live-read
+         * properties instead of literals:
+         *   trigger: persist.vendor.hwc.vop.scale_trigger, default 6.5 (binary imm #26)
+         *   limit:   persist.vendor.hwc.vop.scale_limit,   default 5.5 (binary imm #22)
+         * gate order: bandwidth<=trigger -> accept (skip whole merge block). */
+        float scale_trigger = hwc_get_float_property(
+                "persist.vendor.hwc.vop.scale_trigger", "6.5");
+        float scale_limit = hwc_get_float_property(
+                "persist.vendor.hwc.vop.scale_limit", "5.5");
         float head_factor = 0.0, tail_factor = 0.0;
-        if(scale_factor > 4.5)
+        if(scale_factor > scale_trigger)
         {
             ALOGD_IF(log_level(DBG_DEBUG), "scale_factor=%f is so big",scale_factor);
             if(layers.size() >= 4 && !bHasSkipLayer)
@@ -2508,14 +2597,14 @@ AllMatch:
                     bAllMatch = try_mix_policy(drm, crtc, hd->is_interlaced, layers, tmp_layers, iPlaneSize, composition_planes,
                                         layer_indices.first, layer_indices.second, fbSize);
                     scale_factor = vop_band_width(hd, layers);
-                    if(bAllMatch && scale_factor <= 3.3)
+                    if(bAllMatch && scale_factor <= scale_limit)
                     {
                         return true;
                     }
                     else
                     {
-                        ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d vop band with is too big,fail match (%d,%d),scale_factor=%f",
-                                __FUNCTION__, __LINE__, layer_indices.first, layer_indices.second, scale_factor);
+                        ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d fail match after band merge (%d,%d),bAllMatch=%d scale_factor=%f limit=%f",
+                                __FUNCTION__, __LINE__, layer_indices.first, layer_indices.second, bAllMatch, scale_factor, scale_limit);
                         goto FailMatch;
                     }
                 }
@@ -2530,12 +2619,12 @@ AllMatch:
                     bAllMatch = try_mix_policy(drm, crtc, hd->is_interlaced, layers, tmp_layers, iPlaneSize, composition_planes,
                                         layer_indices.first, layer_indices.second, fbSize);
                     scale_factor = vop_band_width(hd, layers);
-                    if(bAllMatch && scale_factor <= 3.3)
+                    if(bAllMatch && scale_factor <= scale_limit)
                         return true;
                     else
                     {
-                        ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d vop band with is too big,fail match (%d,%d),scale_factor=%f",
-                                __FUNCTION__, __LINE__, layer_indices.first, layer_indices.second, scale_factor);
+                        ALOGD_IF(log_level(DBG_DEBUG), "%s:line=%d fail match after band merge (%d,%d),bAllMatch=%d scale_factor=%f limit=%f",
+                                __FUNCTION__, __LINE__, layer_indices.first, layer_indices.second, bAllMatch, scale_factor, scale_limit);
                         goto FailMatch;
                     }
                 }
