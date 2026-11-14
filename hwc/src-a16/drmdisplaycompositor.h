@@ -209,7 +209,6 @@ class DrmDisplayCompositor {
 
   bool initialized_;
   bool active_;
-  bool use_hw_overlays_;
   /*
    *  Currently, ClearDisplay only to clear composition in DrmCompositorWorker,
    *  but sometime some compositions exist in FrameWorker, so, we must set

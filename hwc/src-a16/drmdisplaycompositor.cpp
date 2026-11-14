@@ -325,7 +325,6 @@ DrmDisplayCompositor::DrmDisplayCompositor()
       frame_worker_(this),
       initialized_(false),
       active_(false),
-      use_hw_overlays_(true),
       framebuffer_index_(0),
 #if RK_RGA_COMPSITE_SYNC
       rgaBuffer_index_(0),
@@ -1834,33 +1833,11 @@ int DrmDisplayCompositor::Composite() {
         return ret;
       }
 
-      if (composition->geometry_changed()) {
-        // Send the composition to the kernel to ensure we can commit it. This
-        // is just a test, it won't actually commit the frame. If rejected,
-        // squash the frame into one layer and use the squashed composition
-        ret = CommitFrame(composition.get(), true);
-        if (ret)
-          ALOGI("Commit test failed, squashing frame for display %d(skip squashing by libin)", display_);
-        use_hw_overlays_ = !ret;
-      }
-
-      // If use_hw_overlays_ is false, we can't use hardware to composite the
-      // frame. So squash all layers into a single composition and queue that
-      // instead.
-      if ( 0 && !use_hw_overlays_) {
-        std::unique_ptr<DrmDisplayComposition> squashed = CreateComposition();
-        ret = SquashFrame(composition.get(), squashed.get());
-        if (!ret) {
-          composition = std::move(squashed);
-        } else {
-          ALOGE("Failed to squash frame for display %d", display_);
-          // Disable the hw used by the last active composition. This allows us
-          // to signal the release fences from that composition to avoid
-          // hanging.
-          ClearDisplay();
-          return ret;
-        }
-      }
+      // No TEST_ONLY commit here: its only consumer, squashing, is disabled, and
+      // the test takes the DRM modeset locks, so it waited for the previous
+      // blocking commit's vblank on this thread (up to 33 ms) and delayed the
+      // frame. A configuration the kernel rejects fails in ApplyFrame's real
+      // commit, which clears the display the same way.
       frame_worker_.QueueFrame(std::move(composition), ret);
       break;
     case DRM_COMPOSITION_TYPE_DPMS:
