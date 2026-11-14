@@ -1,21 +1,28 @@
-# iFive mini 4S — Android 16 GSI release 2026-11-15 (LineageOS 23.2 + Magisk)
+# iFive mini 4S — Android 16 GSI release 2026-11-15 (LineageOS 23.2)
 
-Package: `ifive-mini4s-android16-gsi-2026-11-15-lineage232-magisk.zip`, built by
-`release-build/make-release.sh` from a clean checkout of branch `release-2026-11-15`:
+Assets:
+- `ifive-mini4s-android16-gsi-2026-11-15-lineage232.zip` — the full package (flash.sh, restore.sh,
+  write-loader-head.sh, rescue data), generic boot ramdisk, no Magisk.
+- `ifive-mini4s-android16-boot-magisk-v31.img` (+ `.sha256`) — optional Magisk 31.0 boot partition,
+  written instead of `images/ramdisk.img` at tool LBA `0x16000` (see "Magisk root" in the package
+  README).
+
+Built from a clean checkout of branch `release-2026-11-15-r2`:
 
 ```sh
 ./build-kernel.sh gsi-release
-MAGISK_APK=Magisk-v31.0.apk SYSTEM_NAME="LineageOS 23.2 GSI, 23.2-20260620-VANILLA-EXT4-GSI" \
-  release-build/make-release.sh <inputs-lineage> 2026-11-15-lineage232-magisk
+SYSTEM_NAME="LineageOS 23.2 GSI, 23.2-20260620-VANILLA-EXT4-GSI" \
+  release-build/make-release.sh <inputs-lineage> 2026-11-15-lineage232
+scripts/make-magisk-boot.sh <inputs-lineage>/ramdisk.img Magisk-v31.0.apk ifive-mini4s-android16-boot-magisk-v31.img
 ```
 
 Inputs: the LineageOS 23.2 super of the 2026-11-09 package (2037186560 B), its ramdisk
-(sha256 `59b84a0a...`), Magisk 31.0 (APK sha256 `2c8a488b...`). `images/ramdisk.img` is the
-Magisk-patched boot partition (sha256 `004d4b45...`, the same bytes as the published
-`boot-magisk-v31.img`). The vendor region of super carries `vendor-changes/`; the guard checks
-every file of it inside the packaged image. `release-build/resource-release-gsi.img` rebuilt
-from its DTS is byte-identical to the committed one; the HAL rebuilt from `hwc/src-a16` is
-byte-identical to `vendor-changes/lib/hw/hwcomposer.rk30board.so` (md5 `9d36db12`).
+(sha256 `59b84a0a...`), Magisk 31.0 (APK sha256 `2c8a488b...`). The Magisk image (sha256
+`004d4b45...`) is byte-identical to the one published with the 2026-11-08 release. The vendor
+region of super carries `vendor-changes/`; the guard checks every file of it inside the packaged
+image. `release-build/resource-release-gsi.img` rebuilt from its DTS is byte-identical to the
+committed one; the HAL rebuilt from `hwc/src-a16` is byte-identical to
+`vendor-changes/lib/hw/hwcomposer.rk30board.so` (md5 `9d36db12`).
 
 ## What changed since commit 97321b36
 
@@ -28,7 +35,9 @@ layers), three client-target buffers. Each commit message carries its own A/B me
 
 ## Acceptance (same tablet, `/data` kept, flashed with `flash.sh --keep-userdata`)
 
-Base = package built from commit 97321b36 with the same LineageOS super and Magisk boot.
+Base = package built from commit 97321b36 with the same LineageOS super. Both base and this
+release were measured with the Magisk boot partition above written (the release package with
+the generic ramdisk was flashed and booted separately, see below).
 Both measured by `hwc/test/release-check.sh` right after a boot, two runs each, no
 composer/SurfaceFlinger restart. Janky = launcher3/systemui gfxinfo janky frames.
 
