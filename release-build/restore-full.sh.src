@@ -5,6 +5,7 @@
 # enters download mode; from a running system `adb reboot loader` does it.
 #
 #   ./restore.sh [--board ID] [--yes] [--parameters-only] [--plan] [--maskrom]
+#                [--chunk KiB] [--gap SECONDS] [--fresh]
 #
 #   --board ID         restore for this board (devices/ID/). Without it the board
 #                      is detected from the parameter structure the device holds.
@@ -17,9 +18,19 @@
 #                      tablet's RAM with "rkdeveloptool db" and continue.
 #                      Off by default: "db" is not safe to run unattended and
 #                      has failed on this tablet before.
+#   --chunk K          write images in pieces of K KiB (default 512; this
+#                      tablet's power stage drops USB sessions during long
+#                      writes, so no wl runs unbroken for more than K KiB)
+#   --gap S            seconds to sleep between write pieces (default 0.15)
+#   --fresh            ignore the resume file .flash-progress.txt and write
+#                      every partition again
 #
-# RKDEVELOPTOOL=/path/to/rkdeveloptool overrides the tool (default: the bundled
-# tools/rkdeveloptool, then rkdeveloptool in PATH).
+# A partition is appended to .flash-progress.txt (next to this script) once
+# all of its pieces were written AND read back OK; a later run skips those
+# partitions ("RESUME: skipping <name>") instead of restarting from zero.
+#
+# RKDEVELOPTOOL=/path/to/rkdeveloptool (or RK=) overrides the tool (default:
+# the bundled tools/rkdeveloptool).
 #
 # Where every write goes is derived from the package, not hardcoded here:
 #   - the partition table comes from the device tree inside images/resource.img
@@ -32,8 +43,10 @@
 # The tablet is not reset at the end.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-RK=${RKDEVELOPTOOL:-$HERE/tools/rkdeveloptool}
-[ -x "$RK" ] || RK=rkdeveloptool
+RK=${RK:-${RKDEVELOPTOOL:-$HERE/tools/rkdeveloptool}}
+# No PATH fallback: the bundled tool numbers wl/rl from the data region
+# (absolute eMMC sector - 0x2000); a build with absolute numbering would
+# silently shift every write by 0x2000 sectors.
 RESOURCE_TOOL=$HERE/tools/resource_tool
 DTC=$HERE/tools/dtc
 YES=0
@@ -42,7 +55,11 @@ PLAN_ONLY=0
 MASKROM=0
 BOARD=""
 CH=16777216                                          # super is written in 16 MiB pieces
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
+DRY=0                             # restore has no dry-run; lib-wl.inc reads DRY
+# chunked write throttling (lib-wl.inc): piece size in bytes, gap in seconds,
+# FRESH=1 (--fresh) ignores the resume file; env WL_CHUNK/WL_GAP also work.
+WL_CHUNK=${WL_CHUNK:-524288}; WL_GAP=${WL_GAP:-0.15}; FRESH=${FRESH:-0}
+usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --board) [ $# -ge 2 ] || usage; BOARD=$2; shift 2 ;;
@@ -50,6 +67,11 @@ while [ $# -gt 0 ]; do
     --parameters-only) PARAM_ONLY=1; shift ;;
     --plan) PLAN_ONLY=1; shift ;;
     --maskrom) MASKROM=1; shift ;;
+    --fresh) FRESH=1; shift ;;
+    --chunk) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage ;; esac
+             [ "$2" -ge 1 ] || usage; WL_CHUNK=$(( $2 * 1024 )); shift 2 ;;
+    --gap) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9.]*) usage ;; esac
+           WL_GAP=$2; shift 2 ;;
     -h|--help) usage ;;
     *) usage ;;
   esac
@@ -204,11 +226,11 @@ board_field() { # board, key -> value
 
 # ------------------------------------------------------------- derivation ----
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/ifive-restore.XXXXXX") || die "mktemp failed"
+TMP=$(mktemp -d "${TMPDIR:-$HERE}/.ifive-restore.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$TMP"' EXIT
 
 derive_plan() { # board
-  local board=$1 dts file lba bytes size psize key i
+  local board=$1 file lba bytes size psize key i
   local images="images/resource.img images/kernel.img images/ramdisk.img images/super.img images/metadata.img images/userdata-head-zero.img"
   local roles="resource kernel boot system metadata userdata"
 
@@ -321,7 +343,7 @@ verify_files() { # board
 # device fell off the USB bus).
 maskrom_bootstrap() {
   local out LD2 loader
-  loader="$HERE/loader/RK3288UbootLoader_V2.30.10.bin"
+  loader="$HERE/loader/rk3288_loader_v1.12.263.bin"   # db needs the boot-merged ddr+miniloader; UbootLoader.bin hangs db
   [ -f "$loader" ] || die "missing $loader" 3
   echo "== Maskrom: pushing the bundled loader into the tablet's RAM (rkdeveloptool db)"
   out=$(timeout 120 "$RK" db "$loader" 2>&1) || true
@@ -448,11 +470,21 @@ wl_verify() { # lba file offset len label
   return 0
 }
 
+# chunked throttled writes + resume progress (shared with flash.sh)
+[ -f "$HERE/lib-wl.inc" ] || die "missing $HERE/lib-wl.inc - the package is incomplete"
+. "$HERE/lib-wl.inc"
+# --fresh: reset the resume file before the first write so the partitions this
+# run completes are recorded against a clean slate.
+if [ "$FRESH" = 1 ]; then
+  : > "$WL_PROGRESS" || die "cannot reset $WL_PROGRESS"
+fi
+
 item() { # lba file label
   local lba=$1 f=$2 label=$3 size
+  if resume_has "$label"; then echo "RESUME: skipping $label"; return 0; fi
   size=$(stat -L -c %s "$f")
   echo "-- $label: $size B -> tool LBA $(printf '0x%05x' "$lba") (raw sector $(printf '0x%05x' $((lba + 8192))))"
-  if wl_verify "$lba" "$f" 0 "$size" "$label"; then
+  if wl_chunk "$lba" "$f" "$label"; then
     echo "PASS $label @ $(printf '0x%05x' "$lba") (raw sector $(printf '0x%05x' $((lba + 8192))), $size B)"
   else
     echo "FAIL $label @ $(printf '0x%05x' "$lba")"
@@ -462,18 +494,20 @@ item() { # lba file label
 
 write_super() { # lba file
   local lba=$1 f=$2 size n i off len chunk_lba
+  if resume_has system; then echo "RESUME: skipping system"; return 0; fi
   size=$(stat -L -c %s "$f"); n=$(( (size + CH - 1) / CH ))
   echo "-- system-super: $size B in $n chunk(s) of $CH B -> tool LBA $(printf '0x%05x' "$lba")"
   for ((i = 0; i < n; i++)); do
     off=$((i * CH)); len=$((size - off)); [ "$len" -le "$CH" ] || len=$CH
     chunk_lba=$((lba + off / 512))
-    if wl_verify "$chunk_lba" "$f" "$off" "$len" "system chunk $((i + 1))/$n"; then
+    if wl_window "$chunk_lba" "$f" "$off" "$len" "system chunk $((i + 1))/$n"; then
       echo "   OK system chunk $((i + 1))/$n @ $(printf '0x%05x' "$chunk_lba") ($len B)"
     else
       echo "FAIL system chunk $((i + 1))/$n @ $(printf '0x%05x' "$chunk_lba")"
       die "write or readback failed: system chunk $((i + 1))/$n" 4
     fi
   done
+  resume_record system "$f" || die "cannot append to $WL_PROGRESS" 4
   echo "PASS system-super @ $(printf '0x%05x' "$lba") (raw sector $(printf '0x%05x' $((lba + 8192))), $size B)"
 }
 

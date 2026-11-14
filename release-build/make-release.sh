@@ -37,8 +37,12 @@ rm -rf "$T"; mkdir -p "$T/images" "$T/loader" "$T/tools"
 cp "$RES" "$T/images/resource.img"; cp "$KRN" "$T/images/kernel.img"
 cp "$IN/ramdisk.img" "$IN/super.img" "$IN/metadata.img" "$IN/userdata-head-zero.img" "$T/images/"
 cp "$LOADER" "$T/loader/"; cp "$RK" "$T/tools/rkdeveloptool"
+cp "$HERE/loader/rk3288_loader_v1.12.263.bin" "$T/loader/"   # Maskrom db file (BOOT-merged ddr+miniloader; UbootLoader.bin is NOT accepted by db)
 # the rescue script needs the device tree tools to derive the partition map
 cp "$HERE/tools/dtc" "$HERE/tools/resource_tool" "$T/tools/"
+# chunked-write/resume library sourced by flash.sh and restore.sh (both die
+# without it, so it must ship next to them in every package)
+cp "$HERE/lib-wl.inc" "$T/lib-wl.inc"
 # rescue part (restore of a wiped tablet): built from the board definitions
 if [ -d "$HERE/boards" ]; then
   STOCK_BACKUP_DIR=${STOCK_BACKUP_DIR:-} python3 "$HERE/make-restore.py" "$T" --boards-dir "$HERE/boards"
@@ -61,9 +65,9 @@ else
   python3 "$HERE/make-flash.py" "$T" --template "$HERE/flash.sh.src" --output "$T/flash.sh" --layout gsi
 fi
 # SHA256SUMS covers every shipped payload: images/*.img, loader/*.bin, the
-# files of every board and the loader-area script (flash.sh and restore.sh
-# both run "sha256sum -c" on it)
-( cd "$T" && find . -type f \( -path './images/*.img' -o -path './loader/*.bin' -o -path './devices/*/*' -o -path './write-loader-head.sh' \) -printf '%P\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS )
+# files of every board, the loader-area script and the shared chunked-write
+# library (flash.sh and restore.sh both run "sha256sum -c" on it)
+( cd "$T" && find . -type f \( -path './images/*.img' -o -path './loader/*.bin' -o -path './devices/*/*' -o -path './write-loader-head.sh' -o -path './lib-wl.inc' \) -printf '%P\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS )
 python3 "$HERE/guard-release.py" "$T/images/resource.img" "$T/images/super.img" "$T/flash.sh"
 sed "s/{{DATE}}/$DATE/g" "$HERE/README-gsi.md.tmpl" > "$T/README.md"
 { echo "Build date: $DATE"; echo "Layout: gsi (SUPER 0x92000, META 0x692000, UD 0x6ba000)"; ( cd "$T" && sha256sum images/* loader/* ); } > "$T/BUILD-INFO.txt"

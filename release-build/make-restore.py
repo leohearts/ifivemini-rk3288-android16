@@ -34,7 +34,6 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_STOCK_BACKUP_DIR = "/home/leohearts/rk3288-ifive-mini4s/stock-backup"
 BOARDS_DIR = os.path.join(HERE, "boards")
 
 IMG_SIZE = 4 * 1024 * 1024

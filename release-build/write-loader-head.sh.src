@@ -33,7 +33,9 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RK=${RKDEVELOPTOOL:-$HERE/tools/rkdeveloptool}
-[ -x "$RK" ] || RK=rkdeveloptool
+# No PATH fallback: the bundled tool numbers wl/rl from the data region
+# (tool LBA 0 = the first sector after the 4 MiB loader area); a tool with
+# other numbering shifts writes by 4 MiB.
 BOARD=""
 BASE=""
 YES=0
@@ -51,7 +53,7 @@ die() { echo "STOP: $*" >&2; exit "${2:-3}"; }
 
 cd "$HERE" || die "cannot cd to $HERE"
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/ifive-loader-head.XXXXXX") || die "mktemp failed"
+TMP=$(mktemp -d "${TMPDIR:-$HERE}/.ifive-loader-head.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$TMP"' EXIT
 
 # ------------------------------------------------------------------ boards ----
