@@ -2963,9 +2963,11 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t num_displays,
       layer.index = j;
       index = j;
 
-      std::ostringstream out;
-      layer.dump_drm_layer(j,&out);
-      ALOGD_IF(log_level(DBG_DEBUG),"%s",out.str().c_str());
+      if (log_level(DBG_DEBUG)) {
+        std::ostringstream out;
+        layer.dump_drm_layer(j,&out);
+        ALOGD("%s",out.str().c_str());
+      }
     }
 
 #if RK_3D_VIDEO

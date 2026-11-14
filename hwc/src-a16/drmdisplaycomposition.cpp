@@ -712,12 +712,14 @@ int DrmDisplayComposition::Plan(SquashState *squash,
     }
   }
 
-  size_t j=0;
-  for (const DrmCompositionPlane &plane : composition_planes_) {
-    std::ostringstream out;
-    plane.dump_drm_com_plane(j,&out);
-    ALOGD_IF(log_level(DBG_VERBOSE),"%s",out.str().c_str());
-    j++;
+  if (log_level(DBG_VERBOSE)) {
+    size_t j=0;
+    for (const DrmCompositionPlane &plane : composition_planes_) {
+      std::ostringstream out;
+      plane.dump_drm_com_plane(j,&out);
+      ALOGD("%s",out.str().c_str());
+      j++;
+    }
   }
 
 #if USE_SQUASH

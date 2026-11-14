@@ -1499,7 +1499,10 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
 
     size_t index=0;
     std::ostringstream out_log;
+    /* Only format the per-plane log line when it will be printed: this runs per plane per frame. */
+    const bool vlog = log_level(DBG_VERBOSE);
 
+    if (vlog)
     out_log << "DrmDisplayCompositor[" << index << "]"
             << " display=" << display_
             << " frame_no=" << frame_no
@@ -1533,7 +1536,7 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
               plane->rotation_property().id(), plane->id());
         break;
       }
-      out_log << " rotation=" << RotatingToString(rotation);
+      if (vlog) out_log << " rotation=" << RotatingToString(rotation);
     }
 
     if (plane->alpha_property().id()) {
@@ -1545,7 +1548,7 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
               plane->alpha_property().id(), plane->id());
         break;
       }
-      out_log << " alpha=" << std::hex <<  alpha;
+      if (vlog) out_log << " alpha=" << std::hex <<  alpha;
     }
 
     if(plane->get_hdr2sdr() && plane->eotf_property().id()) {
@@ -1557,7 +1560,7 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
               plane->eotf_property().id(), plane->id());
         break;
       }
-      out_log << " eotf=" << std::hex <<  eotf;
+      if (vlog) out_log << " eotf=" << std::hex <<  eotf;
     }
 
     if(plane->blend_mode_property().id()) {
@@ -1570,7 +1573,7 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
               plane->blend_mode_property().id(), plane->id());
         break;
       }
-      out_log << " blend mode =" << BlendingToString(blending) <<  eotf;
+      if (vlog) out_log << " blend mode =" << BlendingToString(blending) <<  eotf;
     }
 
     if(plane->colorspace_property().id()) {
@@ -1582,12 +1585,13 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
               plane->colorspace_property().id(), plane->id());
         break;
       }
-      out_log << " colorspace=" << std::hex <<  colorspace;
+      if (vlog) out_log << " colorspace=" << std::hex <<  colorspace;
     }
 
-    out_log << "\n";
-    ALOGD_IF(log_level(DBG_VERBOSE),"%s",out_log.str().c_str());
-    out_log.clear();
+    if (vlog) {
+      out_log << "\n";
+      ALOGD("%s", out_log.str().c_str());
+    }
   }
 
   if (!ret) {
@@ -1768,7 +1772,6 @@ void DrmDisplayCompositor::ApplyFrame(
 
   if (active_composition_)
     active_composition_->SignalCompositionDone();
-
 
   ret = pthread_mutex_lock(&lock_);
   if (ret)
