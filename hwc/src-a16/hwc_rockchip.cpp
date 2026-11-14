@@ -2125,6 +2125,27 @@ bool match_process(DrmResources* drm, DrmCrtc *crtc, bool is_interlaced,
     return false;
 }
 
+/*
+ * Fingerprint of a layer's content and geometry. The buffer id identifies the
+ * content: a BufferQueue producer only queues new content into a buffer that
+ * SurfaceFlinger has released, so a buffer id seen in the previous frame still
+ * holds the same content.
+ */
+static uint64_t layer_key(const DrmHwcLayer &l)
+{
+    uint64_t id = 0;
+    if (!l.sf_handle || gralloc4::get_buffer_id(l.sf_handle, &id) != android::OK || !id)
+        return 0;
+    uint64_t h = id;
+    auto mix = [&h](uint64_t v) { h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2); };
+    mix((uint32_t)l.display_frame.left); mix((uint32_t)l.display_frame.top);
+    mix((uint32_t)l.display_frame.right); mix((uint32_t)l.display_frame.bottom);
+    mix((uint64_t)(l.source_crop.left * 16)); mix((uint64_t)(l.source_crop.top * 16));
+    mix((uint64_t)(l.source_crop.right * 16)); mix((uint64_t)(l.source_crop.bottom * 16));
+    mix(l.alpha); mix(l.transform); mix((uint64_t)l.blending);
+    return h;
+}
+
 static bool try_mix_policy(DrmResources* drm, DrmCrtc *crtc, bool is_interlaced,
                         std::vector<DrmHwcLayer>& layers, std::vector<DrmHwcLayer>& tmp_layers,
                         int iPlaneSize, std::vector<DrmCompositionPlane>& composition_planes,
@@ -2285,6 +2306,17 @@ bool mix_policy(DrmResources* drm, DrmCrtc *crtc, hwc_drm_display_t *hd,
 
     //save fb into tmp_layers
     move_fb_layer_to_tmp(layers, tmp_layers);
+
+    //fingerprint every layer, to find which ones changed since the previous frame
+    std::vector<uint64_t> layer_keys;
+    layer_keys.reserve(layers.size());
+    for (const DrmHwcLayer &l : layers)
+        layer_keys.push_back(layer_key(l));
+    const bool prev_valid = hd->prevLayerKeysFrame == get_frame() - 1;
+    std::vector<uint64_t> prev_keys;
+    prev_keys.swap(hd->prevLayerKeys);
+    hd->prevLayerKeys = layer_keys;
+    hd->prevLayerKeysFrame = get_frame();
 
     //caculate the first and last skip layer
     for (int i = 0; i < (int)layers.size(); ++i) {
@@ -2452,6 +2484,36 @@ bool mix_policy(DrmResources* drm, DrmCrtc *crtc, hwc_drm_display_t *hd,
           GLES | 70b34c9080 | 0000 | 0000 | 00 | 0105 | RGBA_8888   |    0.0,    0.0, 2400.0,   84.0 |    0, 1516, 2400, 1600 | taskbar
           GLES | 711ec5a900 | 0000 | 0002 | 00 | 0105 | RGBA_8888   |    0.0,    0.0,   39.0,   49.0 | 1136, 1194, 1175, 1243 | Sprite
     ************************************************************/
+    /*************************mix down (static bottom)*************************
+     More layers than windows, and every layer that mix down would give to GLES
+     (the bottom ones) is unchanged since the previous frame, e.g. wallpaper +
+     launcher under a moving notification shade. SurfaceFlinger then reuses its
+     client composition (reusedClientComposition) and the GPU does no work, while
+     the changing top layers keep VOP windows. Mix up would GPU-compose the
+     changing top layers every frame.
+    ************************************************************/
+    if(!hd->isVideo && !hd->bPreferMixDown && (int)layers.size() > iPlaneSize && prev_valid)
+    {
+        const int last = layers.size() - iPlaneSize;
+        bool unchanged = true;
+        for (int i = 0; i <= last && unchanged; i++)
+            unchanged = layer_keys[i] &&
+                std::find(prev_keys.begin(), prev_keys.end(), layer_keys[i]) != prev_keys.end();
+        if(unchanged)
+        {
+            if(hd->mixMode != HWC_MIX_DOWN)
+                hd->mixMode = HWC_MIX_DOWN;
+            layer_indices.first = 0;
+            layer_indices.second = last;
+            ALOGD_IF(log_level(DBG_DEBUG), "%s:mix down static (%d,%d)",__FUNCTION__,layer_indices.first, layer_indices.second);
+            bAllMatch = try_mix_policy(drm, crtc, hd->is_interlaced, layers, tmp_layers, iPlaneSize, composition_planes,
+                                layer_indices.first, layer_indices.second, fbSize);
+            if(bAllMatch)
+                goto AllMatch;
+            resore_tmp_layers_except_fb(layers, tmp_layers);
+        }
+    }
+
     if(!hd->bPreferMixDown)
     {
         if(hd->mixMode != HWC_MIX_UP)

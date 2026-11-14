@@ -4252,6 +4252,7 @@ static int hwc_initialize_display(struct hwc_context_t *ctx, int display) {
     hd->mUseRga = false;
     hd->rgaRotValid = false;
 #endif
+    hd->prevLayerKeysFrame = -1;
 #if RK_ROTATE_VIDEO_MODE
     hd->bRotateVideoMode = false;
 #endif

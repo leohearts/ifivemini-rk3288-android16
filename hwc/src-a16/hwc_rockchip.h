@@ -210,6 +210,9 @@ typedef struct hwc_drm_display {
 #endif
   bool is10bitVideo;
   MixMode mixMode;
+  /* Per-layer fingerprints (buffer id + geometry) of the previous mix_policy frame. */
+  std::vector<uint64_t> prevLayerKeys;
+  int prevLayerKeysFrame;
   bool isVideo;
   bool isHdr;
   bool hasEotfPlane;
