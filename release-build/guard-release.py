@@ -15,7 +15,9 @@
 #  - write-loader-head.sh is in the package, is executable, reads the board
 #    addresses from devices/<board>/device.json and hardcodes no board LBA;
 #  - SHA256SUMS lists every images/*.img, loader/*.bin and devices/* file,
-#    every devices/<board>/head-4M.bin and write-loader-head.sh.
+#    every devices/<board>/head-4M.bin and write-loader-head.sh;
+#  - the vendor ext4 inside super.img holds every file of vendor-changes/
+#    byte for byte.
 import hashlib
 import importlib.util
 import json
@@ -131,6 +133,34 @@ def list_boards(tree):
         return []
     return sorted(n for n in os.listdir(d)
                   if os.path.isdir(os.path.join(d, n)))
+
+
+def check_vendor_changes(sup):
+    """Extract every vendor-changes/ file from super's vendor ext4 and prove
+    the shipped image holds exactly that file. Catches the real failure from
+    the 11-10 release: a rebuilt .so declared in the notes but an old one
+    packaged."""
+    root = os.path.join(os.path.dirname(HERE), "vendor-changes")
+    files = sorted(os.path.relpath(os.path.join(d, f), root)
+                   for d, _, fs in os.walk(root) for f in fs)
+    lp = subprocess.run(["lpdump", sup], capture_output=True, text=True, check=True).stdout
+    mm = re.search(r"^\s*\S+: (\d+) \.\. \d+: vendor \((\d+) sectors\)", lp, re.M)
+    if not mm:
+        fail(f"{sup}: no vendor region in super")
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(sup))) as tmp:
+        vimg = os.path.join(tmp, "v.img")
+        subprocess.run(["dd", f"if={sup}", f"of={vimg}", "bs=512",
+                        f"skip={mm.group(1)}", f"count={mm.group(2)}", "status=none"], check=True)
+        for rel in files:
+            out = os.path.join(tmp, "f.bin")
+            subprocess.run(["debugfs", "-R", f"dump {rel} {out}", vimg], capture_output=True)
+            if not os.path.exists(out):
+                fail(f"{sup}: vendor/{rel} missing in vendor ext4")
+            got = open(out, "rb").read()
+            os.remove(out)
+            if got != open(os.path.join(root, rel), "rb").read():
+                fail(f"{sup}: vendor/{rel} differs from vendor-changes/{rel}")
+            print(f"ok vendor/{rel} = vendor-changes (sha256 {hashlib.sha256(got).hexdigest()[:16]}..)")
 
 
 def check_devices_tree(tree):
@@ -377,7 +407,7 @@ def check_sha256sums(tree):
 
 def main():
     res, sup, flash = sys.argv[1], sys.argv[2], sys.argv[3]
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(res))) as tmp:
         parts = blkdevparts(res, tmp)
     for need in ("system", "metadata", "userdata"):
         if need not in parts:
@@ -415,6 +445,7 @@ def main():
             fail(f"{flash}: {k}=0x{got:x} but resource layout needs 0x{v:x}")
         print(f"ok {k}=0x{got:x}")
     print(f"ok super {sup_bytes} B <= system {sys_mib}M ({sys_bytes} B)")
+    check_vendor_changes(sup)
 
     tree = os.path.dirname(os.path.abspath(flash))
     boards = check_devices_tree(tree)

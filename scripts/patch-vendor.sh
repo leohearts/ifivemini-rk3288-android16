@@ -61,7 +61,11 @@ while read -r path mode owner label; do
     got_label=$(sed -n 's/.*security\.selinux *([0-9]*) *= *"\(.*\)"$/\1/p' <<< "$st" | head -1)
     want_mode=$((8#${mode: -4}))          # sif sets the full mode, stat prints the permission bits
     want_label="$label\\000"              # debugfs prints the stored NUL as \000
-    if   [ $((8#${got_mode:-0})) -ne "$want_mode" ]; then
+    rm -f "$OUT.chk"
+    debugfs -R "dump /$path $OUT.chk" "$OUT" >/dev/null 2>&1
+    if ! cmp -s "$OUT.chk" "$ROOT/vendor-changes/$path"; then
+        echo "   FAIL /$path content differs from vendor-changes/$path (image full?)"; fail=1
+    elif [ $((8#${got_mode:-0})) -ne "$want_mode" ]; then
         echo "   FAIL /$path mode: got '${got_mode}' want $(printf '%04o' "$want_mode")"; fail=1
     elif [ "${got_user:-?}" != "$owner" ]; then
         echo "   FAIL /$path owner: got '${got_user}' want $owner"; fail=1
@@ -71,6 +75,7 @@ while read -r path mode owner label; do
         printf "   OK   /%s  mode=%04o owner=%s label=%s\n" "$path" "$want_mode" "$got_user" "$label"
     fi
 done <<< "$TABLE"
+rm -f "$OUT.chk"
 [ "$fail" = 0 ] || { echo "STOP: read-back mismatch, $OUT is not usable"; exit 2; }
 
 echo "== filesystem check"

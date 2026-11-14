@@ -8,3 +8,9 @@ hwc/hdr/vndk30/
 hwc/out/
 out/
 release/
+hwc/out-*/
+hwc/test/*.so
+inputs/
+inputs-*/
+build/
+.vscode/

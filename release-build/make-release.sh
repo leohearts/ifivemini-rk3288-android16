@@ -3,7 +3,8 @@
 # Builds release/ifive-mini4s-android16-gsi-<DATE>.zip from:
 #   out/kernel-gsi-release/kernel.img   (./build-kernel.sh)
 #   release-build/resource-release-gsi.img (./release-build/build-resource.sh)
-#   <inputs-dir>/super.img       GSI super (system = TrebleDroid a64_bvS GSI, vendor = Tinker Board A11 vendor + vendor-changes/)
+#   <inputs-dir>/super.img       GSI super (system = an Android 16 GSI, vendor = Tinker Board A11 vendor;
+#                                the vendor region is patched with vendor-changes/ while packaging)
 #   <inputs-dir>/ramdisk.img     Rockchip KRNL-packed boot ramdisk
 #   <inputs-dir>/metadata.img    16 MiB empty ext4 metadata partition
 #   <inputs-dir>/userdata-head-zero.img  1 MiB of zeros (clears the userdata superblock)
@@ -19,6 +20,9 @@
 #                                        map from the package, not from constants)
 #   manifest.json                        the write map derived at build time
 # The super/ramdisk/metadata images of the published release are inside the release zip on GitHub.
+# Optional env:
+#   MAGISK_APK=<Magisk.apk>  ship images/ramdisk.img patched with that Magisk (scripts/make-magisk-boot.sh)
+#   SYSTEM_NAME=<text>       the GSI named in README.md (default: TrebleDroid a64_bvS)
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd); TOP=$(cd "$HERE/.." && pwd)
 IN=${1:?inputs dir}; DATE=${2:-$(date +%F)}
@@ -35,7 +39,19 @@ S=$TOP/out/release; T=$S/$NAME
 case "$IN" in "$T"|"$T"/*) echo "STOP: inputs dir $IN is inside the output dir $T"; exit 3 ;; esac
 rm -rf "$T"; mkdir -p "$T/images" "$T/loader" "$T/tools"
 cp "$RES" "$T/images/resource.img"; cp "$KRN" "$T/images/kernel.img"
-cp "$IN/ramdisk.img" "$IN/super.img" "$IN/metadata.img" "$IN/userdata-head-zero.img" "$T/images/"
+cp "$IN/super.img" "$IN/metadata.img" "$IN/userdata-head-zero.img" "$T/images/"
+if [ -n "${MAGISK_APK:-}" ]; then
+  "$TOP/scripts/make-magisk-boot.sh" "$IN/ramdisk.img" "$MAGISK_APK" "$T/images/ramdisk.img"
+  python3 "$HERE/tools/mkkrnl.py" verify "$T/images/ramdisk.img"
+  BOOT_DESC="patched with Magisk $(unzip -p "$MAGISK_APK" assets/util_functions.sh | sed -n 's/^MAGISK_VER=.\(.*\).$/\1/p') by scripts/make-magisk-boot.sh (APK sha256 $(sha256sum "$MAGISK_APK" | cut -c1-16)...)"
+else
+  cp "$IN/ramdisk.img" "$T/images/"
+  BOOT_DESC="the generic ramdisk, without Magisk"
+fi
+# the vendor region of the copied super gets vendor-changes/ (keeps every
+# other region of super byte-exact)
+echo "== patching super vendor with vendor-changes/ =="
+"$HERE/splice-vendor.sh" "$T/images/super.img"
 cp "$LOADER" "$T/loader/"; cp "$RK" "$T/tools/rkdeveloptool"
 cp "$HERE/loader/rk3288_loader_v1.12.263.bin" "$T/loader/"   # Maskrom db file (BOOT-merged ddr+miniloader; UbootLoader.bin is NOT accepted by db)
 # the rescue script needs the device tree tools to derive the partition map
@@ -69,7 +85,8 @@ fi
 # library (flash.sh and restore.sh both run "sha256sum -c" on it)
 ( cd "$T" && find . -type f \( -path './images/*.img' -o -path './loader/*.bin' -o -path './devices/*/*' -o -path './write-loader-head.sh' -o -path './lib-wl.inc' \) -printf '%P\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS )
 python3 "$HERE/guard-release.py" "$T/images/resource.img" "$T/images/super.img" "$T/flash.sh"
-sed "s/{{DATE}}/$DATE/g" "$HERE/README-gsi.md.tmpl" > "$T/README.md"
+sed -e "s/{{DATE}}/$DATE/g" -e "s|{{SYSTEM}}|${SYSTEM_NAME:-TrebleDroid a64_bvS}|g" -e "s|{{BOOT}}|$BOOT_DESC|g" \
+  "$HERE/README-gsi.md.tmpl" > "$T/README.md"
 { echo "Build date: $DATE"; echo "Layout: gsi (SUPER 0x92000, META 0x692000, UD 0x6ba000)"; ( cd "$T" && sha256sum images/* loader/* ); } > "$T/BUILD-INFO.txt"
 mkdir -p "$TOP/release"; rm -f "$TOP/release/$NAME.zip"
 ( cd "$S" && zip -qr -X "$TOP/release/$NAME.zip" "$NAME" )
