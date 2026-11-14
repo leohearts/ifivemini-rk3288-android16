@@ -1603,6 +1603,9 @@ static bool is_use_gles_comp(struct hwc_context_t *ctx, DrmConnector *connector,
 
     for (int j = 0; j < num_layers-1; j++) {
         hwc_layer_1_t *layer = &display_content->hwLayers[j];
+        /* Not given a plane (see hwc_prepare), so it cannot force GLES. */
+        if (layer->compositionType == HWC_NODRAW)
+            continue;
 
         if(layer->handle)
         {
@@ -2792,6 +2795,19 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t num_displays,
             src_t = (int)layer->sourceCropf.top;
             src_w = (int)(layer->sourceCropf.right - layer->sourceCropf.left);
             src_h = (int)(layer->sourceCropf.bottom - layer->sourceCropf.top);
+
+            /*
+             * Plane alpha 0 makes the layer invisible. SurfaceFlinger's layer
+             * caching sends every non-first layer of a flattened set this way:
+             * the set's crop/frame on the layer's own, smaller buffer. A VOP
+             * window for it fails the atomic check (-ENOSPC: src outside fb)
+             * and the whole frame is cleared, so give it no plane.
+             */
+            if (layer->planeAlpha == 0)
+            {
+               layer->compositionType = HWC_NODRAW;
+               continue;
+            }
             if(!force_not_invalid_refresh && src_w > src_h && src_w >= 3840
               && format != HAL_PIXEL_FORMAT_YCrCb_NV12 && format != HAL_PIXEL_FORMAT_YCrCb_NV12_10)
             {
