@@ -6,6 +6,8 @@ Assets:
 - `ifive-mini4s-android16-boot-magisk-v31.img` (+ `.sha256`) — optional Magisk 31.0 boot partition,
   written instead of `images/ramdisk.img` at tool LBA `0x16000` (see "Magisk root" in the package
   README).
+- `ifive-no-phh-su.zip` (+ `.sha256`) — the Magisk module that stops the GSI's phh-su from taking
+  over su (same file as in the 2026-11-08 release); part of the Magisk setup in the package README.
 
 Built from a clean checkout of branch `release-2026-11-15-r2`:
 
@@ -50,6 +52,11 @@ composer/SurfaceFlinger restart. Janky = launcher3/systemui gfxinfo janky frames
 | Landscape notification shade, 8 rounds: janky | 82.6%, 82.7% | 53.4%, 53.7% |
 | — GPU-composed frames / SF missed | 404, 400 / 513, 487 | 0, 0 / 79, 105 |
 | Recents opened from Settings, 3 rounds x 2 | 84.6-87.8%, 78.9-85.7% | 25.5-32.9%, 23.0-29.6% |
+
+The release package itself (generic ramdisk) was flashed with `flash.sh --yes --keep-userdata`
+and booted: HAL `9d36db12`, DDR 456 MHz, no Magisk. Writing the Magisk image afterwards with
+`tools/rkdeveloptool wl 0x16000` (read back and compared) gave a boot with `su -c id` answering
+`uid=0(root) ... context=u:r:magisk:s0` and `magisk -v` 31.0.
 
 Device state measured on this release: kernel 4.19 built 2026-11-15, HAL `9d36db12`,
 DDR 456 MHz, `ro.surface_flinger.max_frame_buffer_acquired_buffers=3`, broadcast device
