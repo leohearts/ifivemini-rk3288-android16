@@ -1,7 +1,6 @@
 #!/bin/bash
-# Write this tablet's own identity into the GSI system image and the vendor image, so the
-# device stops reporting the GSI defaults (brand google / model mainline / device generic /
-# flavor treble_a64_bvS, and no ro.build.fingerprint key at all).
+# Write this tablet's own identity into the GSI system image and the vendor image:
+# brand, manufacturer, model, name, device and a ro.build.fingerprint built from them.
 #
 #   ./patch-identity.sh <system.img> <vendor.img> <out-dir>
 #
@@ -53,8 +52,8 @@ def get(key):
         sys.exit("STOP: %s is not in %s; cannot derive a truthful fingerprint" % (key, path))
     return r.group(1)
 
-# google/treble_a64_bvS/tdgsi_a64_ab:16/BP2A.250605.031.A3/250617:userdebug/test-keys
-# -> 16/BP2A.250605.031.A3/250617:userdebug/test-keys
+# <brand>/<name>/<device>:16/BP4A.251205.006/eng.ivy:userdebug/test-keys
+# -> 16/BP4A.251205.006/eng.ivy:userdebug/test-keys
 want = {
     "ro.product.brand": b, "ro.product.manufacturer": m, "ro.product.model": mo,
     "ro.product.name": n, "ro.product.device": d,

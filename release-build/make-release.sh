@@ -22,7 +22,7 @@
 # The super/ramdisk/metadata images of the published release are inside the release zip on GitHub.
 # Optional env:
 #   MAGISK_APK=<Magisk.apk>  ship images/ramdisk.img patched with that Magisk (scripts/make-magisk-boot.sh)
-#   SYSTEM_NAME=<text>       the GSI named in README.md (default: TrebleDroid a64_bvS)
+#   SYSTEM_NAME=<text>       the GSI named in README.md (default: LineageOS 23.2 GSI)
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd); TOP=$(cd "$HERE/.." && pwd)
 IN=${1:?inputs dir}; DATE=${2:-$(date +%F)}
@@ -46,7 +46,7 @@ if [ -n "${MAGISK_APK:-}" ]; then
   BOOT_DESC="patched with Magisk $(unzip -p "$MAGISK_APK" assets/util_functions.sh | sed -n 's/^MAGISK_VER=.\(.*\).$/\1/p') by scripts/make-magisk-boot.sh (APK sha256 $(sha256sum "$MAGISK_APK" | cut -c1-16)...)"
 else
   cp "$IN/ramdisk.img" "$T/images/"
-  BOOT_DESC="the generic ramdisk, without Magisk"
+  BOOT_DESC="the generic ramdisk"
 fi
 # the vendor region of the copied super gets vendor-changes/ (keeps every
 # other region of super byte-exact)
@@ -85,7 +85,7 @@ fi
 # library (flash.sh and restore.sh both run "sha256sum -c" on it)
 ( cd "$T" && find . -type f \( -path './images/*.img' -o -path './loader/*.bin' -o -path './devices/*/*' -o -path './write-loader-head.sh' -o -path './lib-wl.inc' \) -printf '%P\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS )
 python3 "$HERE/guard-release.py" "$T/images/resource.img" "$T/images/super.img" "$T/flash.sh"
-sed -e "s/{{DATE}}/$DATE/g" -e "s|{{SYSTEM}}|${SYSTEM_NAME:-TrebleDroid a64_bvS}|g" -e "s|{{BOOT}}|$BOOT_DESC|g" \
+sed -e "s/{{DATE}}/$DATE/g" -e "s|{{SYSTEM}}|${SYSTEM_NAME:-LineageOS 23.2 GSI}|g" -e "s|{{BOOT}}|$BOOT_DESC|g" \
   "$HERE/README-gsi.md.tmpl" > "$T/README.md"
 { echo "Build date: $DATE"; echo "Layout: gsi (SUPER 0x92000, META 0x692000, UD 0x6ba000)"; ( cd "$T" && sha256sum images/* loader/* ); } > "$T/BUILD-INFO.txt"
 mkdir -p "$TOP/release"; rm -f "$TOP/release/$NAME.zip"

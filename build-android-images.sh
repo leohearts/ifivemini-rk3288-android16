@@ -1,51 +1,45 @@
 #!/bin/bash
-# One-click build of the Android 16 super.img plus the remaining release inputs.
-# Downloads the TrebleDroid GSI, extracts vendor/odm from a reference super.img,
-# applies vendor-changes/, and packs inputs/ ready for release-build/make-release.sh.
+# Build the Android 16 super.img plus the remaining release inputs from a LineageOS 23.2
+# arm32_binder64 GSI system image (raw, sparse or .xz), the vendor/odm images of a reference
+# super.img, and vendor-changes/. The result in <output_dir> is ready for
+# release-build/make-release.sh.
 #
-# Usage: ./build-android-images.sh [output_dir]   (default: ./inputs)
+# Usage: ./build-android-images.sh <lineage-gsi-system.img[.xz]> [output_dir]   (default: ./inputs)
 
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT_DIR=${1:-$HERE/inputs}
+GSI_SRC=${1:?usage: $0 <lineage-gsi-system.img[.xz]> [output_dir]}
+OUT_DIR=${2:-$HERE/inputs}
 WORK_DIR="$HERE/out/super-work"
-GSI_URL="https://github.com/TrebleDroid/treble_experimentations/releases/download/ci-20250617/system-td-arm32_binder64-vanilla.img.xz"
 
 mkdir -p "$OUT_DIR" "$WORK_DIR"
 
 echo "=== 1. Checking required tools ==="
 MISSING=()
-for tool in curl unxz unzip simg2img lpmake lpunpack debugfs e2fsck dd; do
+for tool in unxz unzip simg2img lpmake lpunpack debugfs e2fsck dd; do
     command -v "$tool" >/dev/null 2>&1 || MISSING+=("$tool")
 done
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo "STOP: missing tools: ${MISSING[*]}"
-    echo "Fedora (verified on fc45):  sudo dnf install -y android-tools e2fsprogs xz curl unzip"
-    echo "Debian/Ubuntu:              sudo apt-get install -y e2fsprogs xz-utils curl unzip android-sdk-libsparse-utils"
+    echo "Fedora (verified on fc45):  sudo dnf install -y android-tools e2fsprogs xz unzip"
+    echo "Debian/Ubuntu:              sudo apt-get install -y e2fsprogs xz-utils unzip android-sdk-libsparse-utils"
     echo "                            lpmake/lpunpack are NOT covered by the Debian packages above;"
     echo "                            build them from AOSP system/extras/partition_tools."
     exit 1
 fi
 
-echo "=== 2. System image: TrebleDroid Android 16 GSI (a64) ==="
-GSI_XZ="$WORK_DIR/system-td-arm32_binder64-vanilla.img.xz"
+echo "=== 2. System image: $(basename "$GSI_SRC") ==="
 GSI_IMG="$WORK_DIR/system.img"
-if [ -f "$GSI_IMG" ]; then
-    echo "using existing $GSI_IMG"
-else
-    [ -f "$GSI_XZ" ] || { echo "downloading GSI (~740 MB compressed) ..."; curl -L -C - -o "$GSI_XZ" "$GSI_URL"; }
-    RAW="${GSI_XZ%.xz}"
-    [ -f "$RAW" ] || unxz -k "$GSI_XZ"
-    # GSI may be sparse or raw; simg2img fails on raw, so fall back to a plain copy.
-    if simg2img "$RAW" "$GSI_IMG" 2>/dev/null; then
-        echo "converted sparse GSI -> raw $GSI_IMG"
-    else
-        cp "$RAW" "$GSI_IMG"
-        echo "GSI already raw -> $GSI_IMG"
-    fi
-    rm -f "$RAW"
-fi
+[ -f "$GSI_SRC" ] || { echo "STOP: no such file: $GSI_SRC"; exit 1; }
+RAW="$WORK_DIR/system.src.img"
+case "$GSI_SRC" in
+    *.xz) unxz -c "$GSI_SRC" > "$RAW" ;;
+    *)    cp "$GSI_SRC" "$RAW" ;;
+esac
+# simg2img fails on a raw image; then the copy already is the raw image.
+simg2img "$RAW" "$GSI_IMG" 2>/dev/null || mv "$RAW" "$GSI_IMG"
+rm -f "$RAW"
 
 echo "=== 3. Vendor and ODM images (from a reference super.img) ==="
 VENDOR_IMG="$WORK_DIR/vendor.img"

@@ -59,7 +59,7 @@ TOOL_LBA_BASE = 0x2000
 # The GSI device tree gives "system" twice the room the stock parameter gives
 # it: 3072 MiB in the DTB against 1536 MiB in the stock parameter.  The extra
 # 1536 MiB (0x300000 sectors) is what makes the GSI super image of
-# 1650458624 B (1574 MiB) fit - it does not fit the stock 1536 MiB system
+# 2037186560 B (1943 MiB) fit - it does not fit the stock 1536 MiB system
 # partition.  Every partition behind "system" therefore starts 0x300000
 # sectors further out than the stock parameter says.  The distance is computed
 # from the two tables at run time, never written down as a constant.
@@ -212,7 +212,7 @@ def check_tables(dtb_parts, dtb_order, param_parts):
 
     "system" is the anchor.  The GSI gives "system" twice the room the stock
     parameter gives it (3072 MiB in the device tree against 1536 MiB in the
-    stock parameter, so the GSI super image of 1650458624 B fits), and every
+    stock parameter, so the GSI super image of 2037186560 B fits), and every
     partition behind "system" therefore moves by exactly that difference:
 
       system and everything before it: the two tables must agree exactly

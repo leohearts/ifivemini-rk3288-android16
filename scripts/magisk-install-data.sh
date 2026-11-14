@@ -1,36 +1,19 @@
 #!/bin/bash
-# Finish a Magisk ramdisk install on this tablet: fill /data/adb/magisk, then install the
-# module that disables the GSI's phh su.
+# Finish a Magisk ramdisk install on this tablet: fill /data/adb/magisk.
 #
 #   ./magisk-install-data.sh <magisk.apk> [adb-serial]
 #
-# Run this once after flashing images/ramdisk.img's Magisk replacement
-# (scripts/make-magisk-boot.sh) and booting it. Without it the tablet boots with magiskd
-# running but Magisk half-installed: the app shows "Ramdisk = Yes, Not installed".
+# Run this once after writing the Magisk boot partition (scripts/make-magisk-boot.sh) and
+# booting it, when the app shows "Ramdisk = Yes, Not installed".
 #
-# Two separate problems, both fixed here, both from inside /data - no partition is written:
-#
-# 1. /data/adb/magisk does not exist. The daemon needs it: in Magisk 31.0
-#    (native/src/core/bootstages.rs) setup_magisk_env() returns false when
-#    /data/adb/magisk/busybox is missing, and the boot log says
-#    "* Magisk environment incomplete, abort". Normally the Magisk app creates this directory as
-#    part of its own install, but the app installs it by unpacking and re-patching the boot
-#    image, and this tablet's boot partition is a Rockchip KRNL container that magiskboot cannot
-#    unpack. So step 2 below performs only the environment part of Magisk's own flashable-zip
-#    installer (scripts/flash_script.sh): lib/<abi>/libX.so renamed to X, plus magisk32, plus
-#    assets/, minus bootctl/main.jar/module_installer.sh/uninstaller.sh, chmod -R 755.
-#
-# 2. The TrebleDroid GSI ships its own su: /system/etc/init/su.rc declares
-#       service sudaemon /system/bin/phh-su --daemon
-#   and that daemon mounts a tmpfs over Magisk's /debug_ramdisk/magisk, /system/xbin/magisk and
-#   /system/xbin/magiskpolicy with phh-su in place of each. su calls then go to phh's su (which
-#   has no UI installed here: the package me.phh.superuser is absent, so no prompt and no
-#   su.sqlite), and init's boot-stage calls "magisk --boot-complete" / "--service" /
-#   "--zygote-restart" run phh-su instead - it exits 2 on those options, the daemon never learns
-#   that boot finished, the bootloop counter in /data/adb/magisk.db is never reset, and Magisk
-#   ends up in safe mode with modules off. Step 4 installs the module built by
-#   make-no-phh-su-module.sh, which replaces those two paths with empty files. The system image
-#   itself still contains phh-su; this only applies to a tablet set up for Magisk.
+# The daemon needs /data/adb/magisk: in Magisk 31.0 (native/src/core/bootstages.rs)
+# setup_magisk_env() returns false when /data/adb/magisk/busybox is missing, and the boot log
+# says "* Magisk environment incomplete, abort". The Magisk app creates this directory while
+# re-patching the boot image, and magiskboot cannot unpack this tablet's boot partition (a
+# Rockchip KRNL container). Step 2 below does the environment part of Magisk's flashable-zip
+# installer (scripts/flash_script.sh): lib/<abi>/libX.so renamed to X, plus magisk32, plus
+# assets/, minus bootctl/main.jar/module_installer.sh/uninstaller.sh, chmod -R 755.
+# Everything it writes is under /data.
 #
 # The tablet must be reachable with root adb (this build is userdebug: `adb root`).
 
@@ -42,12 +25,10 @@ ADB=(adb)
 [ -n "$SER" ] && ADB+=( -s "$SER" )
 
 ABI=armeabi-v7a          # the ramdisk init and this device's userspace are both 32-bit ARM
-HERE=$(cd "$(dirname "$0")" && pwd)
 W=$(mktemp -d "${TMPDIR:-/tmp}/ifive-magisk-install.XXXXXX")
 trap 'rm -rf "$W"' EXIT
 
 [ -f "$APK" ] || { echo "STOP: no APK at $APK"; exit 1; }
-[ -x "$HERE/make-no-phh-su-module.sh" ] || { echo "STOP: missing $HERE/make-no-phh-su-module.sh"; exit 1; }
 "${ADB[@]}" shell id -u 2>/dev/null | grep -qx 0 || { echo "STOP: adb shell is not root (run: adb root)"; exit 1; }
 
 echo "== 1. build the file set out of $(basename "$APK")"
@@ -95,26 +76,12 @@ else
     echo "STOP: the files on the tablet differ from the ones built here"; diff "$W/host.sha256" "$W/dev.sha256"; exit 1
 fi
 
-echo "== 4. install the module that disables the GSI's phh su (only if the GSI has one)"
-if [ -z "$("${ADB[@]}" shell 'ls /system/etc/init/su.rc 2>/dev/null')" ]; then
-    echo "   no /system/etc/init/su.rc (e.g. LineageOS GSI): skipped"
-else
-    "$HERE/make-no-phh-su-module.sh" "$W/ifive-no-phh-su.zip" "$APK" >/dev/null
-    "${ADB[@]}" push -q "$W/ifive-no-phh-su.zip" /data/local/tmp/ifive-no-phh-su.zip
-    "${ADB[@]}" shell '/data/adb/magisk/magisk --install-module /data/local/tmp/ifive-no-phh-su.zip; rm -f /data/local/tmp/ifive-no-phh-su.zip' \
-        | sed 's/^/   /'
-    [ -n "$("${ADB[@]}" shell 'ls /data/adb/modules 2>/dev/null | grep -x ifive-no-phh-su')" ] \
-        || { echo "STOP: the module is not in /data/adb/modules"; exit 1; }
-    echo "   module installed: ifive-no-phh-su"
-fi
-
-echo "== 5. check the boot partition's Magisk config for PREINITDEVICE"
-# Without this key Magisk's env_check returns 2 (assets/app_functions.sh:17-22 needs the block node
-# $MAGISKTMP/.magisk/device/preinit), and the app shows "Requires additional setup - your device
-# needs reflash Magisk" on every start. The key can only come from the ramdisk config:
-# parse_config_file() runs inside patch_ro_root()/patch_rw_root() (native/src/init/rootdir.cpp:264
-# and :342), long before fs_mgr mounts /data, so the same file in /data is read too late to matter
-# (measured: writing /data/.backup/.magisk changed nothing, "mount: preinit dir not found" stayed).
+echo "== 4. check the boot partition's Magisk config for PREINITDEVICE"
+# Magisk's env_check returns 2 unless the block node $MAGISKTMP/.magisk/device/preinit exists
+# (assets/app_functions.sh:17-22), and the app then asks to reflash Magisk on every start.
+# magiskinit creates that node from PREINITDEVICE in the ramdisk config; parse_config_file()
+# runs in patch_ro_root()/patch_rw_root() (native/src/init/rootdir.cpp:264 and :342), before
+# /data is mounted, so the key has to be in the boot partition.
 "${ADB[@]}" exec-out "head -c 2097152 /dev/block/by-name/boot" > "$W/boot.head"
 if python3 - "$W/boot.head" <<'PY'
 import gzip, struct, sys
@@ -139,15 +106,15 @@ then
     echo "   PREINITDEVICE is present"
 else
     echo "   WARNING: the boot partition carries a Magisk image without PREINITDEVICE."
-    echo "            Rebuild it with scripts/make-magisk-boot.sh (it writes the key since this"
-    echo "            change) and write it again: rkdeveloptool wl 0x16000 <image>"
+    echo "            Rebuild it with scripts/make-magisk-boot.sh and write it again:"
+    echo "            rkdeveloptool wl 0x16000 <image>"
 fi
 
 echo
 echo "Done. Reboot the tablet (\`${ADB[*]} reboot\`) - the daemon runs this setup only at boot."
 echo "After the reboot:"
 echo "  * magiskd logs boot-complete and /data/adb/magisk.db keeps bootloop=0"
-echo "  * /system/xbin/su is Magisk's own (su -c id -> context u:r:magisk:s0)"
+echo "  * su -c id -> uid=0, context u:r:magisk:s0"
 echo "  * Magisk's own check passes: MAGISKBIN=/data/adb/magisk MAGISKTMP=/debug_ramdisk sh -c \\"
 echo "      '. /data/adb/magisk/app_functions.sh; env_check 31.0 31000'   -> exit 0"
 echo "    (exit 2 there means the boot image still lacks PREINITDEVICE)"

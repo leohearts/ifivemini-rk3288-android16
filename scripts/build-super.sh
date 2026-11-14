@@ -33,8 +33,8 @@ lpmake \
   --metadata-size 65536 \
   --metadata-slots 2 \
   --super-name system \
-  --device system:1650458624 \
-  --group rockchip_dynamic_partitions:1649410048 \
+  --device system:2037186560 \
+  --group rockchip_dynamic_partitions:2036137984 \
   --partition system:readonly:"$SYS_SZ":rockchip_dynamic_partitions --image system="$SYS" \
   --partition vendor:readonly:"$VEN_SZ":rockchip_dynamic_partitions --image vendor="$VEN" \
   --partition odm:readonly:"$ODM_SZ":rockchip_dynamic_partitions --image odm="$ODM" \

@@ -2,7 +2,7 @@
 
 Assets:
 - `ifive-mini4s-android16-gsi-2026-11-15-lineage232.zip` — the full package (flash.sh, restore.sh,
-  write-loader-head.sh, rescue data), generic boot ramdisk, no Magisk.
+  write-loader-head.sh, rescue data), generic boot ramdisk.
 - `ifive-mini4s-android16-boot-magisk-v31.img` (+ `.sha256`) — optional Magisk 31.0 boot partition,
   written instead of `images/ramdisk.img` at tool LBA `0x16000` (see "Magisk root" in the package
   README).
@@ -52,18 +52,18 @@ composer/SurfaceFlinger restart. Janky = launcher3/systemui gfxinfo janky frames
 | Recents opened from Settings, 3 rounds x 2 | 84.6-87.8%, 78.9-85.7% | 25.5-32.9%, 23.0-29.6% |
 
 The release package itself (generic ramdisk) was flashed with `flash.sh --yes --keep-userdata`
-and booted: HAL `9d36db12`, DDR 456 MHz, no Magisk. Writing the Magisk image afterwards with
+and booted: HAL `9d36db12`, DDR 456 MHz, generic ramdisk. Writing the Magisk image afterwards with
 `tools/rkdeveloptool wl 0x16000` (read back and compared) gave a boot with `su -c id` answering
 `uid=0(root) ... context=u:r:magisk:s0` and `magisk -v` 31.0.
 
 Device state measured on this release: kernel 4.19 built 2026-11-15, HAL `9d36db12`,
 DDR 456 MHz, `ro.surface_flinger.max_frame_buffer_acquired_buffers=3`, broadcast device
-`rk_timer`, Magisk 31.0 with `su` working. During both runs and after a screen off/on: no IOMMU
-page fault, no HWC commit failure, no new tombstone or crash-buffer FATAL.
+`rk_timer`, Magisk 31.0 with `su` working. During both runs and after a screen off/on: IOMMU
+page faults 0, HWC commit failures 0, new tombstones and crash-buffer FATALs 0.
 
 ## Known remaining jank
 
 The landscape app drawer still drops about two thirds of its frames: launcher3 clips every
 themed icon to the "7-sided cookie" shape on the CPU (Skia disables GPU path rendering on
 Mali-T) and uploads it each frame. Measured: circle shape 77% -> 20%, themed icons off
-73% -> 19%. The fix belongs in launcher3, not in this package.
+73% -> 19%. The fix is a launcher3 change (rasterising the clipped icon once).
