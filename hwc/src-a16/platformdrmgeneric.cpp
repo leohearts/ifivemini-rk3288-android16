@@ -59,6 +59,7 @@
 #endif
 #include <hardware/gralloc.h>
 #include "hwc_util.h"
+#include "hwc_debug.h"
 #include "hwc_rockchip.h"
 
 namespace android {
@@ -84,6 +85,8 @@ DrmGenericImporter::DrmGenericImporter(DrmResources *drm) : drm_(drm) {
 }
 
 DrmGenericImporter::~DrmGenericImporter() {
+  for (auto &e : fb_cache_)
+    drmModeRmFB(drm_->fd(), e.second.bo.fb_id);
 }
 
 int DrmGenericImporter::Init() {
@@ -143,6 +146,52 @@ uint32_t DrmGenericImporter::ConvertHalFormatToDrm(uint32_t hal_format) {
 #define u64 uint64_t
 #endif
 int DrmGenericImporter::ImportBuffer(buffer_handle_t handle, hwc_drm_bo_t *bo
+#if RK_VIDEO_SKIP_LINE
+, uint32_t SkipLine
+#endif
+) {
+  uint64_t id = 0;
+  bool cacheable = gralloc4::get_buffer_id(handle, &id) == android::OK && id != 0;
+#if RK_VIDEO_SKIP_LINE
+  cacheable = cacheable && !SkipLine;
+#endif
+  if (!cacheable)
+    return ImportBufferUncached(handle, bo
+#if RK_VIDEO_SKIP_LINE
+    , SkipLine
+#endif
+    );
+
+  const int frame = get_frame();
+  std::lock_guard<std::mutex> lock(fb_cache_lock_);
+  for (auto it = fb_cache_.begin(); it != fb_cache_.end();) {
+    if (it->first != id && frame - it->second.last_frame > kFbCacheIdleFrames) {
+      drmModeRmFB(drm_->fd(), it->second.bo.fb_id);
+      it = fb_cache_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  auto it = fb_cache_.find(id);
+  if (it == fb_cache_.end()) {
+    hwc_drm_bo_t fresh;
+    int ret = ImportBufferUncached(handle, &fresh
+#if RK_VIDEO_SKIP_LINE
+    , 0
+#endif
+    );
+    if (ret)
+      return ret;
+    fresh.priv = &fb_cache_;
+    it = fb_cache_.emplace(id, FbCacheEntry{fresh, frame}).first;
+  }
+  it->second.last_frame = frame;
+  *bo = it->second.bo;
+  return 0;
+}
+
+int DrmGenericImporter::ImportBufferUncached(buffer_handle_t handle, hwc_drm_bo_t *bo
 #if RK_VIDEO_SKIP_LINE
 , uint32_t SkipLine
 #endif
@@ -281,6 +330,8 @@ int DrmGenericImporter::ImportBuffer(buffer_handle_t handle, hwc_drm_bo_t *bo
 }
 
 int DrmGenericImporter::ReleaseBuffer(hwc_drm_bo_t *bo) {
+  if (bo->priv == &fb_cache_)  /* owned by fb_cache_ */
+    return 0;
   if (bo->fb_id)
     if (drmModeRmFB(drm_->fd(), bo->fb_id))
       ALOGE("Failed to rm fb");

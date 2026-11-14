@@ -342,6 +342,20 @@ int get_width(buffer_handle_t handle, uint64_t* width)
     return err;
 }
 
+int get_buffer_id(buffer_handle_t handle, uint64_t* buffer_id)
+{
+    auto &mapper = get_service();
+
+    int err = get_metadata(mapper, handle, android::gralloc4::MetadataType_BufferId,
+                           android::gralloc4::decodeBufferId, buffer_id);
+    if (err != android::OK)
+    {
+        E("err : %d", err);
+    }
+
+    return err;
+}
+
 int get_height(buffer_handle_t handle, uint64_t* height)
 {
     auto &mapper = get_service();

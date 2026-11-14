@@ -41,6 +41,8 @@
 #include "platform.h"
 
 #include <hardware/gralloc.h>
+#include <mutex>
+#include <unordered_map>
 
 namespace android {
 
@@ -62,11 +64,31 @@ class DrmGenericImporter : public Importer {
 
  private:
   uint32_t ConvertHalFormatToDrm(uint32_t hal_format);
+  int ImportBufferUncached(buffer_handle_t handle, hwc_drm_bo_t *bo
+#if RK_VIDEO_SKIP_LINE
+  , uint32_t SkipLine
+#endif
+  );
 
   DrmResources *drm_;
 
   const gralloc_module_t *gralloc_;
   DrmGenericImporterFlag_t flag_;
+
+  /*
+   * Framebuffers for gralloc allocations, keyed by gralloc4 BufferId. SF hands the same
+   * few buffers back every frame; without this every layer of every frame paid for
+   * mapper attribute reads + PrimeFDToHandle + AddFB2 + GEM_CLOSE + RmFB.
+   * A cached bo carries priv == &fb_cache_; ReleaseBuffer leaves its fb alone.
+   * Entries are removed (RmFB) once unused for kFbCacheIdleFrames compositions.
+   */
+  struct FbCacheEntry {
+    hwc_drm_bo_t bo;
+    int last_frame;
+  };
+  static constexpr int kFbCacheIdleFrames = 8;
+  std::unordered_map<uint64_t, FbCacheEntry> fb_cache_;
+  std::mutex fb_cache_lock_;
 };
 }
 
