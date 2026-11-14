@@ -31,6 +31,7 @@ bin/hw/android.hardware.power-service.rockchip 0100755 0:2000 u:object_r:hal_pow
 lib/hw/hwcomposer.rk30board.so    0100644  0:0     u:object_r:vendor_hal_file:s0
 etc/init/hw/init.rk3288.rc        0100644  0:0     u:object_r:vendor_configs_file:s0
 etc/vintf/manifest.xml            0100644  0:0     u:object_r:vendor_configs_file:s0
+build.prop                        0100600  0:0     u:object_r:vendor_file:s0
 "
 
 cp "$IN" "$OUT"
