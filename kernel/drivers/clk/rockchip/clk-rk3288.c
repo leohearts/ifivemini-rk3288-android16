@@ -89,6 +89,8 @@ static struct rockchip_pll_rate_table rk3288_pll_rates[] = {
 	RK3066_PLL_RATE( 552000000, 1, 46, 2),
 	RK3066_PLL_RATE( 504000000, 1, 84, 4),
 	RK3066_PLL_RATE( 500000000, 1, 125, 6),
+	/* 460 MHz: dclk_vop0 230 MHz (/2) for the 1536x2048 dual-DSI panel */
+	RK3066_PLL_RATE( 460000000, 3, 230, 4),
 	RK3066_PLL_RATE( 456000000, 1, 76, 4),
 	RK3066_PLL_RATE( 428000000, 1, 107, 6),
 	RK3066_PLL_RATE( 408000000, 1, 68, 4),
@@ -506,7 +508,12 @@ static struct rockchip_clk_branch rk3288_clk_branches[] __initdata = {
 			RK3288_CLKSEL_CON(33), 0, 5, DFLAGS,
 			RK3288_CLKGATE_CON(5), 8, GFLAGS),
 
-	COMPOSITE(SCLK_GPU, "sclk_gpu", mux_pll_src_cpll_gll_usb_npll_p, 0,
+	/*
+	 * Mux values 2 (usbphy480m_src) and 3 (npll) are left out so that
+	 * GPU devfreq cannot move sclk_gpu onto the USB PHY clock (gated
+	 * with the PHY) or onto NPLL (owned by the display dclk).
+	 */
+	COMPOSITE(SCLK_GPU, "sclk_gpu", mux_pll_src_cpll_gpll_p, 0,
 			RK3288_CLKSEL_CON(34), 6, 2, MFLAGS, 0, 5, DFLAGS,
 			RK3288_CLKGATE_CON(5), 7, GFLAGS),
 

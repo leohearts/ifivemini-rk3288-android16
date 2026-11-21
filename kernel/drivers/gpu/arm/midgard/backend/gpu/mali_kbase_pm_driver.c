@@ -1090,12 +1090,16 @@ void kbase_pm_clock_on(struct kbase_device *kbdev, bool is_resume)
 		kbdev->pm.backend.callback_power_resume(kbdev);
 		return;
 	} else if (kbdev->pm.backend.callback_power_on) {
-		kbdev->pm.backend.callback_power_on(kbdev);
-		/* If your platform properly keeps the GPU state you may use the
-		 * return value of the callback_power_on function to
-		 * conditionally reset the GPU on power up. Currently we are
-		 * conservative and always reset the GPU. */
-		reset_required = true;
+		/*
+		 * The platform callback's return value documents whether the
+		 * GPU state was actually lost while the clock was off
+		 * (1 = lost, 0 = retained, see mali_kbase_config.h). Honour it
+		 * instead of always resetting: with the RK platform this skips
+		 * the full soft-reset on every clock re-enable within the
+		 * power-off-delay window (~20 resets/s during scrolling).
+		 * Negative (error) returns still force a reset.
+		 */
+		reset_required = !!kbdev->pm.backend.callback_power_on(kbdev);
 	}
 
 	spin_lock_irqsave(&kbdev->pm.backend.gpu_powered_lock, flags);

@@ -358,6 +358,8 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	dp->initial_freq = kbdev->current_freq;
 	/* .KP : set devfreq_dvfs_interval_in_ms */
 	dp->polling_ms = 20;
+	/* Optional DT override of the devfreq sampling period (ms) */
+	of_property_read_u32(np, "polling-ms", &dp->polling_ms);
 	dp->target = kbase_devfreq_target;
 	dp->get_dev_status = kbase_devfreq_status;
 	dp->get_cur_freq = kbase_devfreq_cur_freq;

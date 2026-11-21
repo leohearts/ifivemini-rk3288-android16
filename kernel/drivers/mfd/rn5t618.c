@@ -306,7 +306,23 @@ static struct i2c_driver rn5t618_i2c_driver = {
 	.remove = rn5t618_i2c_remove,
 };
 
-module_i2c_driver(rn5t618_i2c_driver);
+/*
+ * Register ahead of the device-level i2c adapter and DRM initcalls. The
+ * boot-on LDOs (lcd_18, vcc_lcd, ...) feed the display pipeline; with
+ * module_i2c_driver() the PMIC probed after rockchip_drm_init() had already
+ * run the MIPI D-PHY lock poll.
+ */
+static int __init rn5t618_i2c_init(void)
+{
+	return i2c_add_driver(&rn5t618_i2c_driver);
+}
+subsys_initcall(rn5t618_i2c_init);
+
+static void __exit rn5t618_i2c_exit(void)
+{
+	i2c_del_driver(&rn5t618_i2c_driver);
+}
+module_exit(rn5t618_i2c_exit);
 
 MODULE_AUTHOR("Beniamino Galvani <b.galvani@gmail.com>");
 MODULE_DESCRIPTION("Ricoh RN5T567/618 MFD driver");
