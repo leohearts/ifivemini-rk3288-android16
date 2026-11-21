@@ -163,7 +163,10 @@ int DrmPlane::Init() {
   if (ret)
     ALOGI("Could not get colorspace property");
 
+  // Rockchip 4.19 calls it ZPOS; 6.1 uses the upstream "zpos" property.
   ret = drm_->GetPlaneProperty(*this, "ZPOS", &zpos_property_);
+  if (ret)
+    ret = drm_->GetPlaneProperty(*this, "zpos", &zpos_property_);
   if (ret)
     ALOGE("Could not get ZPOS property");
 
