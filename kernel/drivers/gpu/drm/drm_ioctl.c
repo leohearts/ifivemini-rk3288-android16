@@ -362,6 +362,10 @@ drm_setclientcap(struct drm_device *dev, void *data, struct drm_file *file_priv)
 			return -EINVAL;
 		file_priv->writeback_connectors = req->value;
 		break;
+	case 6:
+		/* DRM_CLIENT_CAP_SHARE_PLANES from the Rockchip 4.19 uapi: a no-op
+		 * there too; the vendor HWC sets it and quits if it fails */
+		break;
 	default:
 		return -EINVAL;
 	}
