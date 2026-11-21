@@ -467,6 +467,33 @@ config RK_LOGDUMP_PERIOD_DEFAULT
 	  printk ring on the kpanic partition, used when the kernel command
 	  line has no rklogdump_period=<sec>. 0 disables it.
 
+config RK_PROBE_POINTS
+	bool "Numbered checkpoint probes selected by rkprobe= (debug only)"
+	depends on ARCH_ROCKCHIP
+	default n
+	help
+	  Bisection probes. rk_probe_point(n) is compiled into start_kernel(),
+	  kernel_init_freeable(), do_initcalls() and kernel_init(). With
+	  "rkprobe=N" on the command line, the kernel writes the rockusb loader
+	  flag, issues a CRU global soft reset and spins at checkpoint N.
+	  Never a production setting.
+
+config RK3288_DECOMP_WDT
+	bool "RK3288: loader flag and watchdog from the zImage decompressor (debug)"
+	depends on ARCH_ROCKCHIP
+	help
+	  Before unpacking the kernel, write the rockusb loader flag to
+	  PMU_SYS_REG0 and start the SoC watchdog (TOP 14), so any hang before
+	  RK_WDT_BACKSTOP takes over resets the board into Loader mode.
+	  Bring-up only: every later reset also ends in Loader mode.
+
+config RK3288_DECOMP_PROBE
+	bool "RK3288: reset into Loader from the decompressor (debug)"
+	depends on RK3288_DECOMP_WDT
+	help
+	  Reset into Loader mode as soon as the decompressor runs. Shows that
+	  the boot loader handed control to this zImage.
+
 endmenu
 
 endif

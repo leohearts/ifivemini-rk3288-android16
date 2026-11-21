@@ -134,6 +134,40 @@ asmlinkage void __div0(void)
 extern int do_decompress(u8 *input, int len, u8 *output, void (*error)(char *x));
 
 
+#ifdef CONFIG_RK3288_DECOMP_WDT
+/*
+ * RK3288 bring-up safety net, run before the kernel is unpacked (MMU off or
+ * 1:1, so physical addresses). Writes the rockusb loader flag and starts the
+ * SoC watchdog with the values rk_wdt_backstop uses (SGRF pclk gate opened
+ * first, TOP 14, RPL 2, system reset), so a hang anywhere before
+ * rk_wdt_backstop_arm() takes over resets the board into Loader mode.
+ * RK3288_DECOMP_PROBE resets into Loader right here instead.
+ */
+#define RK_PMU_SYS_REG0		((volatile u32 *)0xff730094)
+#define RK_SGRF_SOC_CON0	((volatile u32 *)0xff740000)
+#define RK_CRU_GLB_SRST_FST	((volatile u32 *)0xff7601b0)
+#define RK_WDT_CR		((volatile u32 *)0xff800000)
+#define RK_WDT_TORR		((volatile u32 *)0xff800004)
+#define RK_WDT_CRR		((volatile u32 *)0xff80000c)
+
+static void rk3288_decomp_wdt(void)
+{
+	*RK_PMU_SYS_REG0 = 0x5242c301;
+#ifdef CONFIG_RK3288_DECOMP_PROBE
+	*RK_CRU_GLB_SRST_FST = 0xfdb9;
+	for (;;)
+		;
+#endif
+	*RK_SGRF_SOC_CON0 = 0x00420000;
+	/* An APB access to a gated WDT hangs: only touch it once ungated. */
+	if (*RK_SGRF_SOC_CON0 & ((1 << 6) | (1 << 1)))
+		return;
+	*RK_WDT_TORR = 14;
+	*RK_WDT_CRR = 0x76;
+	*RK_WDT_CR = 1 | (2 << 2);
+}
+#endif
+
 void
 decompress_kernel(unsigned long output_start, unsigned long free_mem_ptr_p,
 		unsigned long free_mem_ptr_end_p,
@@ -148,6 +182,9 @@ decompress_kernel(unsigned long output_start, unsigned long free_mem_ptr_p,
 
 #ifdef CONFIG_ARCH_EP93XX
 	ep93xx_decomp_setup();
+#endif
+#ifdef CONFIG_RK3288_DECOMP_WDT
+	rk3288_decomp_wdt();
 #endif
 	arch_decomp_setup();
 

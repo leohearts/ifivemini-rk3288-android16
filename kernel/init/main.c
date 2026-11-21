@@ -26,6 +26,7 @@
 #include <linux/ioport.h>
 #include <linux/init.h>
 #include <linux/rk_wdt_backstop.h>
+#include <linux/rk_probe.h>
 #include <linux/initrd.h>
 #include <linux/memblock.h>
 #include <linux/acpi.h>
@@ -903,6 +904,7 @@ early_param("randomize_kstack_offset", early_randomize_kstack_offset);
 
 void __init __weak arch_call_rest_init(void)
 {
+	rk_probe_point(2);
 	rest_init();
 }
 
@@ -1079,6 +1081,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	softirq_init();
 	timekeeping_init();
 	time_init();
+	rk_probe_point(1);
 	rk_wdt_backstop_arm();
 
 	/* This must be after timekeeping is initialized */
@@ -1581,8 +1584,13 @@ static void __init do_initcall_level(int level, char *command_line)
 			return;
 #endif
 
-	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
+	int k = 0;
+
+	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++) {
 		do_one_initcall(initcall_from_entry(fn));
+		if (level == 6)
+			rk_probe_point(1000 + ++k);
+	}
 }
 
 static void __init do_initcalls(void)
@@ -1603,6 +1611,7 @@ static void __init do_initcalls(void)
 		/* Parser modifies command_line, restore it each time */
 		strcpy(command_line, saved_command_line);
 		do_initcall_level(level, command_line);
+		rk_probe_point(4 + level);
 	}
 
 	kfree(command_line);
@@ -1759,6 +1768,7 @@ static int __ref kernel_init(void *unused)
 	do_sysctl_args();
 
 	if (ramdisk_execute_command) {
+		rk_probe_point(12);
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)
 			return 0;
@@ -1816,6 +1826,7 @@ void __init console_on_rootfs(void)
 
 static noinline void __init kernel_init_freeable(void)
 {
+	rk_probe_point(3);
 	/* Now the scheduler is fully set up and can do blocking allocations */
 	gfp_allowed_mask = __GFP_BITS_MASK;
 
