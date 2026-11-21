@@ -1,0 +1,35 @@
+diff --git a/src/4.x/GrallocAllocator.cpp b/src/4.x/GrallocAllocator.cpp
+index 0dadcf7..73aa9a7 100644
+--- a/src/4.x/GrallocAllocator.cpp
++++ b/src/4.x/GrallocAllocator.cpp
+@@ -48,7 +48,29 @@ Return<void> GrallocAllocator::allocate(const BufferDescriptor &descriptor, uint
+ 		hidl_cb(Error::BAD_DESCRIPTOR, 0, hidl_vec<hidl_handle>());
+ 		return Void();
+ 	}
+-	common::allocate(bufferDescriptor, count, hidl_cb);
++	/* Same flags the AIDL allocator (aidl/1.x/arm_allocator.cpp) sets: descriptors do not carry them. */
++	bufferDescriptor.flags = mapper::common::DESCRIPTOR_ALLOCATOR_FLAGS;
++
++	auto result = common::allocate(&bufferDescriptor, count);
++	if (!result.has_value())
++	{
++		hidl_cb(result.error() == android::NO_MEMORY ? Error::NO_RESOURCES : Error::UNSUPPORTED, 0,
++		        hidl_vec<hidl_handle>());
++		return Void();
++	}
++
++	std::vector<hidl_handle> grallocBuffers;
++	grallocBuffers.reserve(result->size());
++	for (const auto &handle : *result)
++	{
++		grallocBuffers.emplace_back(hidl_handle(handle.get()));
++	}
++	hidl_vec<hidl_handle> hidlBuffers;
++	hidlBuffers.setToExternal(grallocBuffers.data(), grallocBuffers.size());
++	hidl_cb(Error::NONE, bufferDescriptor.pixel_stride, hidlBuffers);
++
++	/* The clients import the buffers through IMapper; the handles (and their fds) are closed
++	 * here, in the allocator process, when 'result' goes out of scope. */
+ 	return Void();
+ }
+ 

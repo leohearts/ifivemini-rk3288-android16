@@ -111,6 +111,15 @@ gatekeeper/build.sh <aosp-tree> libs      # vendor-changes/bin/hw/android.hardwa
 keymaster/build.sh <aosp-tree> libs       # vendor-changes/bin/hw/android.hardware.keymaster@4.0-service.ifive
 ```
 
+The gralloc 4.0 allocator and mapper in `vendor-changes/lib/hw/` allocate from dma-buf heaps (`/dev/dma_heap/system`, `system-uncached`) instead of ION, which the 6.1 kernel does not have. They are built from the Rockchip `android14-rockchip` midgard gralloc (cloned and pinned by the script) with the VNDK-30 headers from `hwc/hdr/vndk30`, and link only against libraries the vendor partition already has:
+
+```sh
+gralloc/pull-libs.sh libs-gralloc         # adb pull of the VNDK v30 / LLNDK libraries and the original vendor gralloc
+gralloc/build.sh <aosp-tree> libs-gralloc # vendor-changes/lib/hw/android.hardware.graphics.{allocator,mapper}@4.0-impl-midgard.so
+```
+
+The vendor `android.hardware.graphics.allocator@4.0-service` loads the new library unchanged (same file names, passthrough lookup by the `-impl` prefix).
+
 The deep Doze overlay and the iFive settings app need the Android SDK (build-tools 36.1.0, platforms/android-36) and a JDK:
 
 ```sh
@@ -127,6 +136,7 @@ The Wi-Fi driver `bcmdhd.ko` comes with the vendor partition from that zip, buil
 - `kernel/`, `kernel-configs/`: the kernel and its release / debug configs
 - `hwc/`: the patched Rockchip HWC1 and its build; `hwc/test/` has the jank measurements
 - `gatekeeper/`, `keymaster/`: build scripts for the software gatekeeper and keymaster services (the board has no TEE)
+- `gralloc/`: build script, tablet library puller and patch for the dma-heap gralloc 4.0 allocator and mapper
 - `launcher3/`: build script for the Launcher3 with cached themed icons
 - `overlays/`, `apps/ifive-settings/`: the deep Doze overlay and the iFive settings app, installed in the vendor image
 - `vendor-changes/`: every file this project changes in the Tinker Board vendor image
