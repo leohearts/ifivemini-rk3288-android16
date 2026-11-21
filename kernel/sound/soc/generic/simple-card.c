@@ -291,7 +291,7 @@ static int simple_dai_link_of(struct asoc_simple_priv *priv,
 	char dai_name[64];
 	char prop[128];
 	char *prefix = "";
-	int ret, single_cpu = 0;
+	int i, ret, single_cpu = 0;
 
 	cpu  = np;
 	node = of_get_parent(np);
@@ -322,6 +322,21 @@ static int simple_dai_link_of(struct asoc_simple_priv *priv,
 
 	asoc_simple_canonicalize_cpu(cpus, single_cpu);
 	asoc_simple_canonicalize_platform(platforms, cpus);
+
+	/*
+	 * Several links may join the same cpu/codec DAI pair (e.g. to give
+	 * userspace fixed PCM device numbers).  The link name also names the
+	 * runtime device, so keep it unique.
+	 */
+	for (i = 0; i < li->link; i++) {
+		const char *name = simple_priv_to_link(priv, i)->name;
+
+		if (!name || strcmp(name, dai_name))
+			continue;
+		snprintf(dai_name, sizeof(dai_name), "%s-%s-%d",
+			 cpus->dai_name, codecs->dai_name, li->link);
+		break;
+	}
 
 	ret = simple_link_init(priv, node, codec, li, prefix, dai_name);
 
