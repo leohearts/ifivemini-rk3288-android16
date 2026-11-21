@@ -7,7 +7,8 @@ kernel/arch/arm/boot/Image
 kernel/arch/arm/boot/zImage
 kernel/arch/arm/boot/*.dtb
 kernel/arch/arm/boot/dts/**/*.dtb
-kernel/arch/arm/boot/compressed/vmlinux*
+kernel/arch/arm/boot/compressed/vmlinux
+kernel/arch/arm/boot/compressed/vmlinux.lds
 kernel/arch/arm/boot/compressed/piggy_data
 hwc/hdr/vndk30/
 hwc/out/
