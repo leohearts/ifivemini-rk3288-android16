@@ -51,6 +51,12 @@
 #define DDR_SEL_MOBILEDDR	0x20002000
 
 #define DMC_NUM_RETRIES		3
+/*
+ * After DMC_NUM_RETRIES missed vblanks in a row the change is given up; retry
+ * it this often, this many times, before leaving the rate where it is.
+ */
+#define DMC_DELAYED_RETRY_MS	1000
+#define DMC_DELAYED_RETRIES	10
 
 #define DMC_MIN_CPU_KHZ		1200000
 
@@ -68,6 +74,8 @@ extern unsigned long rk3288_dmcclk_get_cpu_rate(void);
 struct rk3288_dmcfreq {
 	struct device *clk_dev;
 	struct work_struct work;
+	struct delayed_work retry_work;
+	int retries;
 	struct devfreq *devfreq;
 	struct regulator *vdd_logic;
 	struct dmc_usage ch_usage[RK3288_DMC_NUM_CH];
@@ -365,6 +373,29 @@ out:
 	rk3288_dmcfreq_cpu_boost(false);
 	cpus_read_unlock();
 	dmcfreq.err = err;
+
+	/*
+	 * A change that missed every vblank (seen once right after boot, when
+	 * the boot-completed write raced the display coming up) is retried
+	 * later instead of leaving the DDR at the old rate until the next
+	 * userspace request.
+	 */
+	if (!err)
+		dmcfreq.retries = 0;
+	else if (err == -ETIMEDOUT && dmcfreq.retries++ < DMC_DELAYED_RETRIES)
+		schedule_delayed_work(&dmcfreq.retry_work,
+				      msecs_to_jiffies(DMC_DELAYED_RETRY_MS));
+}
+
+/* Ask the governor again: "userspace" still holds the rate that failed. */
+static void rk3288_dmcfreq_retry_work(struct work_struct *work)
+{
+	struct devfreq *df = dmcfreq.devfreq;
+
+	mutex_lock(&df->lock);
+	if (!READ_ONCE(dmcfreq.display_off))
+		update_devfreq(df);
+	mutex_unlock(&df->lock);
 }
 
 static void rk3288_dmc_register_cooling_dev(void)
@@ -395,7 +426,7 @@ static void rk3288_dmcfreq_display_work(struct work_struct *work)
 	mutex_lock(&df->lock);
 	if (off) {
 		if (!dmcfreq.display_rate)
-			dmcfreq.display_rate = dmcfreq.rate;
+			dmcfreq.display_rate = dmcfreq.target_rate;
 	} else {
 		freq = dmcfreq.display_rate;
 		dmcfreq.display_rate = 0;
@@ -537,6 +568,7 @@ static int rk3288_dmcfreq_probe(struct platform_device *pdev)
 	rk3288_devfreq_dmc_profile.initial_freq = dmcfreq.rate;
 
 	INIT_WORK(&dmcfreq.work, rk3288_dmcfreq_work);
+	INIT_DELAYED_WORK(&dmcfreq.retry_work, rk3288_dmcfreq_retry_work);
 	INIT_WORK(&dmcfreq.display_work, rk3288_dmcfreq_display_work);
 	/*
 	 * The "userspace" governor never picks a rate by itself: until
