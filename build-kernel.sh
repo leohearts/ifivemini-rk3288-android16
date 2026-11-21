@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the 4.19 kernel for the iFive mini 4S and pack it into a Rockchip KRNL image (kernel.img).
-# Usage: ./build-kernel.sh [gsi-release|dev]   (default gsi-release)
+# Usage: ./build-kernel.sh [gsi-6.1|gsi-release|dev]   (default gsi-6.1)
 # Needs: an arm cross gcc (Fedora: gcc-arm-linux-gnu + binutils-arm-linux-gnu -> CROSS_COMPILE=arm-linux-gnu-;
 #        Debian: gcc-arm-linux-gnueabi -> CROSS_COMPILE=arm-linux-gnueabi-), bc, bison, flex, lz4, libssl-dev, python3.
 set -euo pipefail
@@ -11,7 +11,7 @@ command -v lz4 >/dev/null 2>&1 || { echo "STOP: lz4 command not found. Please in
 if [ -f "$HERE/scripts/restore-symlinks.py" ]; then
     python3 "$HERE/scripts/restore-symlinks.py"
 fi
-CFG=${1:-gsi-release}
+CFG=${1:-gsi-6.1}
 export ARCH=arm CROSS_COMPILE=${CROSS_COMPILE:-arm-linux-gnu-} KCFLAGS="${KCFLAGS:--Wno-array-compare}"
 O=${O:-$HERE/out/kernel-$CFG}
 mkdir -p "$O"
