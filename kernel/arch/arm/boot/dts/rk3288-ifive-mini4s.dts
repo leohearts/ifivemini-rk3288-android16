@@ -745,6 +745,8 @@
 };
 
 &usb_otg {
+	/* 6.1 bring-up: device role from boot, so adb comes up without ID-pin role switching */
+	dr_mode = "peripheral";
 	status = "okay";
 };
 
