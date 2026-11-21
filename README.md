@@ -129,7 +129,7 @@ apps/ifive-settings/build.sh              # vendor-changes/priv-app/IfiveSetting
 
 `build-android-images.sh` takes vendor, odm, the boot ramdisk and `rkdeveloptool` from a release zip of this project, puts in the GSI system and `vendor-changes/`, and writes everything to `inputs/`. The zip ends up in `release/`.
 
-The Wi-Fi driver `bcmdhd.ko` comes with the vendor partition from that zip, built for this kernel. It needs `CONFIG_DEBUG_LIST=y` (it calls `__list_add_valid`), and any config change that alters exported symbols stops it from loading. Keep `kernel-configs/gsi-release.config` as it is, or rebuild the module with the kernel.
+The Wi-Fi driver is the Rockchip rkwifi `bcmdhd` of the 6.1 tree, built as a module (`CONFIG_AP6XXX=m`): it loads the firmware from `/vendor/etc/firmware` when it is inserted, and `/vendor` is not mounted yet when the SDIO card is probed at boot. `build-kernel.sh` builds it with the kernel and stages the stripped `bcmdhd.ko` in `vendor-changes/lib/modules/` (git-ignored); `scripts/patch-vendor.sh` writes it to `/vendor/lib/modules/`, where the vendor Wi-Fi HAL inserts it. It has to come from the same build as `kernel.img`: with a different vermagic or different symbol CRCs the insmod fails with `disagrees about version of symbol module_layout`. The old `bcmdhd.ko` from the 4.19 vendor partition cannot be used on 6.1.
 
 ## Layout
 

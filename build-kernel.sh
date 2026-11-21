@@ -19,5 +19,17 @@ cp "$HERE/kernel-configs/$CFG.config" "$O/.config"
 make -C "$HERE/kernel" O="$O" olddefconfig
 # CC on the command line bypasses scripts/gcc-wrapper.py, which turns newer-gcc warnings into errors.
 make -C "$HERE/kernel" O="$O" -j"$(nproc)" CC="${CROSS_COMPILE}gcc" zImage rk3288-ifive-mini4s.dtb
+# Wi-Fi: Rockchip rkwifi bcmdhd is a module (CONFIG_AP6XXX=m).  It loads the firmware from /vendor when it
+# is inserted, and /vendor is not mounted yet when the SDIO card is probed at boot, so it cannot be built in.
+# The vendor Wi-Fi HAL inserts /vendor/lib/modules/bcmdhd.ko, which has to come from the same build as the
+# kernel (vermagic and symbol CRCs); scripts/patch-vendor.sh writes the copy staged here into the vendor image.
+# Only a full "make modules" writes Module.symvers; vmlinux.symvers has the CRCs of everything bcmdhd imports.
+BCMDHD=drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd
+make -C "$HERE/kernel" O="$O" -j"$(nproc)" CC="${CROSS_COMPILE}gcc" modules_prepare
+cp "$O/vmlinux.symvers" "$O/Module.symvers"
+make -C "$HERE/kernel" O="$O" -j"$(nproc)" CC="${CROSS_COMPILE}gcc" M="$BCMDHD" modules
+mkdir -p "$HERE/vendor-changes/lib/modules"
+"${CROSS_COMPILE}strip" --strip-debug -o "$HERE/vendor-changes/lib/modules/bcmdhd.ko" "$O/$BCMDHD/bcmdhd.ko"
 python3 "$HERE/release-build/tools/mkkrnl.py" pack "$O/arch/arm/boot/zImage" "$O/kernel.img"
 echo "kernel: $O/kernel.img"; echo "dtb:    $O/arch/arm/boot/dts/rk3288-ifive-mini4s.dtb (-> resource.img via release-build/build-resource.sh)"
+echo "wifi:   $HERE/vendor-changes/lib/modules/bcmdhd.ko (-> /vendor/lib/modules via scripts/patch-vendor.sh)"
