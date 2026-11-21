@@ -835,6 +835,12 @@
 	polling-ms = <10>;
 	upthreshold = <25>;
 	downdifferential = <15>;
+	/*
+	 * 6.1 kbase reads the IPA dynamic coefficient from the gpu node (4.19
+	 * read power_model/dynamic-coefficient); without it IPA and with it
+	 * GPU devfreq fail to init. Same value as power_model in rk3288.dtsi.
+	 */
+	dynamic-power-coefficient = <733>;
 	status = "okay";
 };
 
