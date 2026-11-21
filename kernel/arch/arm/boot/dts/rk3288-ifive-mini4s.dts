@@ -643,6 +643,7 @@
 	sensor@6a {
 		compatible = "lsm330_gyro";
 		reg = <0x6a>;
+		status = "disabled";	/* 6.1 bring-up: boot stopped right after its probe */
 		type = <SENSOR_TYPE_GYROSCOPE>;
 		irq-gpio = <&gpio8 RK_PA2 IRQ_TYPE_LEVEL_LOW>;
 		irq_enable = <0>;
