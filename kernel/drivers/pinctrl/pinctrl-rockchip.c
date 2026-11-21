@@ -4802,10 +4802,12 @@ static int rockchip_pmx_gpio_request_enable(struct pinctrl_dev *pctldev,
 	struct rockchip_pinctrl *info = pinctrl_dev_get_drvdata(pctldev);
 	struct rockchip_pin_bank *bank;
 	struct pin_desc *desc;
-	int mux, pin = offset % 32;
+	int mux, pin;
 	static unsigned long bitmap[BITS_TO_LONGS(2048)];
 
 	bank = pin_to_bank(info, offset);
+	/* Banks are not all 32 pins wide (RK3288 gpio0 has 24). */
+	pin = offset - bank->pin_base;
 	mux = rockchip_get_mux(bank, pin);
 	desc = pin_desc_get(pctldev, offset);
 	if (offset < 2048 && !test_bit(offset, bitmap) && desc->mux_owner && mux) {
@@ -4814,7 +4816,7 @@ static int rockchip_pmx_gpio_request_enable(struct pinctrl_dev *pctldev,
 		     offset, desc->mux_owner, mux);
 	}
 
-	return rockchip_set_mux(bank, offset - bank->pin_base, RK_FUNC_GPIO);
+	return rockchip_set_mux(bank, pin, RK_FUNC_GPIO);
 }
 
 static const struct pinmux_ops rockchip_pmx_ops = {
