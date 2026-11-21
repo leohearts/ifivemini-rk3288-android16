@@ -23,7 +23,7 @@
 #include <linux/thermal.h>
 
 #include "cpufreq-dt.h"
-#ifdef CONFIG_ARCH_ROCKCHIP
+#ifdef CONFIG_ARM_ROCKCHIP_CPUFREQ
 #include "rockchip-cpufreq.h"
 #endif
 
@@ -62,7 +62,7 @@ static int set_target(struct cpufreq_policy *policy, unsigned int index)
 	struct private_data *priv = policy->driver_data;
 	unsigned long freq = policy->freq_table[index].frequency;
 
-#ifdef CONFIG_ARCH_ROCKCHIP
+#ifdef CONFIG_ARM_ROCKCHIP_CPUFREQ
 	return rockchip_cpufreq_opp_set_rate(priv->cpu_dev, freq * 1000);
 #else
 	return dev_pm_opp_set_rate(priv->cpu_dev, freq * 1000);
@@ -160,7 +160,7 @@ out_clk_put:
 
 static int cpufreq_online(struct cpufreq_policy *policy)
 {
-#ifdef CONFIG_ARCH_ROCKCHIP
+#ifdef CONFIG_ARM_ROCKCHIP_CPUFREQ
 	return rockchip_cpufreq_online(policy->cpu);
 #endif
 	/* We did light-weight tear down earlier, nothing to do here */
@@ -169,7 +169,7 @@ static int cpufreq_online(struct cpufreq_policy *policy)
 
 static int cpufreq_offline(struct cpufreq_policy *policy)
 {
-#ifdef CONFIG_ARCH_ROCKCHIP
+#ifdef CONFIG_ARM_ROCKCHIP_CPUFREQ
 	return rockchip_cpufreq_offline(policy->cpu);
 #endif
 	/*
@@ -293,7 +293,7 @@ static int dt_cpufreq_early_init(struct device *dev, int cpu)
 				__func__, ret);
 	}
 
-#ifdef CONFIG_ARCH_ROCKCHIP
+#ifdef CONFIG_ARM_ROCKCHIP_CPUFREQ
 	rockchip_cpufreq_adjust_table(cpu_dev);
 #endif
 
