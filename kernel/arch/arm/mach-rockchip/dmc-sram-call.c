@@ -44,6 +44,22 @@ void __iomem *rk3288_dmc_map_sram(phys_addr_t start, size_t size)
 }
 EXPORT_SYMBOL_GPL(rk3288_dmc_map_sram);
 
+/*
+ * idmap_pgd was copied from init_mm early at boot. With CONFIG_VMAP_STACK the
+ * caller's stack lives in vmalloc space, whose top level entries are added to
+ * init_mm later and synced into an mm only by switch_mm (check_vmalloc_seq).
+ * setup_mm_for_reboot() switches to idmap_pgd directly, so without this the
+ * first stack access after the switch faults, and the abort handler overflows
+ * the stack it cannot reach. Same copy as memcpy_pgd() in arch/arm/mm/ioremap.c.
+ */
+static void rk3288_dmc_sync_idmap_vmalloc(void)
+{
+	unsigned long end = ALIGN(VMALLOC_END, PGDIR_SIZE);
+
+	memcpy(pgd_offset_pgd(idmap_pgd, VMALLOC_START), pgd_offset_k(VMALLOC_START),
+	       sizeof(pgd_t) * (pgd_index(end) - pgd_index(VMALLOC_START)));
+}
+
 /**
  * rk3288_dmc_call_sram - call @fn at a physical address with the MMU off
  * @fn: physical address of the function (in SRAM)
@@ -59,6 +75,7 @@ void rk3288_dmc_call_sram(void (*fn)(void *), void *arg, void *sp)
 	void (*call)(void (*fn)(void *), void *arg, void *sp) =
 		(void *)(unsigned long)virt_to_phys(call_with_mmu_disabled);
 
+	rk3288_dmc_sync_idmap_vmalloc();
 	setup_mm_for_reboot();
 	call(fn, arg, sp);
 	cpu_switch_mm(saved_mm->pgd, saved_mm);
