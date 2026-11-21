@@ -975,6 +975,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	pr_notice("%s", linux_banner);
 	early_security_init();
 	setup_arch(&command_line);
+	rk_probe_early(45);
 	setup_boot_config();
 	setup_command_line(command_line);
 	setup_nr_cpu_ids();
@@ -1025,10 +1026,13 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	 * kmem_cache_init()
 	 */
 	setup_log_buf(0);
+	rk_probe_early(46);
 	vfs_caches_init_early();
 	sort_main_extable();
 	trap_init();
+	rk_probe_early(47);
 	mm_init();
+	rk_probe_point(30);
 	poking_init();
 	ftrace_init();
 
@@ -1041,6 +1045,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	 * time - but meanwhile we still have a functioning scheduler.
 	 */
 	sched_init();
+	rk_probe_point(31);
 
 	if (WARN(!irqs_disabled(),
 		 "Interrupts were enabled *very* early, fixing it\n"))
@@ -1062,6 +1067,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	workqueue_init_early();
 
 	rcu_init();
+	rk_probe_point(32);
 
 	/* Trace events are available after this */
 	trace_init();
@@ -1073,13 +1079,16 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	/* init some links before init_ISA_irqs() */
 	early_irq_init();
 	init_IRQ();
+	rk_probe_point(33);
 	tick_init();
+	rk_probe_point(34);
 	rcu_init_nohz();
 	init_timers();
 	srcu_init();
 	hrtimers_init();
 	softirq_init();
 	timekeeping_init();
+	rk_probe_point(35);
 	time_init();
 	rk_probe_point(1);
 	rk_wdt_backstop_arm();

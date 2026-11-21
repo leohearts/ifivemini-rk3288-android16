@@ -15,6 +15,8 @@
 #include <linux/platform_device.h>
 #include <linux/printk.h>
 #include <linux/rk_probe.h>
+#include <asm/early_ioremap.h>
+#include <asm/setup.h>
 #include <linux/rk_logdump.h>
 #include <linux/processor.h>
 #include <asm/barrier.h>
@@ -216,4 +218,50 @@ void rk_probe_point(int n)
 	else
 		rk_probe_hold_wait(rk_probe_hold);
 	rk_probe_reset();
+}
+
+/*
+ * rk_probe_early(n): same job as rk_probe_point(n), for code that runs before
+ * mm_init(), where ioremap() does not work yet. Valid from early_ioremap_init()
+ * in setup_arch(). The selection is read from boot_command_line directly,
+ * since rkprobe= is only parsed later, in parse_early_param().
+ */
+static void __iomem *rk_early_pmu __initdata, *rk_early_cru __initdata;
+bool rk_probe_static_mapped __initdata;
+
+void __init rk_probe_early(int n)
+{
+	const char *p = strstr(boot_command_line, "rkprobe=");
+	void __iomem *pmu, *cru;
+	long sel;
+
+	sel = 0;
+	if (p)
+		for (p += 8; *p >= '0' && *p <= '9'; p++)
+			sel = sel * 10 + (*p - '0');
+	if (sel != n && n >= 0)
+		return;
+
+	/*
+	 * Map once and keep the mapping: after early_ioremap_reset() a new
+	 * early_ioremap() takes the __late_set_fixmap path, so later probes
+	 * reuse the fixmap entries made here instead.
+	 */
+	if (!rk_early_pmu) {
+		rk_early_pmu = early_ioremap(RK3288_PMU_BASE, PAGE_SIZE);
+		rk_early_cru = early_ioremap(RK3288_CRU_BASE, PAGE_SIZE);
+	}
+	pmu = rk_early_pmu;
+	cru = rk_early_cru;
+	if (rk_probe_static_mapped) {
+		pmu = (void __iomem *)RK_PROBE_PMU_VIRT;
+		cru = (void __iomem *)RK_PROBE_CRU_VIRT;
+	}
+	if (!pmu || !cru || n < 0)
+		return;
+	writel(RK_BOOT_LOADER, pmu + RK3288_PMU_SYS_REG0);
+	wmb();
+	writel(RK_CRU_SRST_MAGIC, cru + RK3288_CRU_GLB_SRST_FST);
+	while (1)
+		cpu_relax();
 }

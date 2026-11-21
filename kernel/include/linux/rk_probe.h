@@ -12,8 +12,14 @@
 
 #ifdef CONFIG_RK_PROBE_POINTS
 void rk_probe_point(int n);
+void rk_probe_early(int n);
+/* Static PMU/CRU mappings made by the machine's map_io (inside vmalloc). */
+#define RK_PROBE_PMU_VIRT	0xfe730000UL
+#define RK_PROBE_CRU_VIRT	0xfe760000UL
+extern bool rk_probe_static_mapped;
 #else
 static inline void rk_probe_point(int n) { }
+static inline void rk_probe_early(int n) { }
 #endif
 
 #endif /* _LINUX_RK_PROBE_H */

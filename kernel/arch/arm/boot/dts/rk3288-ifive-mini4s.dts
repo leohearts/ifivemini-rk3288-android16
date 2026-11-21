@@ -1239,3 +1239,16 @@
 &isp_mmu {
 	status = "okay";
 };
+
+/*
+ * The stock loader (V2.30) has no secure monitor: no PSCI, no SIP calls.
+ * CPUs come up through the PMU (rockchip,rk3066-smp, set on /cpus in
+ * rk3288.dtsi), as on the 4.19 kernel.
+ */
+/ {
+	/delete-node/ psci;
+};
+&cpu0 { /delete-property/ enable-method; };
+&cpu1 { /delete-property/ enable-method; };
+&cpu2 { /delete-property/ enable-method; };
+&cpu3 { /delete-property/ enable-method; };

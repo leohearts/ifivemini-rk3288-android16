@@ -37,6 +37,7 @@
 #include <asm/efi.h>
 #include <asm/elf.h>
 #include <asm/early_ioremap.h>
+#include <linux/rk_probe.h>
 #include <asm/fixmap.h>
 #include <asm/procinfo.h>
 #include <asm/psci.h>
@@ -1133,27 +1134,36 @@ void __init setup_arch(char **cmdline_p)
 
 	early_fixmap_init();
 	early_ioremap_init();
+	rk_probe_early(40);
 
 	parse_early_param();
+	rk_probe_early(41);
 
 #ifdef CONFIG_MMU
 	early_mm_init(mdesc);
+	rk_probe_early(42);
 #endif
 	setup_dma_zone(mdesc);
+	rk_probe_early(50);
 	xen_early_init();
 	arm_efi_init();
+	rk_probe_early(51);
 	/*
 	 * Make sure the calculation for lowmem/highmem is set appropriately
 	 * before reserving/allocating any memory
 	 */
 	adjust_lowmem_bounds();
 	arm_memblock_init(mdesc);
+	rk_probe_early(52);
 	/* Memory may have been removed so recalculate the bounds. */
 	adjust_lowmem_bounds();
 
+	rk_probe_early(53);
+	rk_probe_early(-1);	/* keep the PMU/CRU mapping for later probes */
 	early_ioremap_reset();
 
 	paging_init(mdesc);
+	rk_probe_early(43);
 	kasan_init();
 	request_standard_resources(mdesc);
 
@@ -1163,6 +1173,7 @@ void __init setup_arch(char **cmdline_p)
 	}
 
 	unflatten_device_tree();
+	rk_probe_early(44);
 
 	arm_dt_init_cpu_maps();
 	psci_dt_init();
