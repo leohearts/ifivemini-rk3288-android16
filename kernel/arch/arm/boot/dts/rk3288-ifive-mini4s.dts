@@ -854,6 +854,48 @@
 };
 
 /*
+ * power_allocator (the default governor) takes its switch-on point from the
+ * first of two passive trips. With only gpu_alert0 it has no switch-on trip,
+ * controls the zone at any temperature and, with an estimated budget, kept
+ * the GPU cooling device at its last state (100 MHz) at 35 C.
+ * 4.19 put the GPU under soc-thermal with sustainable-power 1200 mW; use the
+ * same budget here: gpu_alert0 becomes a 60 C switch-on trip and the GPU is
+ * throttled from gpu_alert1 at 70 C.
+ */
+&gpu_thermal {
+	sustainable-power = <1200>;
+
+	/* Trip order matters: switch-on, control, then critical. */
+	trips {
+		/delete-node/ gpu_crit;
+		gpu_alert1: gpu_alert1 {
+			temperature = <70000>;
+			hysteresis = <2000>;
+			type = "passive";
+		};
+		gpu-crit {
+			temperature = <90000>;
+			hysteresis = <2000>;
+			type = "critical";
+		};
+	};
+
+	cooling-maps {
+		map0 {
+			trip = <&gpu_alert1>;
+		};
+	};
+};
+
+&gpu_alert0 {
+	temperature = <60000>;
+};
+
+&cpu_thermal {
+	sustainable-power = <1200>;
+};
+
+/*
  * Stock 3.10 tsadc: tsadc-ht-reset-cru = <1>, tsadc-ht-pull-gpio = <0>,
  * tsadc-ht-temp = <120>: over-temperature resets through the CRU, the
  * OTP_OUT pin (gpio0 PB2) is not used to signal the PMIC.
