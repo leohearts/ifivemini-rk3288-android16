@@ -555,14 +555,15 @@ static const struct mipi_dsi_host_ops dw_mipi_dsi_host_ops = {
 
 static void dw_mipi_dsi_video_mode_config(struct dw_mipi_dsi *dsi)
 {
+	/*
+	 * LP in HBP stays off, as in the stock Rockchip rk32_mipi_dsi.c that
+	 * drives the iFive mini 4S dual-channel panel.
+	 */
 	u32 val = LP_VSA_EN | LP_VBP_EN | LP_VFP_EN |
-		  LP_VACT_EN | LP_HBP_EN | LP_HFP_EN;
+		  LP_VACT_EN | LP_HFP_EN;
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_NO_HFP)
 		val &= ~LP_HFP_EN;
-
-	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_NO_HBP)
-		val &= ~LP_HBP_EN;
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_BURST)
 		val |= VID_MODE_TYPE_BURST;
@@ -700,9 +701,11 @@ static void dw_mipi_dsi_video_packet_config(struct dw_mipi_dsi *dsi,
 	 * non-burst video modes, see dw_mipi_dsi_video_mode_config()...
 	 */
 
+	/* dual channel: rk32_mipi_dsi.c pads each half-line packet by 4 in burst mode */
 	dsi_write(dsi, DSI_VID_PKT_SIZE,
 		       dw_mipi_is_dual_mode(dsi) ?
-				VID_PKT_SIZE(mode->hdisplay / 2) :
+				VID_PKT_SIZE(mode->hdisplay / 2 +
+					     (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_BURST ? 4 : 0)) :
 				VID_PKT_SIZE(mode->hdisplay));
 }
 
@@ -719,7 +722,7 @@ static void dw_mipi_dsi_command_mode_config(struct dw_mipi_dsi *dsi)
 	 * the Bus-Turn-Around Timeout Counter should be computed
 	 * according to byte lane...
 	 */
-	dsi_write(dsi, DSI_BTA_TO_CNT, 0xd00);
+	dsi_write(dsi, DSI_BTA_TO_CNT, 0xffff);
 	dsi_write(dsi, DSI_MODE_CFG, ENABLE_CMD_MODE);
 }
 
@@ -745,7 +748,8 @@ static void dw_mipi_dsi_line_timer_config(struct dw_mipi_dsi *dsi,
 {
 	u32 htotal, hsa, hbp, lbcc;
 
-	htotal = mode->crtc_htotal;
+	/* dual channel: rk32_mipi_dsi.c adds 8 pixel clocks to the line time */
+	htotal = mode->crtc_htotal + (dw_mipi_is_dual_mode(dsi) ? 8 : 0);
 	hsa = mode->crtc_hsync_end - mode->crtc_hsync_start;
 	hbp = mode->crtc_htotal - mode->crtc_hsync_end;
 
@@ -825,7 +829,7 @@ static void dw_mipi_dsi_dphy_interface_config(struct dw_mipi_dsi *dsi)
 	 * stop wait time should be the maximum between host dsi
 	 * and panel stop wait times
 	 */
-	dsi_write(dsi, DSI_PHY_IF_CFG, PHY_STOP_WAIT_TIME(0x20) |
+	dsi_write(dsi, DSI_PHY_IF_CFG, PHY_STOP_WAIT_TIME(100) |
 		  N_LANES(dsi->lanes));
 }
 

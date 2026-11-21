@@ -487,6 +487,78 @@ static void dw_mipi_dsi_phy_tx_config(struct dw_mipi_dsi_rockchip *dsi)
 					      dsi->cdata->enable);
 }
 
+/*
+ * RK3288 D-PHY setup as programmed by the stock Rockchip rk32_mipi_dsi.c
+ * (the sequence the 4.19 port of this tablet uses): fixed PLL bias/CP/LPF
+ * codes, the PLL dividers from a smallest-remainder prediv search over 1..5
+ * written 2 ms apart with 0x19 last, then the analog codes 0x20-0x22 and
+ * 0x70-0x72. The generic sequence above leaves the clock lane out of stop
+ * state on this panel (dual-channel, 900 Mbps).
+ */
+static int dw_mipi_dsi_rk3288_phy_init(struct dw_mipi_dsi_rockchip *dsi)
+{
+	static const struct {
+		u16 max_mbps;
+		u8 hsfreqrange;
+	} range[] = {
+		{  90, 0x00}, { 100, 0x10}, { 110, 0x20}, { 130, 0x01},
+		{ 140, 0x11}, { 150, 0x21}, { 170, 0x02}, { 180, 0x12},
+		{ 200, 0x22}, { 220, 0x03}, { 240, 0x13}, { 250, 0x23},
+		{ 270, 0x04}, { 300, 0x14}, { 330, 0x05}, { 360, 0x15},
+		{ 400, 0x25}, { 450, 0x06}, { 500, 0x16}, { 550, 0x07},
+		{ 600, 0x17}, { 650, 0x08}, { 700, 0x18}, { 750, 0x09},
+		{ 800, 0x19}, { 850, 0x29}, { 900, 0x39}, { 950, 0x0a},
+		{1000, 0x1a}, {1050, 0x2a}, {1100, 0x3a}, {1150, 0x0b},
+		{1200, 0x1b}, {1250, 0x2b}, {1300, 0x3b}, {1350, 0x0c},
+		{1400, 0x1c}, {1450, 0x2c}, {1500, 0x3c}
+	};
+	u32 ref = dsi->pllref_clk ? clk_get_rate(dsi->pllref_clk) : 0;
+	u32 ddr = dsi->lane_mbps * USEC_PER_SEC;
+	u32 dec, pre, prediv = 1, fbdiv = 1, i;
+
+	if (!ref)
+		ref = 24000000;
+	for (i = 0; i < ARRAY_SIZE(range) - 1; i++)
+		if (dsi->lane_mbps < range[i].max_mbps)
+			break;
+
+	dw_mipi_dsi_phy_write(dsi, PLL_BIAS_CUR_SEL_CAP_VCO_CONTROL, 0xab);
+	dw_mipi_dsi_phy_write(dsi, PLL_CP_CONTROL_PLL_LOCK_BYPASS, 0x08);
+	dw_mipi_dsi_phy_write(dsi, PLL_LPF_AND_CP_CONTROL, 0xc0);
+	dw_mipi_dsi_phy_write(dsi, HS_RX_CONTROL_OF_LANE_0,
+			      HSFREQRANGE_SEL(range[i].hsfreqrange));
+
+	dec = ref;
+	for (i = 1; i < 6; i++) {
+		pre = ref / i;
+		if (dec > ddr % pre && ddr / pre < 512) {
+			dec = ddr % pre;
+			prediv = i;
+			fbdiv = ddr / pre;
+		}
+		if (!dec)
+			break;
+	}
+	dw_mipi_dsi_phy_write(dsi, PLL_INPUT_DIVIDER_RATIO, prediv - 1);
+	mdelay(2);
+	dw_mipi_dsi_phy_write(dsi, PLL_LOOP_DIVIDER_RATIO, (fbdiv - 1) & 0x1f);
+	mdelay(2);
+	dw_mipi_dsi_phy_write(dsi, PLL_LOOP_DIVIDER_RATIO, ((fbdiv - 1) >> 5) | 0x80);
+	mdelay(2);
+	dw_mipi_dsi_phy_write(dsi, PLL_INPUT_AND_LOOP_DIVIDER_RATIOS_CONTROL, 0x30);
+	mdelay(2);
+
+	dw_mipi_dsi_phy_write(dsi, 0x20, 0x4d);
+	dw_mipi_dsi_phy_write(dsi, 0x21, 0x3d);
+	dw_mipi_dsi_phy_write(dsi, 0x21, 0xdf);
+	dw_mipi_dsi_phy_write(dsi, 0x22, 0x07);
+	dw_mipi_dsi_phy_write(dsi, 0x22, 0x87);
+	dw_mipi_dsi_phy_write(dsi, 0x70, 0x8f);
+	dw_mipi_dsi_phy_write(dsi, 0x71, 0xd5);
+	dw_mipi_dsi_phy_write(dsi, 0x72, 0x4a);
+	return 0;
+}
+
 static int dw_mipi_dsi_phy_init(void *priv_data)
 {
 	struct dw_mipi_dsi_rockchip *dsi = priv_data;
@@ -496,6 +568,9 @@ static int dw_mipi_dsi_phy_init(void *priv_data)
 
 	if (dsi->phy)
 		return 0;
+
+	if (dsi->cdata->lcdsel_grf_reg == RK3288_GRF_SOC_CON6)
+		return dw_mipi_dsi_rk3288_phy_init(dsi);
 
 	/*
 	 * Get vco from frequency(lane_mbps)
