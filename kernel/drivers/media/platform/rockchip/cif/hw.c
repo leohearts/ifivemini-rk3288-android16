@@ -1891,6 +1891,8 @@ static int rkcif_plat_hw_probe(struct platform_device *pdev)
 		cif_dev->chip_id = cif_hw->chip_id;
 		cif_hw->cif_dev[0] = cif_dev;
 		cif_hw->dev_num = 1;
+		/* rkcif_plat_probe() (newer SoCs) reads this in rkcif_parse_dts() */
+		rkcif_parse_dvp_data_shift(cif_dev);
 		ret = rkcif_plat_init(cif_dev, node, RKCIF_DVP);
 		if (ret)
 			return ret;

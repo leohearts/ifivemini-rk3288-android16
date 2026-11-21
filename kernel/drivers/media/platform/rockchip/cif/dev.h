@@ -1158,6 +1158,7 @@ int rkcif_register_dvp_sof_subdev(struct rkcif_device *dev);
 void rkcif_unregister_dvp_sof_subdev(struct rkcif_device *dev);
 void rkcif_irq_lite_lvds(struct rkcif_device *cif_dev);
 int rkcif_plat_init(struct rkcif_device *cif_dev, struct device_node *node, int inf_id);
+void rkcif_parse_dvp_data_shift(struct rkcif_device *cif_dev);
 int rkcif_plat_uninit(struct rkcif_device *cif_dev);
 int rkcif_attach_hw(struct rkcif_device *cif_dev);
 int rkcif_update_sensor_info(struct rkcif_stream *stream);

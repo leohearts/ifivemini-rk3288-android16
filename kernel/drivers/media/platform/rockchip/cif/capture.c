@@ -17533,6 +17533,16 @@ void rkcif_irq_pingpong(struct rkcif_device *cif_dev)
 								 RKCIF_YUV_ADDR_STATE_UPDATE);
 
 				if (active_buf && (!ret)) {
+					/*
+					 * Same as the other paths: the frame start time from
+					 * rkcif_deal_sof() (line irq), else the frame end.
+					 * Without it the buffer reaches userspace with
+					 * timestamp 0 and the camera framework stalls after
+					 * the first requests.
+					 */
+					active_buf->vb.vb2_buf.timestamp =
+						stream->readout.fs_timestamp ?:
+						rkcif_time_get_ns(cif_dev);
 					active_buf->vb.sequence = stream->frame_idx;
 					rkcif_vb_done_tasklet(stream, active_buf);
 				}
