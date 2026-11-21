@@ -1624,6 +1624,8 @@
 		compatible = "rockchip,mpp-service";
 		rockchip,taskqueue-count = <2>;
 		rockchip,resetgroup-count = <2>;
+		/* vdpu1:0x2, vepu1:0x4 share vpu_mmu */
+		rockchip,iommu-shared-mask = <0x6>;
 		status = "disabled";
 	};
 

@@ -223,6 +223,7 @@ struct rkcif_buffer {
 	struct dma_buf *dbuf;
 	u64 fe_timestamp;
 	int id;
+	bool shift_pending;	/* dvp-data-shift fixup due in buf_finish() */
 };
 
 struct rkcif_tools_buffer {
@@ -1056,6 +1057,7 @@ struct rkcif_device {
 	bool				reset_work_cancel;
 	bool				iommu_en;
 	bool				is_use_dummybuf;
+	u32				dvp_data_shift;
 	bool				is_notifier_isp;
 	bool				is_thunderboot;
 	bool				is_rdbk_to_online;

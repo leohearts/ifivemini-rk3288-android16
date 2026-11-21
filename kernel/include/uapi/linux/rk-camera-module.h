@@ -480,6 +480,26 @@ struct rkmodule_inf {
 } __attribute__ ((packed));
 
 /**
+ * struct rkmodule_inf_hal - module info as sized by the Android 11 Rockchip
+ * camera HAL (librkisp.so, camera_engine_rkisp)
+ *
+ * The HAL issues RKMODULE_GET_MODULE_INFO with a 3766 byte struct
+ * (cmd 0x8eb656c0), which is not the size of struct rkmodule_inf above.
+ * Only base is consumed (sensor/module/lens give the IQ file name
+ * <sensor>_<module>_<lens>.xml); the rest is returned zeroed.
+ */
+#define RKMODULE_INF_HAL_SIZE		3766
+
+struct rkmodule_inf_hal {
+	struct rkmodule_base_inf base;
+	__u8 reserved[RKMODULE_INF_HAL_SIZE -
+		      sizeof(struct rkmodule_base_inf)];
+} __attribute__ ((packed));
+
+#define RKMODULE_GET_MODULE_INFO_HAL	\
+	_IOR('V', BASE_VIDIOC_PRIVATE + 0, struct rkmodule_inf_hal)
+
+/**
  * struct rkmodule_awb_inf - module awb information
  *
  */

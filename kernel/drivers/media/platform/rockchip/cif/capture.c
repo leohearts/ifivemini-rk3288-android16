@@ -9595,9 +9595,62 @@ static int rkcif_start_streaming(struct vb2_queue *queue, unsigned int count)
 	return ret;
 }
 
+/*
+ * Board wiring: sensor D[7:0] sits on VIP pads [7:0] but the VIP samples
+ * [9:2], so every captured byte is (sensor byte >> 2). Undo it on the CPU:
+ * byte = (byte << 2) | 2 (the 2 is the midpoint of the lost 0..3 bits).
+ *
+ * This runs from buf_finish() (DQBUF, process context), never from the done
+ * tasklet: the buffers are coherent (uncached) and a word-wise sweep of a
+ * frame takes longer than two frame periods, which would keep the VIP
+ * re-using the not yet completed ping-pong slot while the CPU shifts a buffer
+ * the DMA is still writing. The buffer is already out of the VIP address
+ * registers here. Data is read with block copies (ldm bursts) into a small
+ * cached chunk, fixed there and written back, instead of single uncached word
+ * accesses.
+ */
+#define RKCIF_SHIFT_CHUNK	1024
+
+static void rkcif_fix_dvp_shift(struct rkcif_stream *stream,
+				struct vb2_buffer *vb)
+{
+	const struct cif_output_fmt *fmt = stream->cif_fmt_out;
+	u32 tmp[RKCIF_SHIFT_CHUNK / 4];
+	u32 i;
+
+	for (i = 0; i < fmt->mplanes; i++) {
+		u8 *p = vb2_plane_vaddr(vb, i);
+		u32 len = vb2_get_plane_payload(vb, i);
+		u32 off, n, w;
+
+		if (!p)
+			continue;
+		for (off = 0; off < len; off += n) {
+			n = min_t(u32, len - off, RKCIF_SHIFT_CHUNK);
+			memcpy(tmp, p + off, n);
+			for (w = 0; w < n / 4; w++)
+				tmp[w] = ((tmp[w] << 2) & 0xfcfcfcfc) | 0x02020202;
+			memcpy(p + off, tmp, n & ~3u);
+		}
+	}
+}
+
+static void rkcif_buf_finish(struct vb2_buffer *vb)
+{
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+	struct rkcif_buffer *cifbuf = to_rkcif_buffer(vbuf);
+	struct rkcif_stream *stream = vb->vb2_queue->drv_priv;
+
+	if (!cifbuf->shift_pending)
+		return;
+	cifbuf->shift_pending = false;
+	rkcif_fix_dvp_shift(stream, vb);
+}
+
 static struct vb2_ops rkcif_vb2_ops = {
 	.queue_setup = rkcif_queue_setup,
 	.buf_queue = rkcif_buf_queue,
+	.buf_finish = rkcif_buf_finish,
 	.wait_prepare = vb2_ops_wait_prepare,
 	.wait_finish = vb2_ops_wait_finish,
 	.stop_streaming = rkcif_stop_streaming,
@@ -11308,6 +11361,11 @@ void rkcif_vb_done_oneframe(struct rkcif_stream *stream,
 		vb2_set_plane_payload(&vb_done->vb2_buf, i,
 				      stream->pixm.plane_fmt[i].sizeimage);
 	}
+
+	to_rkcif_buffer(vb_done)->shift_pending =
+		stream->cifdev->dvp_data_shift &&
+		fmt->fmt_type == CIF_FMT_TYPE_YUV &&
+		!stream->cifdev->hw_dev->iommu_en;
 
 	vb2_buffer_done(&vb_done->vb2_buf, VB2_BUF_STATE_DONE);
 	v4l2_dbg(2, rkcif_debug, &stream->cifdev->v4l2_dev,

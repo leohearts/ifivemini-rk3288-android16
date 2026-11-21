@@ -1124,6 +1124,15 @@ static void ov8856_get_module_inf(struct ov8856 *ov8856,
 
 }
 
+static void ov8856_get_module_inf_hal(struct ov8856 *ov8856,
+				      struct rkmodule_inf_hal *inf)
+{
+	memset(inf, 0, sizeof(*inf));
+	strscpy(inf->base.sensor, OV8856_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, ov8856->module_name, sizeof(inf->base.module));
+	strscpy(inf->base.lens, ov8856->len_name, sizeof(inf->base.lens));
+}
+
 static void ov8856_set_awb_cfg(struct ov8856 *ov8856,
 			       struct rkmodule_awb_cfg *cfg)
 {
@@ -1149,6 +1158,9 @@ static long ov8856_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	switch (cmd) {
 	case RKMODULE_GET_MODULE_INFO:
 		ov8856_get_module_inf(ov8856, (struct rkmodule_inf *)arg);
+		break;
+	case RKMODULE_GET_MODULE_INFO_HAL:
+		ov8856_get_module_inf_hal(ov8856, (struct rkmodule_inf_hal *)arg);
 		break;
 	case RKMODULE_AWB_CFG:
 		ov8856_set_awb_cfg(ov8856, (struct rkmodule_awb_cfg *)arg);

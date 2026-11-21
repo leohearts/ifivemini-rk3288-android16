@@ -2076,6 +2076,17 @@ static int gc2145_write_array(struct i2c_client *client,
 	i = 0;
 	while (regs[i].addr != REG_NULL) {
 		ret = gc2145_write(client, regs[i].addr, regs[i].value);
+		/*
+		 * 0xfe = 0xf0 is the soft reset the init table repeats: the
+		 * sensor resets itself while the transfer is in flight, so it
+		 * can time out without the sensor being dead. Later writes
+		 * decide whether the bus is really broken.
+		 */
+		if (ret && regs[i].addr == 0xfe && regs[i].value == 0xf0) {
+			dev_warn(&client->dev, "soft reset write failed (%d), continuing\n", ret);
+			usleep_range(10000, 15000);
+			ret = 0;
+		}
 		if (ret) {
 			dev_err(&client->dev, "%s failed !\n", __func__);
 			break;
@@ -2536,6 +2547,16 @@ static void gc2145_get_module_inf(struct gc2145 *gc2145,
 	strscpy(inf->base.lens, gc2145->len_name, sizeof(inf->base.lens));
 }
 
+static void gc2145_get_module_inf_hal(struct gc2145 *gc2145,
+				      struct rkmodule_inf_hal *inf)
+{
+	memset(inf, 0, sizeof(*inf));
+	strscpy(inf->base.sensor, DRIVER_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, gc2145->module_name,
+		sizeof(inf->base.module));
+	strscpy(inf->base.lens, gc2145->len_name, sizeof(inf->base.lens));
+}
+
 static long gc2145_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct gc2145 *gc2145 = to_gc2145(sd);
@@ -2545,6 +2566,9 @@ static long gc2145_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	switch (cmd) {
 	case RKMODULE_GET_MODULE_INFO:
 		gc2145_get_module_inf(gc2145, (struct rkmodule_inf *)arg);
+		break;
+	case RKMODULE_GET_MODULE_INFO_HAL:
+		gc2145_get_module_inf_hal(gc2145, (struct rkmodule_inf_hal *)arg);
 		break;
 	case RKMODULE_SET_QUICK_STREAM:
 
@@ -2632,6 +2656,32 @@ static int gc2145_init(struct v4l2_subdev *sd, u32 val)
 	return ret;
 }
 
+/* power-down release (optionally after a power-down/MCLK re-assert), then check the chip id */
+static int gc2145_wake(struct gc2145 *gc2145, bool recover)
+{
+	struct i2c_client *client = gc2145->client;
+	u8 pid, ver;
+	int ret;
+
+	if (recover) {
+		if (!IS_ERR(gc2145->pwdn_gpio))
+			gpiod_set_value_cansleep(gc2145->pwdn_gpio, 1);
+		usleep_range(20000, 25000);
+		if (clk_set_rate(gc2145->xvclk, 24000000) < 0)
+			dev_warn(&client->dev, "recover: set xvclk 24MHz failed\n");
+	}
+	if (!IS_ERR(gc2145->pwdn_gpio)) {
+		gpiod_set_value_cansleep(gc2145->pwdn_gpio, 0);
+		usleep_range(10000, 15000);
+	}
+	ret = gc2145_read(client, REG_SC_CHIP_ID_H, &pid);
+	if (!ret)
+		ret = gc2145_read(client, REG_SC_CHIP_ID_L, &ver);
+	if (!ret && SENSOR_ID(pid, ver) != GC2145_ID)
+		ret = -ENODEV;
+	return ret;
+}
+
 static int gc2145_power(struct v4l2_subdev *sd, int on)
 {
 	int ret;
@@ -2640,14 +2690,21 @@ static int gc2145_power(struct v4l2_subdev *sd, int on)
 
 	dev_info(&client->dev, "%s(%d) on(%d)\n", __func__, __LINE__, on);
 	if (on) {
-		if (!IS_ERR(gc2145->pwdn_gpio)) {
-			gpiod_set_value_cansleep(gc2145->pwdn_gpio, 0);
-			usleep_range(2000, 5000);
+		ret = gc2145_wake(gc2145, false);
+		if (ret) {
+			dev_warn(&client->dev, "sensor id read failed (%d), retrying after power-down\n", ret);
+			ret = gc2145_wake(gc2145, true);
 		}
-		ret = gc2145_init(sd, 0);
+		if (!ret)
+			ret = gc2145_init(sd, 0);
 		usleep_range(10000, 20000);
-		if (ret)
-			dev_err(&client->dev, "init error\n");
+		if (ret) {
+			dev_err(&client->dev, "init error %d, sensor left powered down\n", ret);
+			if (!IS_ERR(gc2145->pwdn_gpio))
+				gpiod_set_value_cansleep(gc2145->pwdn_gpio, 1);
+			gc2145->power_on = false;
+			return ret;
+		}
 		gc2145->power_on = true;
 	} else {
 		if (!IS_ERR(gc2145->pwdn_gpio)) {

@@ -1129,6 +1129,13 @@
  * active=1; the driver drives it to 0 to run).  The DVP endpoints carry
  * hsync/vsync/pclk properties so v4l2-fwnode reports a parallel bus
  * (no flags means BT656); the values match gc2145_g_mbus_config().
+ *
+ * The sensors' I2C3 and cif_clkout pads sit in the DVP IO domain, which
+ * resets to 3.3 V mode; it must be switched to 1.8 V (io_domains, supplied
+ * by vcc_18) before the first I2C transfer.  Deferred probes only run at
+ * late_initcall, so vcc_camera takes vin from vcc_18 (not registered yet when
+ * the platform devices first probe) to push the sensor probes behind the
+ * io_domains retry, which is queued earlier.
  */
 
 /*
@@ -1147,6 +1154,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&camera_pwr>;
 		regulator-name = "vcc_camera";
+		vin-supply = <&vcc_18>;
 		enable-active-high;
 		regulator-always-on;
 		regulator-boot-on;

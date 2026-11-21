@@ -3254,6 +3254,15 @@ static void rkcif_parse_dts(struct rkcif_device *cif_dev)
 	if (ret != 0)
 		cif_dev->wait_line = 0;
 	dev_info(cif_dev->dev, "rkcif wait line %d\n", cif_dev->wait_line);
+
+	/* only 2 is supported: sensor byte arrives as byte >> 2 */
+	if (of_property_read_u32(node, "rockchip,dvp-data-shift",
+				 &cif_dev->dvp_data_shift) ||
+	    cif_dev->dvp_data_shift != 2)
+		cif_dev->dvp_data_shift = 0;
+	if (cif_dev->dvp_data_shift)
+		dev_info(cif_dev->dev, "rkcif dvp data shift %u (CPU fixup)\n",
+			 cif_dev->dvp_data_shift);
 	ret = of_property_read_u32(node,
 			     OF_CIF_FASTBOOT_RESERVED_BUFS,
 			     &cif_dev->fb_res_bufs);

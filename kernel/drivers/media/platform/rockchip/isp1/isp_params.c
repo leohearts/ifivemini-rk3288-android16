@@ -38,6 +38,7 @@
 #include <media/videobuf2-vmalloc.h>	/* for ISP params */
 #include <media/v4l2-event.h>
 #include <linux/rk-preisp.h>
+#include <linux/of.h>
 #include "dev.h"
 #include "regs.h"
 
@@ -144,7 +145,14 @@ static void isp_bls_config(struct rkisp1_isp_params_vdev *params_vdev,
 	new_control &= CIF_ISP_BLS_ENA;
 	/* fixed subtraction values */
 	if (!arg->enable_auto) {
-		const struct cifisp_bls_fixed_val *pval = &arg->fixed_val;
+		struct cifisp_bls_fixed_val adj = arg->fixed_val;
+		const struct cifisp_bls_fixed_val *pval = &adj;
+		int off = (int)params_vdev->bls_offset;
+
+		adj.r = clamp(adj.r + off, 0, 0xfff);
+		adj.gr = clamp(adj.gr + off, 0, 0xfff);
+		adj.gb = clamp(adj.gb + off, 0, 0xfff);
+		adj.b = clamp(adj.b + off, 0, 0xfff);
 
 		switch (params_vdev->raw_type) {
 		case RAW_BGGR:
@@ -2606,6 +2614,9 @@ int rkisp1_register_params_vdev(struct rkisp1_isp_params_vdev *params_vdev,
 
 	params_vdev->dev = dev;
 	spin_lock_init(&params_vdev->config_lock);
+	params_vdev->bls_offset = 0;
+	of_property_read_u32(dev->dev->of_node, "rockchip,bls-offset",
+			     &params_vdev->bls_offset);
 
 	strscpy(vdev->name, "rkisp1-input-params", sizeof(vdev->name));
 
