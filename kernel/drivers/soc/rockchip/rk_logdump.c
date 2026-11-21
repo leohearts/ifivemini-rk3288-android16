@@ -51,20 +51,10 @@
 #include <linux/time.h>
 #include <linux/timekeeping.h>
 
-#if IS_BUILTIN(CONFIG_PSTORE_RAM)
-#include <linux/pstore_ram.h>
-
-static bool rkld_pstore_region(phys_addr_t *phys, size_t *size)
-{
-	return pstore_ram_region(phys, size);
-}
-
-static const char *rkld_prev_console(size_t *len)
-{
-	return pstore_ram_prev_console(len);
-}
-#else
-/* ramoops built as a module (or absent): no raw/previous-console sections. */
+/*
+ * The 4.19 port exported the ramoops region and the previous console from
+ * fs/pstore/ram.c; 6.1 does not, so the dump carries the printk ring only.
+ */
 static bool rkld_pstore_region(phys_addr_t *phys, size_t *size)
 {
 	return false;
@@ -75,7 +65,6 @@ static const char *rkld_prev_console(size_t *len)
 	*len = 0;
 	return NULL;
 }
-#endif
 
 #define RKLD_PART_NAME		"kpanic"
 #define RKLD_PART_BYTES		(4 * 1024 * 1024)
@@ -131,11 +120,11 @@ static dev_t rkld_find_kpanic(void)
 
 	class_dev_iter_init(&iter, &block_class, NULL, NULL);
 	while ((dev = class_dev_iter_next(&iter))) {
-		struct hd_struct *part = dev_to_part(dev);
+		struct block_device *part = dev_to_bdev(dev);
 
-		if (!part->info)
+		if (!part->bd_meta_info)
 			continue;
-		if (strcmp(part->info->volname, RKLD_PART_NAME))
+		if (strcmp(part->bd_meta_info->volname, RKLD_PART_NAME))
 			continue;
 		devt = dev->devt;
 		break;
@@ -171,7 +160,7 @@ static int rkld_count_disks(void)
 
 	class_dev_iter_init(&iter, &block_class, NULL, NULL);
 	while ((dev = class_dev_iter_next(&iter))) {
-		if (dev_to_part(dev)->partno == 0)
+		if (!bdev_is_partition(dev_to_bdev(dev)))
 			n++;
 	}
 	class_dev_iter_exit(&iter);
@@ -206,7 +195,7 @@ static int rkld_write_part(dev_t devt, const struct rkld_seg *seg, int nseg,
 	if (IS_ERR(bdev))
 		return PTR_ERR(bdev);
 
-	if (part_nr_sects_read(bdev->bd_part) * 512ULL != RKLD_PART_BYTES) {
+	if (bdev_nr_sectors(bdev) * 512ULL != RKLD_PART_BYTES) {
 		pr_err("rk_logdump: %s is not 4 MiB, refusing\n", RKLD_PART_NAME);
 		rkld_stage = 2;
 		ret = -EINVAL;
@@ -240,16 +229,13 @@ static int rkld_write_part(dev_t devt, const struct rkld_seg *seg, int nseg,
 			kunmap(pages[p]);
 		}
 
-		bio = bio_alloc(GFP_KERNEL, npages);
+		bio = bio_alloc(bdev, npages, REQ_OP_WRITE | REQ_SYNC | REQ_FUA |
+				(pos ? 0 : REQ_PREFLUSH), GFP_KERNEL);
 		if (!bio) {
 			ret = -ENOMEM;
 			goto out_free;
 		}
-		bio_set_dev(bio, bdev);
 		bio->bi_iter.bi_sector = pos >> 9;	/* partition relative */
-		bio->bi_opf = REQ_OP_WRITE | REQ_SYNC | REQ_FUA;
-		if (!pos)
-			bio->bi_opf |= REQ_PREFLUSH;
 		for (p = 0; p < npages; p++)
 			bio_add_page(bio, pages[p], PAGE_SIZE, 0);
 
@@ -262,7 +248,7 @@ static int rkld_write_part(dev_t devt, const struct rkld_seg *seg, int nseg,
 		pos += chunk;
 	}
 	if (!ret) {
-		ret = blkdev_issue_flush(bdev, GFP_KERNEL, NULL);
+		ret = blkdev_issue_flush(bdev);
 		if (ret)
 			rkld_stage = 3;
 	}
