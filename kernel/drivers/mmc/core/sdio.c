@@ -708,6 +708,7 @@ try_again:
 		if (oldcard && (!mmc_card_sd_combo(oldcard) ||
 		    memcmp(card->raw_cid, oldcard->raw_cid, sizeof(card->raw_cid)) != 0)) {
 			err = -ENOENT;
+			pr_warn("%s: sdio reinit mismatch %d: type %d/%d vendor %04x/%04x device %04x/%04x rocr %08x\n", mmc_hostname(host), 1, card->type, oldcard->type, card->cis.vendor, oldcard->cis.vendor, card->cis.device, oldcard->cis.device, rocr);
 			goto mismatch;
 		}
 	} else {
@@ -715,6 +716,7 @@ try_again:
 
 		if (oldcard && !mmc_card_sdio(oldcard)) {
 			err = -ENOENT;
+			pr_warn("%s: sdio reinit mismatch %d: type %d/%d vendor %04x/%04x device %04x/%04x rocr %08x\n", mmc_hostname(host), 2, card->type, oldcard->type, card->cis.vendor, oldcard->cis.vendor, card->cis.device, oldcard->cis.device, rocr);
 			goto mismatch;
 		}
 	}
@@ -837,6 +839,7 @@ try_again:
 			card = oldcard;
 		} else {
 			err = -ENOENT;
+			pr_warn("%s: sdio reinit mismatch %d: type %d/%d vendor %04x/%04x device %04x/%04x rocr %08x\n", mmc_hostname(host), 3, card->type, oldcard->type, card->cis.vendor, oldcard->cis.vendor, card->cis.device, oldcard->cis.device, rocr);
 			goto mismatch;
 		}
 	}
