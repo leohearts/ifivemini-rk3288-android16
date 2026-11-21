@@ -383,7 +383,7 @@ static int sensor_report_value(struct i2c_client *client)
 }
 
 
-struct sensor_operate light_us5152_ops = {
+static struct sensor_operate light_us5152_ops = {
 	.name				= "ls_us5152",
 	.type				= SENSOR_TYPE_LIGHT,	//sensor type and it should be correct
 	.id_i2c				= LIGHT_ID_US5152,	//i2c id number
@@ -408,9 +408,9 @@ static int light_us5152_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &light_us5152_ops);
 }
 
-static int light_us5152_remove(struct i2c_client *client)
+static void light_us5152_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &light_us5152_ops);
+	sensor_unregister_device(client, NULL, &light_us5152_ops);
 }
 
 static const struct i2c_device_id light_us5152_id[] = {
@@ -420,7 +420,7 @@ static const struct i2c_device_id light_us5152_id[] = {
 
 static struct i2c_driver light_us5152_driver = {
 	.probe = light_us5152_probe,
-	.remove = light_us5152_remove,
+	.remove = (void *)light_us5152_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = light_us5152_id,
 	.driver = {

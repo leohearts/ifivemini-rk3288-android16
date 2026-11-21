@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 Rockchip Corporation.
+ * Copyright (C) 2014 Rockchip Electronics Co., Ltd.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -43,7 +43,6 @@ static int rockchip_headset_probe(struct platform_device *pdev)
 	int ret;
 	enum of_gpio_flags flags;
 
-	printk("Audio : rockchip headset probe\n");
 	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata) {
 		printk("%s failed to allocate driver data\n", __func__);

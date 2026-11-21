@@ -17,11 +17,17 @@
 #define RKISPP_PLANE_Y		0
 #define RKISPP_PLANE_UV		1
 
-#define RKISPP_MAX_WIDTH	4416
-#define RKISPP_MAX_HEIGHT	3312
-#define RKISPP_MIN_WIDTH	66
-#define RKISPP_MIN_HEIGHT	258
-#define RKISPP_VIDEO_NAME_LEN   16
+#define RKISPP_MAX_WIDTH_V10	4416
+#define RKISPP_MAX_HEIGHT_V10	3312
+#define RKISPP_MIN_WIDTH_V10	66
+#define RKISPP_MIN_HEIGHT_V10	258
+
+#define RKISPP_MAX_WIDTH_V20	8188
+#define RKISPP_MAX_HEIGHT_V20	8188
+#define RKISPP_MIN_WIDTH_V20	128
+#define RKISPP_MIN_HEIGHT_V20	128
+
+#define RKISPP_VIDEO_NAME_LEN	16
 
 #define RKISPP_BUF_POOL_MAX	RKISP_ISPP_BUF_MAX
 
@@ -29,6 +35,7 @@ struct rkispp_device;
 
 enum rkispp_ver {
 	ISPP_V10 = 0x00,
+	ISPP_V20 = 0x01,
 };
 
 enum rkispp_event_cmd {
@@ -40,9 +47,11 @@ enum rkispp_event_cmd {
 
 struct rkispp_isp_buf_pool {
 	struct rkisp_ispp_buf *dbufs;
-	void *mem_priv[GROUP_BUF_MAX];
+	struct dma_buf_attachment *dba[GROUP_BUF_MAX];
+	struct sg_table *sgt[GROUP_BUF_MAX];
 	dma_addr_t dma[GROUP_BUF_MAX];
 	void *vaddr[GROUP_BUF_MAX];
+	u8 group_buf_max;
 };
 
 /* One structure per video node */
@@ -62,6 +71,8 @@ struct rkispp_buffer {
 };
 
 struct rkispp_dummy_buffer {
+	struct vb2_buffer vb;
+	struct vb2_queue vb2_queue;
 	struct list_head list;
 	struct dma_buf *dbuf;
 	dma_addr_t dma_addr;

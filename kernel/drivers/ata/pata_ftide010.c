@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Faraday Technology FTIDE010 driver
  * Copyright (C) 2017 Linus Walleij <linus.walleij@linaro.org>
@@ -122,10 +123,10 @@ static const u8 mwdma_50_active_time[3] = {6, 2, 2};
 static const u8 mwdma_50_recovery_time[3] = {6, 2, 1};
 static const u8 mwdma_66_active_time[3] = {8, 3, 3};
 static const u8 mwdma_66_recovery_time[3] = {8, 2, 1};
-static const u8 udma_50_setup_time[6] = {3, 3, 2, 2, 1, 1};
+static const u8 udma_50_setup_time[6] = {3, 3, 2, 2, 1, 9};
 static const u8 udma_50_hold_time[6] = {3, 1, 1, 1, 1, 1};
-static const u8 udma_66_setup_time[7] = {4, 4, 3, 2, };
-static const u8 udma_66_hold_time[7] = {};
+static const u8 udma_66_setup_time[7] = {4, 4, 3, 2, 1, 9, 9};
+static const u8 udma_66_hold_time[7] = {4, 2, 1, 1, 1, 1, 1};
 
 /*
  * We set 66 MHz for all MWDMA modes
@@ -535,8 +536,8 @@ static int pata_ftide010_probe(struct platform_device *pdev)
 	return 0;
 
 err_dis_clk:
-	if (!IS_ERR(ftide->pclk))
-		clk_disable_unprepare(ftide->pclk);
+	clk_disable_unprepare(ftide->pclk);
+
 	return ret;
 }
 
@@ -546,17 +547,14 @@ static int pata_ftide010_remove(struct platform_device *pdev)
 	struct ftide010 *ftide = host->private_data;
 
 	ata_host_detach(ftide->host);
-	if (!IS_ERR(ftide->pclk))
-		clk_disable_unprepare(ftide->pclk);
+	clk_disable_unprepare(ftide->pclk);
 
 	return 0;
 }
 
 static const struct of_device_id pata_ftide010_of_match[] = {
-	{
-		.compatible = "faraday,ftide010",
-	},
-	{},
+	{ .compatible = "faraday,ftide010", },
+	{ /* sentinel */ }
 };
 
 static struct platform_driver pata_ftide010_driver = {
@@ -569,6 +567,7 @@ static struct platform_driver pata_ftide010_driver = {
 };
 module_platform_driver(pata_ftide010_driver);
 
+MODULE_DESCRIPTION("low level driver for Faraday Technology FTIDE010");
 MODULE_AUTHOR("Linus Walleij <linus.walleij@linaro.org>");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:" DRV_NAME);

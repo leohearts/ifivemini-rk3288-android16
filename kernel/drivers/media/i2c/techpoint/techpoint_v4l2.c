@@ -2,7 +2,7 @@
 /*
  * techpoint v4l2 driver
  *
- * Copyright (C) 2022 Rockchip Electronics Co., Ltd.
+ * Copyright (C) 2023 Rockchip Electronics Co., Ltd.
  *
  */
 
@@ -106,8 +106,8 @@ static int techpoint_analyze_dts(struct techpoint *techpoint)
 	fwnode = of_fwnode_handle(endpoint);
 	rval = fwnode_property_read_u32_array(fwnode, "data-lanes", NULL, 0);
 	if (rval <= 0) {
-		dev_err(dev, " Get mipi lane num failed!\n");
-		return -EINVAL;
+		rval = 4;
+		dev_err(dev, " Get mipi lane num failed!, set default 4\n");
 	}
 	techpoint->data_lanes = rval;
 
@@ -218,8 +218,6 @@ static int __techpoint_power_on(struct techpoint *techpoint)
 	int ret;
 	struct device *dev = &techpoint->client->dev;
 
-	dev_dbg(dev, "%s\n", __func__);
-
 	if (!IS_ERR_OR_NULL(techpoint->pins_default)) {
 		ret = pinctrl_select_state(techpoint->pinctrl,
 					   techpoint->pins_default);
@@ -285,7 +283,7 @@ static void __techpoint_power_off(struct techpoint *techpoint)
 	if (!IS_ERR(techpoint->reset_gpio))
 		gpiod_set_value_cansleep(techpoint->reset_gpio, 1);
 
-	if (IS_ERR(techpoint->xvclk))
+	if (!IS_ERR(techpoint->xvclk))
 		clk_disable_unprepare(techpoint->xvclk);
 
 	if (!IS_ERR_OR_NULL(techpoint->pins_sleep)) {
@@ -383,7 +381,7 @@ techpoint_find_best_fit(struct techpoint *techpoint,
 }
 
 static int techpoint_set_fmt(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_pad_config *cfg,
+			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_format *fmt)
 {
 	struct techpoint *techpoint = to_techpoint(sd);
@@ -401,7 +399,7 @@ static int techpoint_set_fmt(struct v4l2_subdev *sd,
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&techpoint->mutex);
 		return -ENOTTY;
@@ -418,7 +416,7 @@ static int techpoint_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int techpoint_get_fmt(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_pad_config *cfg,
+			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_format *fmt)
 {
 	struct techpoint *techpoint = to_techpoint(sd);
@@ -428,7 +426,7 @@ static int techpoint_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&techpoint->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&techpoint->mutex);
 		return -ENOTTY;
@@ -454,7 +452,7 @@ static int techpoint_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int techpoint_enum_mbus_code(struct v4l2_subdev *sd,
-				    struct v4l2_subdev_pad_config *cfg,
+				    struct v4l2_subdev_state *sd_state,
 				    struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct techpoint *techpoint = to_techpoint(sd);
@@ -467,13 +465,10 @@ static int techpoint_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int techpoint_enum_frame_sizes(struct v4l2_subdev *sd,
-				      struct v4l2_subdev_pad_config *cfg,
+				      struct v4l2_subdev_state *sd_state,
 				      struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct techpoint *techpoint = to_techpoint(sd);
-	struct i2c_client *client = techpoint->client;
-
-	dev_dbg(&client->dev, "%s:\n", __func__);
 
 	if (fse->index >= techpoint->video_modes_num)
 		return -EINVAL;
@@ -502,25 +497,36 @@ static int techpoint_g_frame_interval(struct v4l2_subdev *sd,
 }
 
 static int techpoint_g_mbus_config(struct v4l2_subdev *sd,
+				   unsigned int pad_id,
 				   struct v4l2_mbus_config *cfg)
 {
 	struct techpoint *techpoint = to_techpoint(sd);
 
 	if (techpoint->input_type == TECHPOINT_DVP_BT1120) {
 		cfg->type = V4L2_MBUS_BT656;
-		cfg->flags = RKMODULE_CAMERA_BT656_CHANNELS |
+		cfg->bus.parallel.flags = RKMODULE_CAMERA_BT656_CHANNELS |
 			     V4L2_MBUS_PCLK_SAMPLE_RISING |
 			     V4L2_MBUS_PCLK_SAMPLE_FALLING;
 	} else if (techpoint->input_type == TECHPOINT_MIPI) {
-		cfg->type = V4L2_MBUS_CSI2;
-		if (techpoint->data_lanes == 4) {
-			cfg->flags = V4L2_MBUS_CSI2_4_LANE | V4L2_MBUS_CSI2_CHANNELS;
-		} else if (techpoint->data_lanes == 2) {
-			cfg->flags = V4L2_MBUS_CSI2_2_LANE |
-				     V4L2_MBUS_CSI2_CHANNEL_0 |
-				     V4L2_MBUS_CSI2_CHANNEL_1;
-		}
+		cfg->type = V4L2_MBUS_CSI2_DPHY;
+		cfg->bus.mipi_csi2.num_data_lanes = techpoint->data_lanes;
 	}
+
+	return 0;
+}
+
+static int techpoint_enum_frame_interval(struct v4l2_subdev *sd,
+					 struct v4l2_subdev_state *sd_state,
+					 struct v4l2_subdev_frame_interval_enum *fie)
+{
+	struct techpoint *techpoint = to_techpoint(sd);
+
+	if (fie->index >= techpoint->video_modes_num)
+		return -EINVAL;
+
+	fie->width = techpoint->video_modes[fie->index].width;
+	fie->height = techpoint->video_modes[fie->index].height;
+	fie->interval = techpoint->video_modes[fie->index].max_fps;
 
 	return 0;
 }
@@ -827,7 +833,6 @@ static const struct v4l2_subdev_internal_ops techpoint_internal_ops = {
 
 static const struct v4l2_subdev_video_ops techpoint_video_ops = {
 	.s_stream = techpoint_stream,
-	.g_mbus_config = techpoint_g_mbus_config,
 	.g_frame_interval = techpoint_g_frame_interval,
 	.querystd = techpoint_querystd,
 };
@@ -835,8 +840,10 @@ static const struct v4l2_subdev_video_ops techpoint_video_ops = {
 static const struct v4l2_subdev_pad_ops techpoint_subdev_pad_ops = {
 	.enum_mbus_code = techpoint_enum_mbus_code,
 	.enum_frame_size = techpoint_enum_frame_sizes,
+	.enum_frame_interval = techpoint_enum_frame_interval,
 	.get_fmt = techpoint_get_fmt,
 	.set_fmt = techpoint_set_fmt,
+	.get_mbus_config = techpoint_g_mbus_config,
 };
 
 static const struct v4l2_subdev_core_ops techpoint_core_ops = {
@@ -864,6 +871,7 @@ static const struct of_device_id techpoint_of_match[] = {
 	{ .compatible = "techpoint,tp2815" },
 	{ .compatible = "techpoint,tp9930" },
 	{ .compatible = "techpoint,tp9950" },
+	{ .compatible = "techpoint,tp9951" },
 	{ },
 };
 
@@ -941,7 +949,6 @@ static const struct snd_soc_component_driver techpoint_codec_driver = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int tp2833_audio_config_rmpos(struct i2c_client *client,
@@ -1210,7 +1217,9 @@ static int techpoint_audio_dt_parse(struct techpoint *techpoint)
 			struct device_node *np;
 			int i, count;
 
-			count = of_count_phandle_with_args(node, "techpoint,audio-in-cascade-slaves", NULL);
+			count = of_count_phandle_with_args(node,
+							   "techpoint,audio-in-cascade-slaves",
+							   NULL);
 			if (count < 0 || count > MAX_SLAVES)
 				return -EINVAL;
 
@@ -1299,7 +1308,6 @@ static int techpoint_audio_probe(struct techpoint *techpoint)
 	}
 
 	if (techpoint->chip_id == CHIP_TP9930) {
-
 		techpoint_write_reg(techpoint->client, 0x40, 0x00);
 		for (i = 0; i < 0xff; i++)
 			techpoint_write_reg(techpoint->client, i, 0xbb);
@@ -1365,6 +1373,17 @@ static int techpoint_sysfs_init(struct i2c_client *client,
 	return 0;
 }
 
+static void techpoint_sysfs_cleanup(struct techpoint *techpoint)
+{
+	struct device *dev = &techpoint->dev;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(techpoint_attrs); i++)
+		device_remove_file(dev, &techpoint_attrs[i]);
+
+	device_unregister(dev);
+}
+
 static int techpoint_probe(struct i2c_client *client,
 			   const struct i2c_device_id *id)
 {
@@ -1385,12 +1404,7 @@ static int techpoint_probe(struct i2c_client *client,
 	techpoint->client = client;
 	techpoint->supplies = NULL;
 
-	techpoint_sysfs_init(client, techpoint);
-
 	mutex_init(&techpoint->mutex);
-
-	sd = &techpoint->subdev;
-	v4l2_i2c_subdev_init(sd, client, &techpoint_subdev_ops);
 
 	techpoint_analyze_dts(techpoint);
 
@@ -1406,6 +1420,8 @@ static int techpoint_probe(struct i2c_client *client,
 		goto err_power_off;
 	}
 
+	sd = &techpoint->subdev;
+	v4l2_i2c_subdev_init(sd, client, &techpoint_subdev_ops);
 	ret = techpoint_initialize_controls(techpoint);
 	if (ret) {
 		dev_err(dev, "Failed to initialize controls techpoint\n");
@@ -1435,7 +1451,7 @@ static int techpoint_probe(struct i2c_client *client,
 		 techpoint->module_index, facing,
 		 TECHPOINT_NAME, dev_name(sd->dev));
 
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1450,6 +1466,7 @@ static int techpoint_probe(struct i2c_client *client,
 		goto err_clean_entity;
 	}
 
+	techpoint_sysfs_init(client, techpoint);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
 	pm_runtime_idle(dev);
@@ -1470,11 +1487,12 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int techpoint_remove(struct i2c_client *client)
+static void techpoint_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct techpoint *techpoint = to_techpoint(sd);
 
+	techpoint_sysfs_cleanup(techpoint);
 	v4l2_async_unregister_subdev(sd);
 #if defined(CONFIG_MEDIA_CONTROLLER)
 	media_entity_cleanup(&sd->entity);
@@ -1486,8 +1504,6 @@ static int techpoint_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__techpoint_power_off(techpoint);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 static struct i2c_driver techpoint_i2c_driver = {
@@ -1516,4 +1532,4 @@ module_exit(sensor_mod_exit);
 
 MODULE_AUTHOR("Vicent Chi <vicent.chi@rock-chips.com>");
 MODULE_DESCRIPTION("Techpoint decoder driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

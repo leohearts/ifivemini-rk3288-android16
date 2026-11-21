@@ -1,14 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2016 Maxime Ripard
  * Maxime Ripard <maxime.ripard@free-electrons.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of
- * the License, or (at your option) any later version.
  */
 
 #include <linux/clk-provider.h>
+#include <linux/io.h>
 
 #include "ccu_frac.h"
 #include "ccu_gate.h"
@@ -136,6 +133,13 @@ static long ccu_nm_round_rate(struct clk_hw *hw, unsigned long rate,
 		return rate;
 	}
 
+	if (nm->max_rate && rate > nm->max_rate) {
+		rate = nm->max_rate;
+		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+			rate /= nm->fixed_post_div;
+		return rate;
+	}
+
 	if (ccu_frac_helper_has_rate(&nm->common, &nm->frac, rate)) {
 		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
 			rate /= nm->fixed_post_div;
@@ -234,3 +238,4 @@ const struct clk_ops ccu_nm_ops = {
 	.round_rate	= ccu_nm_round_rate,
 	.set_rate	= ccu_nm_set_rate,
 };
+EXPORT_SYMBOL_NS_GPL(ccu_nm_ops, SUNXI_CCU);

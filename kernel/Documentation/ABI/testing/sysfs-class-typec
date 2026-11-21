@@ -40,10 +40,13 @@ Description:
 		attribute will not return until the operation has finished.
 
 		Valid values:
-		- source (The port will behave as source only DFP port)
-		- sink (The port will behave as sink only UFP port)
-		- dual (The port will behave as dual-role-data and
+
+		======  ==============================================
+		source  (The port will behave as source only DFP port)
+		sink    (The port will behave as sink only UFP port)
+		dual    (The port will behave as dual-role-data and
 			dual-role-power port)
+		======  ==============================================
 
 What:		/sys/class/typec/<port>/vconn_source
 Date:		April 2017
@@ -59,6 +62,7 @@ Description:
 		generates uevent KOBJ_CHANGE.
 
 		Valid values:
+
 		- "no" when the port is not the VCONN Source
 		- "yes" when the port is the VCONN Source
 
@@ -72,6 +76,7 @@ Description:
 		power operation mode should show "usb_power_delivery".
 
 		Valid values:
+
 		- default
 		- 1.5A
 		- 3.0A
@@ -136,6 +141,14 @@ Description:
 		- "reverse": CC2 orientation
 		- "unknown": Orientation cannot be determined.
 
+What:		/sys/class/typec/<port>/select_usb_power_delivery
+Date:		May 2022
+Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
+Description:
+		Lists the USB Power Delivery Capabilities that the port can
+		advertise to the partner. The currently used capabilities are in
+		brackets. Selection happens by writing to the file.
+
 USB Type-C partner devices (eg. /sys/class/typec/port0-partner/)
 
 What:		/sys/class/typec/<port>-partner/accessory_mode
@@ -195,7 +208,7 @@ Description:	USB Power Delivery Specification defines a set of product types
 		amc			Alternate Mode Controller
 		======================  ==========================
 
-What:		/sys/class/typec/<port>-partner>/identity/
+What:		/sys/class/typec/<port>-partner/identity/
 Date:		April 2017
 Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
 Description:
@@ -206,31 +219,6 @@ Description:
 		communication for the port is mostly handled in firmware. If the
 		directory exists, it will have an attribute file for every VDO
 		in Discover Identity command result.
-
-What:		/sys/class/typec/<port>-partner/identity/id_header
-Date:		April 2017
-Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
-Description:
-		ID Header VDO part of Discover Identity command result. The
-		value will show 0 until Discover Identity command result becomes
-		available. The value can be polled.
-
-What:		/sys/class/typec/<port>-partner/identity/cert_stat
-Date:		April 2017
-Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
-Description:
-		Cert Stat VDO part of Discover Identity command result. The
-		value will show 0 until Discover Identity command result becomes
-		available. The value can be polled.
-
-What:		/sys/class/typec/<port>-partner/identity/product
-Date:		April 2017
-Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
-Description:
-		Product VDO part of Discover Identity command result. The value
-		will show 0 until Discover Identity command result becomes
-		available. The value can be polled.
-
 
 USB Type-C cable devices (eg. /sys/class/typec/port0-cable/)
 
@@ -264,6 +252,7 @@ Date:		April 2017
 Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
 Description:
 		Shows type of the plug on the cable:
+
 		- type-a - Standard A
 		- type-b - Standard B
 		- type-c
@@ -278,17 +267,28 @@ Description:
 		This file remains hidden until a value greater than or equal to 0
 		is set by Type C port driver.
 
-What:		/sys/class/typec/<port>-cable/identity/
+
+USB Type-C partner/cable Power Delivery Identity objects
+
+NOTE: The following attributes will be applicable to both
+partner (e.g /sys/class/typec/port0-partner/) and
+cable (e.g /sys/class/typec/port0-cable/) devices. Consequently, the example file
+paths below are prefixed with "/sys/class/typec/<port>-{partner|cable}/" to
+reflect this.
+
+What:		/sys/class/typec/<port>-{partner|cable}/identity/
 Date:		April 2017
 Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
 Description:
 		This directory appears only if the port device driver is capable
 		of showing the result of Discover Identity USB power delivery
 		command. That will not always be possible even when USB power
-		delivery is supported. If the directory exists, it will have an
-		attribute for every VDO returned by Discover Identity command.
+		delivery is supported, for example when USB power delivery
+		communication for the port is mostly handled in firmware. If the
+		directory exists, it will have an attribute file for every VDO
+		in Discover Identity command result.
 
-What:		/sys/class/typec/<port>-cable/identity/id_header
+What:		/sys/class/typec/<port>-{partner|cable}/identity/id_header
 Date:		April 2017
 Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
 Description:
@@ -296,7 +296,7 @@ Description:
 		value will show 0 until Discover Identity command result becomes
 		available. The value can be polled.
 
-What:		/sys/class/typec/<port>-cable/identity/cert_stat
+What:		/sys/class/typec/<port>-{partner|cable}/identity/cert_stat
 Date:		April 2017
 Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
 Description:
@@ -304,7 +304,7 @@ Description:
 		value will show 0 until Discover Identity command result becomes
 		available. The value can be polled.
 
-What:		/sys/class/typec/<port>-cable/identity/product
+What:		/sys/class/typec/<port>-{partner|cable}/identity/product
 Date:		April 2017
 Contact:	Heikki Krogerus <heikki.krogerus@linux.intel.com>
 Description:

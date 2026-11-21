@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2017 Rockchip Electronics Co., Ltd.
  *
  * Base on code in drivers/clk/clk-mux.c.
  * See clk-mux.c for further copyright information.
@@ -77,3 +77,5 @@ devm_clk_regmap_register_mux(struct device *dev, const char *name,
 	return devm_clk_register(dev, &mux->hw);
 }
 EXPORT_SYMBOL_GPL(devm_clk_regmap_register_mux);
+
+MODULE_LICENSE("GPL");

@@ -25,6 +25,7 @@
 #include <linux/input/mt.h>
 #include <linux/wakelock.h>
 
+#include "gsl_point_id.h"
 #include "tp_suspend.h"
 #include <linux/of_gpio.h>
 #define GSL_DEBUG 0
@@ -408,6 +409,8 @@ static int test_i2c(struct i2c_client *client)
 		rc--;
 	msleep(2);
 	ret = gsl_ts_write(client, 0xf0, &write_buf, sizeof(write_buf));
+	if (ret < 0)
+		rc--;
 	msleep(2);
 	ret = gsl_ts_read(client, 0xf0, &read_buf, sizeof(read_buf));
 	if (ret < 0)
@@ -542,7 +545,7 @@ static ssize_t gsl_config_write_proc(struct file *file, const char *buffer,
 				 size_t count, loff_t *data)
 {
 	u8 buf[8] = {0};
-	char temp_buf[CONFIG_LEN];
+	char temp_buf[CONFIG_LEN] = {0};
 	char *path_buf;
 	int tmp = 0;
 	int tmp1 = 0;
@@ -552,8 +555,10 @@ static ssize_t gsl_config_write_proc(struct file *file, const char *buffer,
 		return -EFAULT;
 	}
 	path_buf = kzalloc(count, GFP_KERNEL);
-	if (!path_buf)
+	if (!path_buf) {
 		print_info("alloc path_buf memory error\n");
+		return -EFAULT;
+	}
 	if (copy_from_user(path_buf, buffer, count)) {
 		print_info("copy from user fail\n");
 		goto exit_write_proc_out;
@@ -755,7 +760,7 @@ static void report_data(struct gsl_ts *ts, u16 x, u16 y, u8 pressure, u8 id)
 #endif
 }
 
-void ts_irq_disable(struct gsl_ts *ts)
+static void ts_irq_disable(struct gsl_ts *ts)
 {
 	unsigned long irqflags;
 
@@ -767,7 +772,7 @@ void ts_irq_disable(struct gsl_ts *ts)
 	spin_unlock_irqrestore(&ts->irq_lock, irqflags);
 }
 
-void ts_irq_enable(struct gsl_ts *ts)
+static void ts_irq_enable(struct gsl_ts *ts)
 {
 	unsigned long irqflags = 0;
 
@@ -1227,7 +1232,8 @@ static int  gsl_ts_probe(struct i2c_client *client,
 	queue_delayed_work(gsl_monitor_workqueue, &gsl_monitor_work, 1000);
 #endif
 #ifdef TPD_PROC_DEBUG
-	proc_create(GSL_CONFIG_PROC_FILE, 0644, NULL, &gsl_seq_fops);
+	proc_create(GSL_CONFIG_PROC_FILE, 0644, NULL,
+		    (const struct proc_ops *)&gsl_seq_fops);
 	gsl_proc_flag = 0;
 #endif
 	ts->flag_activated = true;
@@ -1240,7 +1246,7 @@ error_mutex_destroy:
 	return rc;
 }
 
-static int gsl_ts_remove(struct i2c_client *client)
+static void gsl_ts_remove(struct i2c_client *client)
 {
 	struct gsl_ts *ts = i2c_get_clientdata(client);
 
@@ -1252,7 +1258,6 @@ static int gsl_ts_remove(struct i2c_client *client)
 	cancel_work_sync(&ts->work);
 	destroy_workqueue(ts->wq);
 	cancel_work_sync(&ts->download_fw_work);
-	return 0;
 }
 
 static const struct dev_pm_ops gsl_ts_pm = {

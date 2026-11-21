@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "dm.h"
 #include "persistent-data/dm-transaction-manager.h"
 #include "persistent-data/dm-bitset.h"
@@ -50,7 +51,7 @@ static void writeset_free(struct writeset *ws)
 }
 
 static int setup_on_disk_bitset(struct dm_disk_bitset *info,
-				unsigned nr_bits, dm_block_t *root)
+				unsigned int nr_bits, dm_block_t *root)
 {
 	int r;
 
@@ -61,7 +62,7 @@ static int setup_on_disk_bitset(struct dm_disk_bitset *info,
 	return dm_bitset_resize(info, *root, 0, nr_bits, false, root);
 }
 
-static size_t bitset_size(unsigned nr_bits)
+static size_t bitset_size(unsigned int nr_bits)
 {
 	return sizeof(unsigned long) * dm_div_up(nr_bits, BITS_PER_LONG);
 }
@@ -322,10 +323,10 @@ static int superblock_lock(struct era_metadata *md,
 static int superblock_all_zeroes(struct dm_block_manager *bm, bool *result)
 {
 	int r;
-	unsigned i;
+	unsigned int i;
 	struct dm_block *b;
 	__le64 *data_le, zero = cpu_to_le64(0);
-	unsigned sb_block_size = dm_bm_block_size(bm) / sizeof(__le64);
+	unsigned int sb_block_size = dm_bm_block_size(bm) / sizeof(__le64);
 
 	/*
 	 * We can't use a validator here - it may be all zeroes.
@@ -362,28 +363,32 @@ static void ws_unpack(const struct writeset_disk *disk, struct writeset_metadata
 	core->root = le64_to_cpu(disk->root);
 }
 
-static void ws_inc(void *context, const void *value)
+static void ws_inc(void *context, const void *value, unsigned int count)
 {
 	struct era_metadata *md = context;
 	struct writeset_disk ws_d;
 	dm_block_t b;
+	unsigned int i;
 
-	memcpy(&ws_d, value, sizeof(ws_d));
-	b = le64_to_cpu(ws_d.root);
-
-	dm_tm_inc(md->tm, b);
+	for (i = 0; i < count; i++) {
+		memcpy(&ws_d, value + (i * sizeof(ws_d)), sizeof(ws_d));
+		b = le64_to_cpu(ws_d.root);
+		dm_tm_inc(md->tm, b);
+	}
 }
 
-static void ws_dec(void *context, const void *value)
+static void ws_dec(void *context, const void *value, unsigned int count)
 {
 	struct era_metadata *md = context;
 	struct writeset_disk ws_d;
 	dm_block_t b;
+	unsigned int i;
 
-	memcpy(&ws_d, value, sizeof(ws_d));
-	b = le64_to_cpu(ws_d.root);
-
-	dm_bitset_del(&md->bitset_info, b);
+	for (i = 0; i < count; i++) {
+		memcpy(&ws_d, value + (i * sizeof(ws_d)), sizeof(ws_d));
+		b = le64_to_cpu(ws_d.root);
+		dm_bitset_del(&md->bitset_info, b);
+	}
 }
 
 static int ws_eq(void *context, const void *value1, const void *value2)
@@ -662,7 +667,7 @@ static void swap_writeset(struct era_metadata *md, struct writeset *new_writeset
  *--------------------------------------------------------------*/
 struct digest {
 	uint32_t era;
-	unsigned nr_bits, current_bit;
+	unsigned int nr_bits, current_bit;
 	struct writeset_metadata writeset;
 	__le32 value;
 	struct dm_disk_bitset info;
@@ -697,7 +702,7 @@ static int metadata_digest_transcribe_writeset(struct era_metadata *md,
 {
 	int r;
 	bool marked;
-	unsigned b, e = min(d->current_bit + INSERTS_PER_STEP, d->nr_bits);
+	unsigned int b, e = min(d->current_bit + INSERTS_PER_STEP, d->nr_bits);
 
 	for (b = d->current_bit; b < e; b++) {
 		r = writeset_marked_on_disk(&d->info, &d->writeset, b, &marked);
@@ -1151,7 +1156,6 @@ static int metadata_get_stats(struct era_metadata *md, void *ptr)
 
 struct era {
 	struct dm_target *ti;
-	struct dm_target_callbacks callbacks;
 
 	struct dm_dev *metadata_dev;
 	struct dm_dev *origin_dev;
@@ -1289,7 +1293,7 @@ static void process_deferred_bios(struct era *era)
 			 */
 			if (commit_needed)
 				set_bit(get_block(era, bio), ws->bits);
-			generic_make_request(bio);
+			submit_bio_noacct(bio);
 		}
 		blk_finish_plug(&plug);
 	}
@@ -1396,24 +1400,12 @@ static void start_worker(struct era *era)
 static void stop_worker(struct era *era)
 {
 	atomic_set(&era->suspended, 1);
-	flush_workqueue(era->wq);
+	drain_workqueue(era->wq);
 }
 
 /*----------------------------------------------------------------
  * Target methods
  *--------------------------------------------------------------*/
-static int dev_is_congested(struct dm_dev *dev, int bdi_bits)
-{
-	struct request_queue *q = bdev_get_queue(dev->bdev);
-	return bdi_congested(q->backing_dev_info, bdi_bits);
-}
-
-static int era_is_congested(struct dm_target_callbacks *cb, int bdi_bits)
-{
-	struct era *era = container_of(cb, struct era, callbacks);
-	return dev_is_congested(era->origin_dev, bdi_bits);
-}
-
 static void era_destroy(struct era *era)
 {
 	if (era->md)
@@ -1447,7 +1439,7 @@ static bool valid_block_size(dm_block_t block_size)
 /*
  * <metadata dev> <data dev> <data block size (sectors)>
  */
-static int era_ctr(struct dm_target *ti, unsigned argc, char **argv)
+static int era_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	int r;
 	char dummy;
@@ -1532,8 +1524,6 @@ static int era_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	ti->flush_supported = true;
 
 	ti->num_discard_bios = 1;
-	era->callbacks.congested_fn = era_is_congested;
-	dm_table_add_target_callbacks(ti->table, &era->callbacks);
 
 	return 0;
 }
@@ -1580,6 +1570,12 @@ static void era_postsuspend(struct dm_target *ti)
 	}
 
 	stop_worker(era);
+
+	r = metadata_commit(era->md);
+	if (r) {
+		DMERR("%s: metadata_commit failed", __func__);
+		/* FIXME: fail mode */
+	}
 }
 
 static int era_preresume(struct dm_target *ti)
@@ -1622,7 +1618,7 @@ static int era_preresume(struct dm_target *ti)
  * <current era> <held metadata root | '-'>
  */
 static void era_status(struct dm_target *ti, status_type_t type,
-		       unsigned status_flags, char *result, unsigned maxlen)
+		       unsigned int status_flags, char *result, unsigned int maxlen)
 {
 	int r;
 	struct era *era = ti->private;
@@ -1637,10 +1633,10 @@ static void era_status(struct dm_target *ti, status_type_t type,
 			goto err;
 
 		DMEMIT("%u %llu/%llu %u",
-		       (unsigned) (DM_ERA_METADATA_BLOCK_SIZE >> SECTOR_SHIFT),
+		       (unsigned int) (DM_ERA_METADATA_BLOCK_SIZE >> SECTOR_SHIFT),
 		       (unsigned long long) stats.used,
 		       (unsigned long long) stats.total,
-		       (unsigned) stats.era);
+		       (unsigned int) stats.era);
 
 		if (stats.snap != SUPERBLOCK_LOCATION)
 			DMEMIT(" %llu", stats.snap);
@@ -1654,6 +1650,10 @@ static void era_status(struct dm_target *ti, status_type_t type,
 		format_dev_t(buf, era->origin_dev->bdev->bd_dev);
 		DMEMIT("%s %u", buf, era->sectors_per_block);
 		break;
+
+	case STATUSTYPE_IMA:
+		*result = '\0';
+		break;
 	}
 
 	return;
@@ -1662,8 +1662,8 @@ err:
 	DMEMIT("Error");
 }
 
-static int era_message(struct dm_target *ti, unsigned argc, char **argv,
-		       char *result, unsigned maxlen)
+static int era_message(struct dm_target *ti, unsigned int argc, char **argv,
+		       char *result, unsigned int maxlen)
 {
 	struct era *era = ti->private;
 
@@ -1687,7 +1687,7 @@ static int era_message(struct dm_target *ti, unsigned argc, char **argv,
 
 static sector_t get_dev_size(struct dm_dev *dev)
 {
-	return i_size_read(dev->bdev->bd_inode) >> SECTOR_SHIFT;
+	return bdev_nr_sectors(dev->bdev);
 }
 
 static int era_iterate_devices(struct dm_target *ti,

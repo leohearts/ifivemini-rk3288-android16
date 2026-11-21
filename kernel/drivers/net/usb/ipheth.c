@@ -54,17 +54,6 @@
 #include <linux/workqueue.h>
 
 #define USB_VENDOR_APPLE        0x05ac
-#define USB_PRODUCT_IPHONE      0x1290
-#define USB_PRODUCT_IPHONE_3G   0x1292
-#define USB_PRODUCT_IPHONE_3GS  0x1294
-#define USB_PRODUCT_IPHONE_4	0x1297
-#define USB_PRODUCT_IPAD 0x129a
-#define USB_PRODUCT_IPAD_2	0x12a2
-#define USB_PRODUCT_IPAD_3	0x12a6
-#define USB_PRODUCT_IPAD_MINI    0x12ab
-#define USB_PRODUCT_IPHONE_4_VZW 0x129c
-#define USB_PRODUCT_IPHONE_4S	0x12a0
-#define USB_PRODUCT_IPHONE_5	0x12a8
 
 #define IPHETH_USBINTF_CLASS    255
 #define IPHETH_USBINTF_SUBCLASS 253
@@ -88,50 +77,9 @@
 #define IPHETH_CARRIER_ON       0x04
 
 static const struct usb_device_id ipheth_table[] = {
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPHONE,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPHONE_3G,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPHONE_3GS,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPHONE_4,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPAD,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPAD_2,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPAD_3,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPAD_MINI,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPHONE_4_VZW,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPHONE_4S,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
-	{ USB_DEVICE_AND_INTERFACE_INFO(
-		USB_VENDOR_APPLE, USB_PRODUCT_IPHONE_5,
-		IPHETH_USBINTF_CLASS, IPHETH_USBINTF_SUBCLASS,
-		IPHETH_USBINTF_PROTO) },
+	{ USB_VENDOR_AND_INTERFACE_INFO(USB_VENDOR_APPLE, IPHETH_USBINTF_CLASS,
+					IPHETH_USBINTF_SUBCLASS,
+					IPHETH_USBINTF_PROTO) },
 	{ }
 };
 MODULE_DEVICE_TABLE(usb, ipheth_table);
@@ -293,8 +241,6 @@ static int ipheth_carrier_set(struct ipheth_device *dev)
 	struct usb_device *udev;
 	int retval;
 
-	if (!dev)
-		return 0;
 	if (!dev->confirmed_pairing)
 		return 0;
 
@@ -307,13 +253,14 @@ static int ipheth_carrier_set(struct ipheth_device *dev)
 			0x02, /* index */
 			dev->ctrl_buf, IPHETH_CTRL_BUF_SIZE,
 			IPHETH_CTRL_TIMEOUT);
-	if (retval < 0) {
+	if (retval <= 0) {
 		dev_err(&dev->intf->dev, "%s: usb_control_msg: %d\n",
 			__func__, retval);
 		return retval;
 	}
 
-	if (dev->ctrl_buf[0] == IPHETH_CARRIER_ON) {
+	if ((retval == 1 && dev->ctrl_buf[0] == IPHETH_CARRIER_ON) ||
+	    (retval >= 2 && dev->ctrl_buf[1] == IPHETH_CARRIER_ON)) {
 		netif_carrier_on(dev->net);
 		if (dev->tx_urb->status != -EINPROGRESS)
 			netif_wake_queue(dev->net);
@@ -357,7 +304,7 @@ static int ipheth_get_macaddr(struct ipheth_device *dev)
 			__func__, retval);
 		retval = -EINVAL;
 	} else {
-		memcpy(net->dev_addr, dev->ctrl_buf, ETH_ALEN);
+		eth_hw_addr_set(net, dev->ctrl_buf);
 		retval = 0;
 	}
 
@@ -407,12 +354,12 @@ static int ipheth_close(struct net_device *net)
 {
 	struct ipheth_device *dev = netdev_priv(net);
 
-	cancel_delayed_work_sync(&dev->carrier_work);
 	netif_stop_queue(net);
+	cancel_delayed_work_sync(&dev->carrier_work);
 	return 0;
 }
 
-static int ipheth_tx(struct sk_buff *skb, struct net_device *net)
+static netdev_tx_t ipheth_tx(struct sk_buff *skb, struct net_device *net)
 {
 	struct ipheth_device *dev = netdev_priv(net);
 	struct usb_device *udev = dev->udev;
@@ -454,7 +401,7 @@ static int ipheth_tx(struct sk_buff *skb, struct net_device *net)
 	return NETDEV_TX_OK;
 }
 
-static void ipheth_tx_timeout(struct net_device *net)
+static void ipheth_tx_timeout(struct net_device *net, unsigned int txqueue)
 {
 	struct ipheth_device *dev = netdev_priv(net);
 
@@ -497,7 +444,7 @@ static int ipheth_probe(struct usb_interface *intf,
 
 	netdev->netdev_ops = &ipheth_netdev_ops;
 	netdev->watchdog_timeo = IPHETH_TX_TIMEOUT;
-	strcpy(netdev->name, "eth%d");
+	strscpy(netdev->name, "eth%d", sizeof(netdev->name));
 
 	dev = netdev_priv(netdev);
 	dev->udev = udev;

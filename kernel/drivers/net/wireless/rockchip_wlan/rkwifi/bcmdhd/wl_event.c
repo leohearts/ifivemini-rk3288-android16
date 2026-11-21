@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 
 #include <wl_android.h>
 #ifdef WL_EVENT

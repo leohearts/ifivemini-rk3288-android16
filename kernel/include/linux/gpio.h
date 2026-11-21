@@ -95,14 +95,12 @@ struct device;
 int devm_gpio_request(struct device *dev, unsigned gpio, const char *label);
 int devm_gpio_request_one(struct device *dev, unsigned gpio,
 			  unsigned long flags, const char *label);
-void devm_gpio_free(struct device *dev, unsigned int gpio);
 
 #else /* ! CONFIG_GPIOLIB */
 
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/bug.h>
-#include <linux/pinctrl/pinctrl.h>
 
 struct device;
 struct gpio_chip;
@@ -220,19 +218,6 @@ static inline int gpio_to_irq(unsigned gpio)
 	return -EINVAL;
 }
 
-static inline int gpiochip_lock_as_irq(struct gpio_chip *chip,
-				       unsigned int offset)
-{
-	WARN_ON(1);
-	return -EINVAL;
-}
-
-static inline void gpiochip_unlock_as_irq(struct gpio_chip *chip,
-					  unsigned int offset)
-{
-	WARN_ON(1);
-}
-
 static inline int irq_to_gpio(unsigned irq)
 {
 	/* irq can never have been returned from gpio_to_irq() */
@@ -252,11 +237,6 @@ static inline int devm_gpio_request_one(struct device *dev, unsigned gpio,
 {
 	WARN_ON(1);
 	return -EINVAL;
-}
-
-static inline void devm_gpio_free(struct device *dev, unsigned int gpio)
-{
-	WARN_ON(1);
 }
 
 #endif /* ! CONFIG_GPIOLIB */

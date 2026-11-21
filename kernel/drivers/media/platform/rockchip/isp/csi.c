@@ -12,9 +12,10 @@
 #include <media/v4l2-subdev.h>
 #include <media/videobuf2-dma-contig.h>
 #include "dev.h"
+#include "isp_external.h"
 #include "regs.h"
 
-static void get_remote_mipi_sensor(struct rkisp_device *dev,
+void rkisp_get_remote_mipi_sensor(struct rkisp_device *dev,
 				  struct v4l2_subdev **sensor_sd, u32 function)
 {
 	struct media_graph graph;
@@ -53,7 +54,7 @@ static struct v4l2_subdev *get_remote_subdev(struct v4l2_subdev *sd)
 	local = &sd->entity.pads[CSI_SINK];
 	if (!local)
 		goto end;
-	remote = media_entity_remote_pad(local);
+	remote = media_pad_remote_pad_first(local);
 	if (!remote)
 		goto end;
 
@@ -81,6 +82,8 @@ static int rkisp_csi_link_setup(struct media_entity *entity,
 		id = local->index - 1;
 		if (id && id < RKISP_STREAM_DMATX3)
 			stream = &csi->ispdev->cap_dev.stream[id + 1];
+		if (id >= ARRAY_SIZE(csi->sink))
+			return -EINVAL;
 		if (flags & MEDIA_LNK_FL_ENABLED) {
 			if (csi->sink[id].linked) {
 				ret = -EBUSY;
@@ -103,18 +106,19 @@ out:
 }
 
 static int rkisp_csi_g_mbus_config(struct v4l2_subdev *sd,
-				  struct v4l2_mbus_config *config)
+				   unsigned int pad_id,
+				   struct v4l2_mbus_config *config)
 {
 	struct v4l2_subdev *remote_sd;
 
 	if (!sd)
 		return -ENODEV;
 	remote_sd = get_remote_subdev(sd);
-	return v4l2_subdev_call(remote_sd, video, g_mbus_config, config);
+	return v4l2_subdev_call(remote_sd, pad, get_mbus_config, pad_id, config);
 }
 
 static int rkisp_csi_get_set_fmt(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_format *fmt)
 {
 	struct v4l2_subdev *remote_sd;
@@ -159,10 +163,10 @@ static const struct media_entity_operations rkisp_csi_media_ops = {
 static const struct v4l2_subdev_pad_ops rkisp_csi_pad_ops = {
 	.set_fmt = rkisp_csi_get_set_fmt,
 	.get_fmt = rkisp_csi_get_set_fmt,
+	.get_mbus_config = rkisp_csi_g_mbus_config,
 };
 
 static const struct v4l2_subdev_video_ops rkisp_csi_video_ops = {
-	.g_mbus_config = rkisp_csi_g_mbus_config,
 	.s_stream = rkisp_csi_s_stream,
 };
 
@@ -185,30 +189,11 @@ static int csi_config(struct rkisp_csi_device *csi)
 	u32 emd_vc, emd_dt, mipi_ctrl;
 	int lanes, ret, i;
 
-	/*
-	 * sensor->mbus is set in isp or d-phy notifier_bound function
-	 */
-	switch (sensor->mbus.flags & V4L2_MBUS_CSI2_LANES) {
-	case V4L2_MBUS_CSI2_4_LANE:
-		lanes = 4;
-		break;
-	case V4L2_MBUS_CSI2_3_LANE:
-		lanes = 3;
-		break;
-	case V4L2_MBUS_CSI2_2_LANE:
-		lanes = 2;
-		break;
-	case V4L2_MBUS_CSI2_1_LANE:
-		lanes = 1;
-		break;
-	default:
-		return -EINVAL;
-	}
-
+	lanes = sensor->mbus.bus.mipi_csi2.num_data_lanes;
 	emd_vc = 0xFF;
 	emd_dt = 0;
 	dev->hdr.sensor = NULL;
-	get_remote_mipi_sensor(dev, &mipi_sensor, MEDIA_ENT_F_CAM_SENSOR);
+	rkisp_get_remote_mipi_sensor(dev, &mipi_sensor, MEDIA_ENT_F_CAM_SENSOR);
 	if (mipi_sensor) {
 		ctrl = v4l2_ctrl_find(mipi_sensor->ctrl_handler,
 				      CIFISP_CID_EMB_VC);
@@ -279,15 +264,10 @@ static int csi_config(struct rkisp_csi_device *csi)
 
 		dev->hdr.op_mode = HDR_NORMAL;
 		dev->hdr.esp_mode = HDR_NORMAL_VC;
-		if (mipi_sensor) {
-			ret = v4l2_subdev_call(mipi_sensor,
-					       core, ioctl,
-					       RKMODULE_GET_HDR_CFG,
-					       &hdr_cfg);
-			if (!ret) {
-				dev->hdr.op_mode = hdr_cfg.hdr_mode;
-				dev->hdr.esp_mode = hdr_cfg.esp.mode;
-			}
+		memset(&hdr_cfg, 0, sizeof(hdr_cfg));
+		if (rkisp_csi_get_hdr_cfg(dev, &hdr_cfg) == 0) {
+			dev->hdr.op_mode = hdr_cfg.hdr_mode;
+			dev->hdr.esp_mode = hdr_cfg.esp.mode;
 		}
 
 		/* normal read back mode */
@@ -316,9 +296,13 @@ static int csi_config(struct rkisp_csi_device *csi)
 			rkisp_write(dev, CSI2RX_DATA_IDS_1, val, true);
 		} else {
 			rkisp_set_bits(dev, CSI2RX_DATA_IDS_1, mask, val, true);
-			for (i = 0; i < dev->hw_dev->dev_num; i++)
+			for (i = 0; i < dev->hw_dev->dev_num; i++) {
+				if (dev->hw_dev->isp[i] &&
+				    !dev->hw_dev->isp[i]->is_hw_link)
+					continue;
 				rkisp_set_bits(dev->hw_dev->isp[i],
 					CSI2RX_DATA_IDS_1, mask, val, false);
+			}
 		}
 		val = SW_CSI_ID4(csi->mipi_di[4]);
 		rkisp_write(dev, CSI2RX_DATA_IDS_2, val, true);
@@ -338,9 +322,13 @@ static int csi_config(struct rkisp_csi_device *csi)
 			Y_STAT_AFIFOX3_OVERFLOW;
 		rkisp_write(dev, CSI2RX_MASK_OVERFLOW, val, true);
 		val = RAW0_WR_FRAME | RAW1_WR_FRAME | RAW2_WR_FRAME |
-			MIPI_DROP_FRM | RAW_WR_SIZE_ERR | MIPI_LINECNT |
+			RAW_WR_SIZE_ERR | MIPI_LINECNT |
 			RAW_RD_SIZE_ERR | RAW0_Y_STATE |
 			RAW1_Y_STATE | RAW2_Y_STATE;
+		if (dev->isp_ver == ISP_V20)
+			val |= MIPI_DROP_FRM;
+		else
+			val |= ISP21_MIPI_DROP_FRM;
 		rkisp_write(dev, CSI2RX_MASK_STAT, val, true);
 
 		/* hdr merge */
@@ -423,7 +411,127 @@ static int csi_config(struct rkisp_csi_device *csi)
 	return 0;
 }
 
-int rkisp_csi_config_patch(struct rkisp_device *dev)
+int rkisp_expander_config(struct rkisp_device *dev,
+			  struct rkmodule_hdr_cfg *cfg, bool on)
+{
+	struct rkmodule_hdr_cfg hdr_cfg;
+	u32 i, val, num, d0, d1, drop_bit = 0;
+	u32 output_bit, input_bit, max;
+
+	if (dev->isp_ver != ISP_V39 && dev->isp_ver != ISP_V35)
+		return 0;
+
+	if (!on) {
+		rkisp_write(dev, ISP39_EXPD_CTRL, 0, false);
+		return 0;
+	}
+
+	if (!cfg) {
+		if (rkisp_csi_get_hdr_cfg(dev, &hdr_cfg) != 0)
+			goto err;
+		cfg = &hdr_cfg;
+	}
+
+	if (cfg->hdr_mode != HDR_CIS_MERGE)
+		return 0;
+
+	/* input data (12bit or 16bit) and output data max 20bit */
+	if (cfg->compr.src_bit > 20)
+		drop_bit = cfg->compr.src_bit - 20;
+	output_bit = cfg->compr.src_bit - drop_bit;
+	dev->hdr.src_bit = output_bit;
+	input_bit = dev->isp_sdev.in_fmt.bus_width;
+
+	num = cfg->compr.point;
+	if (num > HDR_COMPR_POINT_MAX)
+		num = HDR_COMPR_POINT_MAX;
+	max = (1 << output_bit) - 1;
+	for (i = 0; i < HDR_COMPR_POINT_MAX; i++) {
+		if (i < num)
+			val = cfg->compr.slope_k[i];
+		else
+			val = 0;
+
+		if (i < 15)
+			rkisp_write(dev, ISP39_EXPD_K0 + i * 4, val, false);
+		else
+			rkisp_write(dev, ISP39_EXPD_K15 + (i - 15) * 4, val, false);
+
+		if (i < num) {
+			d0 = cfg->compr.data_src[i];
+			val = d0 > max ? max : d0;
+		} else {
+			val = max;
+		}
+		rkisp_write(dev, ISP39_EXPD_Y0 + i * 4, val, false);
+	}
+
+	max = input_bit > 12 ? 0xffff : 0xfff;
+	for (i = 0; i < HDR_COMPR_POINT_MAX / 2; i++) {
+		d0 = cfg->compr.data_compr[i * 2];
+		d1 = cfg->compr.data_compr[i * 2 + 1];
+		if (d0 > max || i * 2 >= num)
+			d0 = max;
+		if (d1 > max || i * 2 + 1 >= num)
+			d1 = max;
+		val = ISP32_EXPD_DATA(d0, d1);
+		rkisp_write(dev, ISP39_EXPD_X00_01 + i * 4, val, false);
+	}
+
+	val = input_bit > 12 ? 0xffff : 0xfff;
+	rkisp_write(dev, ISP39_EXPD_IMAX, val, false);
+	val = (1 << output_bit) - 1;
+	rkisp_write(dev, ISP39_EXPD_OMAX, val, false);
+
+	val = ISP32_EXPD_EN | ISP32_EXPD_K_SHIFT(cfg->compr.k_shift);
+	if (input_bit == 16)
+		val |= ISP39_EXPD_INPUT_16;
+	rkisp_write(dev, ISP32_EXPD_CTRL, val, false);
+	return 0;
+err:
+	return -EINVAL;
+}
+
+int rkisp_csi_get_hdr_cfg(struct rkisp_device *dev, void *arg)
+{
+	struct rkmodule_hdr_cfg *cfg = arg;
+	struct v4l2_subdev *sd = NULL;
+	u32 type;
+	int ret;
+
+	if (dev->isp_inp & INP_CSI) {
+		type = MEDIA_ENT_F_CAM_SENSOR;
+	} else if (dev->isp_inp & INP_CIF) {
+		type = MEDIA_ENT_F_PROC_VIDEO_COMPOSER;
+	} else {
+		switch (dev->isp_inp & 0x7) {
+		case INP_RAWRD2 | INP_RAWRD0:
+			cfg->hdr_mode = HDR_RDBK_FRAME2;
+			break;
+		case INP_RAWRD2 | INP_RAWRD1 | INP_RAWRD0:
+			cfg->hdr_mode = HDR_RDBK_FRAME3;
+			break;
+		default: //INP_RAWRD2
+			cfg->hdr_mode = HDR_RDBK_FRAME1;
+		}
+		return 0;
+	}
+	rkisp_get_remote_mipi_sensor(dev, &sd, type);
+	if (!sd) {
+		v4l2_err(&dev->v4l2_dev, "%s don't find subdev\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = v4l2_subdev_call(sd, core, ioctl, RKMODULE_GET_HDR_CFG, cfg);
+	if (ret == -ENOIOCTLCMD) {
+		cfg->esp.mode = HDR_NORMAL_VC;
+		cfg->hdr_mode = NO_HDR;
+		ret = 0;
+	}
+	return ret;
+}
+
+int rkisp_csi_config_patch(struct rkisp_device *dev, bool is_pre_cfg)
 {
 	int val = 0, ret = 0;
 	struct v4l2_subdev *mipi_sensor;
@@ -434,63 +542,162 @@ int rkisp_csi_config_patch(struct rkisp_device *dev)
 		dev->hw_dev->mipi_dev_id = dev->dev_id;
 		ret = csi_config(&dev->csi_dev);
 	} else {
-		if (dev->isp_inp & INP_CIF) {
-			struct rkmodule_hdr_cfg hdr_cfg;
+		struct rkmodule_hdr_cfg hdr_cfg;
 
-			get_remote_mipi_sensor(dev, &mipi_sensor, MEDIA_ENT_F_PROC_VIDEO_COMPOSER);
+		memset(&hdr_cfg, 0, sizeof(hdr_cfg));
+		ret = rkisp_csi_get_hdr_cfg(dev, &hdr_cfg);
+		if (dev->isp_inp & INP_CIF) {
+			struct rkisp_vicap_mode mode;
+			struct rkisp_init_buf init_buf = { 0 };
+			u32 op_mode;
+
+			memset(&mode, 0, sizeof(mode));
+			strscpy(mode.name, dev->name, sizeof(mode.name));
+
+			rkisp_get_remote_mipi_sensor(dev, &mipi_sensor, MEDIA_ENT_F_PROC_VIDEO_COMPOSER);
+			if (!mipi_sensor)
+				return -EINVAL;
 			dev->hdr.op_mode = HDR_NORMAL;
 			dev->hdr.esp_mode = HDR_NORMAL_VC;
-			if (mipi_sensor) {
-				ret = v4l2_subdev_call(mipi_sensor,
-						       core, ioctl,
-						       RKMODULE_GET_HDR_CFG,
-						       &hdr_cfg);
-				if (!ret) {
-					dev->hdr.op_mode = hdr_cfg.hdr_mode;
-					dev->hdr.esp_mode = hdr_cfg.esp.mode;
-				}
+			if (!ret) {
+				dev->hdr.op_mode = hdr_cfg.hdr_mode;
+				dev->hdr.esp_mode = hdr_cfg.esp.mode;
+				rkisp_expander_config(dev, &hdr_cfg, true);
 			}
 
-			/* normal read back mode */
-			if (dev->hdr.op_mode == HDR_NORMAL)
+			/* normal read back mode default */
+			if (dev->hdr.op_mode == HDR_NORMAL || dev->hdr.op_mode == HDR_CIS_MERGE)
 				dev->hdr.op_mode = HDR_RDBK_FRAME1;
-		} else {
-			switch (dev->isp_inp & 0x7) {
-			case INP_RAWRD2 | INP_RAWRD0:
-				dev->hdr.op_mode = HDR_RDBK_FRAME2;
-				break;
-			case INP_RAWRD2 | INP_RAWRD1 | INP_RAWRD0:
-				dev->hdr.op_mode = HDR_RDBK_FRAME3;
-				break;
-			default: //INP_RAWRD2
-				dev->hdr.op_mode = HDR_RDBK_FRAME1;
+
+			if (dev->isp_inp == INP_CIF && dev->isp_ver > ISP_V21) {
+				/* read back mode default if more sensor link to isp */
+				if (!dev->hw_dev->is_single && !dev->is_m_online)
+					dev->is_rdbk_auto = true;
+				if (dev->is_m_online &&
+				    dev->unite.h_div == 2 && dev->unite.v_div == 1)
+					mode.rdbk_mode = RKISP_VICAP_ONLINE_UNITE;
+				else if (dev->is_m_online)
+					mode.rdbk_mode = RKISP_VICAP_ONLINE_MULTI;
+				else if (dev->is_rdbk_auto)
+					mode.rdbk_mode = RKISP_VICAP_RDBK_AUTO;
+				else
+					mode.rdbk_mode = RKISP_VICAP_ONLINE;
+			} else {
+				mode.rdbk_mode = RKISP_VICAP_RDBK_AIQ;
 			}
+			/* vicap pre capture raw for thunderboot mode */
+			if (is_pre_cfg)
+				mode.rdbk_mode = RKISP_VICAP_RDBK_AUTO;
+			mode.dev_id = dev->dev_id;
+			v4l2_subdev_call(mipi_sensor, core, ioctl, RKISP_VICAP_CMD_MODE, &mode);
+			dev->vicap_in = mode.input;
+
+			op_mode = dev->hdr.op_mode;
+			/* vicap direct to isp */
+			if (dev->isp_ver >= ISP_V30 &&
+			    mode.rdbk_mode <= RKISP_VICAP_ONLINE_UNITE) {
+				switch (op_mode) {
+				case HDR_RDBK_FRAME3:
+					op_mode = HDR_LINEX3_DDR;
+					break;
+				case HDR_RDBK_FRAME2:
+					op_mode = HDR_LINEX2_DDR;
+					break;
+				default:
+					op_mode = HDR_NORMAL;
+					dev->hdr_wrap_line = 0;
+				}
+				if (op_mode != HDR_NORMAL ||
+				    mode.rdbk_mode == RKISP_VICAP_ONLINE_UNITE) {
+					init_buf.buf_cnt = 1;
+					init_buf.hdr_wrap_line = dev->hdr_wrap_line;
+				}
+			} else if (mode.rdbk_mode == RKISP_VICAP_RDBK_AUTO) {
+				dev->hdr_wrap_line = 0;
+				if (dev->vicap_buf_cnt)
+					init_buf.buf_cnt = dev->vicap_buf_cnt;
+				else
+					init_buf.buf_cnt = RKISP_VICAP_BUF_CNT;
+			}
+			if (init_buf.buf_cnt) {
+				if (!dev->is_pre_on || is_pre_cfg)
+					dev->rd_mode = op_mode;
+				v4l2_subdev_call(mipi_sensor, core, ioctl,
+						 RKISP_VICAP_CMD_INIT_BUF, &init_buf);
+			}
+			if (dev->is_pre_on && !is_pre_cfg) {
+				if (dev->cap_dev.wrap_line &&
+				    (dev->isp_ver == ISP_V33 || dev->isp_ver == ISP_V35)) {
+					val = ISP33_SW_ISP2ENC_PATH_EN | ISP33_PP_ENC_PIPE_EN;
+					rkisp_unite_set_bits(dev, CTRL_SWS_CFG, 0, val, false);
+				}
+				return 0;
+			}
+			dev->hdr.op_mode = op_mode;
+		} else {
+			dev->hdr.op_mode = hdr_cfg.hdr_mode;
 		}
 
-		if (dev->hdr.op_mode == HDR_RDBK_FRAME2)
+		if (dev->isp_ver < ISP_V30) {
+			if (!dev->hw_dev->is_mi_update)
+				rkisp_unite_write(dev, CSI2RX_CTRL0,
+						  SW_IBUF_OP_MODE(dev->hdr.op_mode), true);
+		} else {
+			rkisp_unite_write(dev, CSI2RX_CTRL0,
+					  SW_IBUF_OP_MODE(dev->hdr.op_mode), false);
+			rkisp_unite_write(dev, CSI2RX_DATA_IDS_1,
+					  dev->isp_sdev.in_fmt.mipi_dt, false);
+		}
+		/* hdr merge */
+		switch (dev->hdr.op_mode) {
+		case HDR_RDBK_FRAME2:
+		case HDR_FRAMEX2_DDR:
+		case HDR_LINEX2_DDR:
+		case HDR_LINEX2_NO_DDR:
 			val = SW_HDRMGE_EN | SW_HDRMGE_MODE_FRAMEX2;
-		else if (dev->hdr.op_mode == HDR_RDBK_FRAME3)
+			break;
+		case HDR_RDBK_FRAME3:
+		case HDR_FRAMEX3_DDR:
+		case HDR_LINEX3_DDR:
 			val = SW_HDRMGE_EN | SW_HDRMGE_MODE_FRAMEX3;
-
-		if (!dev->hw_dev->is_mi_update)
-			rkisp_write(dev, CSI2RX_CTRL0,
-				    SW_IBUF_OP_MODE(dev->hdr.op_mode), true);
-
+			break;
+		default:
+			val = 0;
+		}
 		if (is_feature_on) {
 			if ((ISP2X_MODULE_HDRMGE & ~iq_feature) && (val & SW_HDRMGE_EN)) {
 				v4l2_err(&dev->v4l2_dev, "hdrmge is not supported\n");
 				return -EINVAL;
 			}
 		}
-		rkisp_write(dev, ISP_HDRMGE_BASE, val, false);
+		rkisp_unite_write(dev, ISP_HDRMGE_BASE, val, false);
 
-		rkisp_set_bits(dev, CSI2RX_MASK_STAT, 0, RAW_RD_SIZE_ERR, true);
+		val = RAW_RD_SIZE_ERR;
+		if (!IS_HDR_RDBK(dev->hdr.op_mode))
+			val |= ISP21_MIPI_DROP_FRM;
+		rkisp_unite_set_bits(dev, CSI2RX_MASK_STAT, 0, val, true);
 	}
 
+	val = 0;
 	if (IS_HDR_RDBK(dev->hdr.op_mode))
-		rkisp_set_bits(dev, CTRL_SWS_CFG, 0, SW_MPIP_DROP_FRM_DIS, true);
-
-	memset(dev->filt_state, 0, sizeof(dev->filt_state));
+		val |= SW_MPIP_DROP_FRM_DIS;
+	if (dev->cap_dev.wrap_line) {
+		if (dev->isp_ver == ISP_V33 || dev->isp_ver == ISP_V35)
+			val |= ISP33_SW_ISP2ENC_PATH_EN;
+		if (IS_HDR_RDBK(dev->hdr.op_mode))
+			val |= ISP33_PP_ENC_PIPE_EN;
+	}
+	if (dev->isp_ver >= ISP_V30)
+		val |= ISP3X_SW_ACK_FRM_PRO_DIS;
+	if (dev->isp_ver >= ISP_V33)
+		val |= ISP33_SW_DITHER_EN;
+	if (val)
+		rkisp_unite_set_bits(dev, CTRL_SWS_CFG, 0, val, false);
+	/* line counter from isp out, default from mp out */
+	if (dev->isp_ver == ISP_V32_L || dev->isp_ver == ISP_V39) {
+		val |= ISP32L_ISP2ENC_CNT_MUX;
+		rkisp_unite_set_bits(dev, CTRL_SWS_CFG, 0, val, true);
+	}
 	dev->rdbk_cnt = -1;
 	dev->rdbk_cnt_x1 = -1;
 	dev->rdbk_cnt_x2 = -1;
@@ -524,7 +731,7 @@ void rkisp_csi_sof(struct rkisp_device *dev, u8 id)
 		return;
 	}
 
-	rkisp_isp_queue_event_sof(&dev->isp_sdev);
+	rkisp_isp_queue_event_sof(dev);
 }
 
 int rkisp_register_csi_subdev(struct rkisp_device *dev,
@@ -556,6 +763,8 @@ int rkisp_register_csi_subdev(struct rkisp_device *dev,
 		csi_dev->pads[CSI_SRC_CH2].flags = MEDIA_PAD_FL_SOURCE;
 		csi_dev->pads[CSI_SRC_CH3].flags = MEDIA_PAD_FL_SOURCE;
 		csi_dev->pads[CSI_SRC_CH4].flags = MEDIA_PAD_FL_SOURCE;
+	} else if (dev->isp_ver >= ISP_V30) {
+		return 0;
 	}
 
 	ret = media_entity_pads_init(&sd->entity, csi_dev->max_pad,

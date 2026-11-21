@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <zlib.h>
 #include <linux/compiler.h>
-#include <unistd.h>
+#include <internal/lib.h>
 
 #include "util/compress.h"
-#include "util/util.h"
-#include "util/debug.h"
-
 
 #define CHUNK_SIZE  16384
 
@@ -90,7 +88,7 @@ bool gzip_is_compressed(const char *input)
 	ssize_t rc;
 
 	if (fd < 0)
-		return -1;
+		return false;
 
 	rc = read(fd, buf, sizeof(buf));
 	close(fd);

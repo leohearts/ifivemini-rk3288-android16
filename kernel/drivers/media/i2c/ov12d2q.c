@@ -117,14 +117,6 @@ static const char * const ov12d2q_supply_names[] = {
 #define MIRROR_BIT_MASK			BIT(2)
 #define FLIP_BIT_MASK			BIT(2)
 
-enum ov12d2q_max_pad {
-	PAD0,
-	PAD1,
-	PAD2,
-	PAD3,
-	PAD_MAX,
-};
-
 struct regval {
 	u16 addr;
 	u8 val;
@@ -1951,7 +1943,7 @@ static const struct ov12d2q_mode supported_modes[] = {
 		.vts_def = 0x0570,
 		.reg_list = ov12d2q_2256x1256_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 	{
 		.bus_fmt = MEDIA_BUS_FMT_SBGGR10_1X10,
@@ -1966,7 +1958,7 @@ static const struct ov12d2q_mode supported_modes[] = {
 		.vts_def = 0x0ae0,
 		.reg_list = ov12d2q_4512x2512_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 };
 
@@ -2092,7 +2084,7 @@ ov12d2q_find_best_fit(struct ov12d2q *ov12d2q, struct v4l2_subdev_format *fmt)
 }
 
 static int ov12d2q_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
@@ -2110,7 +2102,7 @@ static int ov12d2q_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&ov12d2q->mutex);
 		return -ENOTTY;
@@ -2140,7 +2132,7 @@ static int ov12d2q_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov12d2q_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
@@ -2149,7 +2141,7 @@ static int ov12d2q_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&ov12d2q->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&ov12d2q->mutex);
 		return -ENOTTY;
@@ -2170,7 +2162,7 @@ static int ov12d2q_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov12d2q_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
@@ -2183,7 +2175,7 @@ static int ov12d2q_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov12d2q_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
@@ -2224,32 +2216,16 @@ static int ov12d2q_g_frame_interval(struct v4l2_subdev *sd,
 	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
 	const struct ov12d2q_mode *mode = ov12d2q->cur_mode;
 
-	mutex_lock(&ov12d2q->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&ov12d2q->mutex);
 
 	return 0;
 }
 
-static int ov12d2q_g_mbus_config(struct v4l2_subdev *sd,
+static int ov12d2q_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
-	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
-	const struct ov12d2q_mode *mode = ov12d2q->cur_mode;
-	u32 val = 0;
-
-	if (mode->hdr_mode == NO_HDR)
-		val = 1 << (OV12D2Q_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	if (mode->hdr_mode == HDR_X2)
-		val = 1 << (OV12D2Q_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK |
-		V4L2_MBUS_CSI2_CHANNEL_1;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = OV12D2Q_LANES;
 
 	return 0;
 }
@@ -2258,10 +2234,10 @@ static void ov12d2q_get_module_inf(struct ov12d2q *ov12d2q,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, OV12D2Q_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, ov12d2q->module_name,
+	strscpy(inf->base.sensor, OV12D2Q_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, ov12d2q->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, ov12d2q->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, ov12d2q->len_name, sizeof(inf->base.lens));
 }
 
 static long ov12d2q_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -2668,7 +2644,7 @@ static int ov12d2q_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct ov12d2q_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&ov12d2q->mutex);
@@ -2686,7 +2662,7 @@ static int ov12d2q_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int ov12d2q_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
@@ -2724,7 +2700,6 @@ static const struct v4l2_subdev_core_ops ov12d2q_core_ops = {
 static const struct v4l2_subdev_video_ops ov12d2q_video_ops = {
 	.s_stream = ov12d2q_s_stream,
 	.g_frame_interval = ov12d2q_g_frame_interval,
-	.g_mbus_config = ov12d2q_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops ov12d2q_pad_ops = {
@@ -2733,6 +2708,7 @@ static const struct v4l2_subdev_pad_ops ov12d2q_pad_ops = {
 	.enum_frame_interval = ov12d2q_enum_frame_interval,
 	.get_fmt = ov12d2q_get_fmt,
 	.set_fmt = ov12d2q_set_fmt,
+	.get_mbus_config = ov12d2q_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops ov12d2q_subdev_ops = {
@@ -2769,7 +2745,7 @@ static int ov12d2q_set_ctrl(struct v4l2_ctrl *ctrl)
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
 		if (ov12d2q->cur_mode->hdr_mode != NO_HDR)
-			return 0;
+			goto ctrl_end;
 		ret = ov12d2q_write_reg(ov12d2q->client,
 					OV12D2Q_REG_EXP_L_H,
 					OV12D2Q_REG_VALUE_16BIT,
@@ -2779,7 +2755,7 @@ static int ov12d2q_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	case V4L2_CID_ANALOGUE_GAIN:
 		if (ov12d2q->cur_mode->hdr_mode != NO_HDR)
-			return 0;
+			goto ctrl_end;
 		if (ctrl->val > 1984) {// >15.5x
 			dgain = ctrl->val * 10 / 155;
 			again = 1984;
@@ -2896,6 +2872,7 @@ static int ov12d2q_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
+ctrl_end:
 	pm_runtime_put(&client->dev);
 
 	return ret;
@@ -3149,7 +3126,7 @@ static int ov12d2q_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 ov12d2q->module_index, facing,
 		 OV12D2Q_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -3175,7 +3152,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int ov12d2q_remove(struct i2c_client *client)
+static void ov12d2q_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov12d2q *ov12d2q = to_ov12d2q(sd);
@@ -3191,8 +3168,6 @@ static int ov12d2q_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__ov12d2q_power_off(ov12d2q);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)
@@ -3219,9 +3194,6 @@ static struct i2c_driver ov12d2q_i2c_driver = {
 	.id_table	= ov12d2q_match_id,
 };
 
-#ifdef CONFIG_ROCKCHIP_THUNDER_BOOT
-module_i2c_driver(ov12d2q_i2c_driver);
-#else
 static int __init sensor_mod_init(void)
 {
 	return i2c_add_driver(&ov12d2q_i2c_driver);
@@ -3232,9 +3204,12 @@ static void __exit sensor_mod_exit(void)
 	i2c_del_driver(&ov12d2q_i2c_driver);
 }
 
+#if defined(CONFIG_VIDEO_ROCKCHIP_THUNDER_BOOT_ISP)
+subsys_initcall(sensor_mod_init);
+#else
 device_initcall_sync(sensor_mod_init);
-module_exit(sensor_mod_exit);
 #endif
+module_exit(sensor_mod_exit);
 
 MODULE_DESCRIPTION("OmniVision ov12d2q sensor driver");
 MODULE_LICENSE("GPL v2");

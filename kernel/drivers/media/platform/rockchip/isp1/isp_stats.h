@@ -35,13 +35,13 @@
 #ifndef _RKISP1_ISP_STATS_H
 #define _RKISP1_ISP_STATS_H
 
-#include <linux/rkisp1-config.h>
+#include <linux/rk-isp1-config.h>
 #include <linux/interrupt.h>
 #include <linux/kfifo.h>
 #include "common.h"
 
 #define RKISP1_READOUT_WORK_SIZE	\
-	(32 * sizeof(struct rkisp1_isp_readout_work))
+	(8 * sizeof(struct rkisp1_isp_readout_work))
 
 struct rkisp1_isp_stats_vdev;
 

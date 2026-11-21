@@ -712,6 +712,8 @@ TRACE_EVENT(ocfs2_trim_extent,
 
 DEFINE_OCFS2_ULL_UINT_UINT_UINT_EVENT(ocfs2_trim_group);
 
+DEFINE_OCFS2_ULL_ULL_ULL_EVENT(ocfs2_trim_mainbm);
+
 DEFINE_OCFS2_ULL_ULL_ULL_EVENT(ocfs2_trim_fs);
 
 /* End of trace events for fs/ocfs2/alloc.c. */
@@ -2575,6 +2577,8 @@ DEFINE_OCFS2_UINT_EVENT(ocfs2_commit_cache_begin);
 DEFINE_OCFS2_ULL_UINT_EVENT(ocfs2_commit_cache_end);
 
 DEFINE_OCFS2_INT_INT_EVENT(ocfs2_extend_trans);
+
+DEFINE_OCFS2_INT_EVENT(ocfs2_assure_trans_credits);
 
 DEFINE_OCFS2_INT_EVENT(ocfs2_extend_trans_restart);
 

@@ -1,1 +1,0 @@
-#define DRIVERVERSION	"v1.15.6.0.2-0-gac110bf5.20211029"

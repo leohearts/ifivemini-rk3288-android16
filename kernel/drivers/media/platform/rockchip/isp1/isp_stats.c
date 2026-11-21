@@ -83,8 +83,8 @@ static int rkisp1_stats_querycap(struct file *file,
 	snprintf(cap->driver, sizeof(cap->driver),
 		 "%s_v%d", DRIVER_NAME,
 		 stats_vdev->dev->isp_ver >> 4);
-	strlcpy(cap->card, vdev->name, sizeof(cap->card));
-	strlcpy(cap->bus_info, "platform: " DRIVER_NAME, sizeof(cap->bus_info));
+	strscpy(cap->card, vdev->name, sizeof(cap->card));
+	strscpy(cap->bus_info, "platform: " DRIVER_NAME, sizeof(cap->bus_info));
 
 	return 0;
 }
@@ -560,7 +560,7 @@ int rkisp1_stats_isr(struct rkisp1_isp_stats_vdev *stats_vdev, u32 isp_ris)
 		work.frame_id = cur_frame_id;
 		work.isp_ris = isp_ris;
 		work.timestamp = ktime_get_ns();
-		if (kfifo_avail(&stats_vdev->rd_kfifo) >= sizeof(work))
+		if (!kfifo_is_full(&stats_vdev->rd_kfifo))
 			kfifo_in(&stats_vdev->rd_kfifo,
 				 &work, sizeof(work));
 		else
@@ -620,7 +620,7 @@ int rkisp1_register_stats_vdev(struct rkisp1_isp_stats_vdev *stats_vdev,
 	spin_lock_init(&stats_vdev->irq_lock);
 	spin_lock_init(&stats_vdev->rd_lock);
 
-	strlcpy(vdev->name, "rkisp1-statistics", sizeof(vdev->name));
+	strscpy(vdev->name, "rkisp1-statistics", sizeof(vdev->name));
 
 	video_set_drvdata(vdev, stats_vdev);
 	vdev->ioctl_ops = &rkisp1_stats_ioctl;
@@ -640,7 +640,7 @@ int rkisp1_register_stats_vdev(struct rkisp1_isp_stats_vdev *stats_vdev,
 	if (ret < 0)
 		goto err_release_queue;
 
-	ret = video_register_device(vdev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
 		dev_err(&vdev->dev,
 			"could not register Video for Linux device\n");

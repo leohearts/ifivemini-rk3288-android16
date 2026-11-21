@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* sound/soc/rockchip/rk_spdif.c
  *
  * ALSA SoC Audio Layer - Rockchip I2S Controller driver
  *
- * Copyright (c) 2014 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2014 Rockchip Electronics Co., Ltd.
  * Author: Jianqun <jay.xu@rock-chips.com>
  * Copyright (c) 2015 Collabora Ltd.
  * Author: Sjoerd Simons <sjoerd.simons@collabora.co.uk>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -19,8 +16,11 @@
 #include <linux/pm_runtime.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
+#include <sound/asoundef.h>
 #include <sound/pcm_params.h>
+#include <sound/pcm_iec958.h>
 #include <sound/dmaengine_pcm.h>
+#include <sound/tlv.h>
 
 #include "rockchip_spdif.h"
 
@@ -29,9 +29,28 @@ enum rk_spdif_type {
 	RK_SPDIF_RK3188,
 	RK_SPDIF_RK3288,
 	RK_SPDIF_RK3366,
+	RK_SPDIF_RK3538,
 };
 
-#define RK3288_GRF_SOC_CON2 0x24c
+/*
+ *      |  7  |  6  |  5  |  4  |  3  |  2  |  1  |  0  |
+ * CS0: |   Mode    |        d        |  c  |  b  |  a  |
+ * CS1: |               Category Code                   |
+ * CS2: |    Channel Number     |     Source Number     |
+ * CS3: |    Clock Accuracy     |     Sample Freq       |
+ * CS4: |    Ori Sample Freq    |     Word Length       |
+ * CS5: |                                   |   CGMS-A  |
+ * CS6~CS23: Reserved
+ *
+ * a: use of channel status block
+ * b: linear PCM identification: 0 for lpcm, 1 for nlpcm
+ * c: copyright information
+ * d: additional format information
+ */
+#define CS_BYTE			6
+#define CS_FRAME(c)		((c) << 16 | (c))
+
+#define RK3288_GRF_SOC_CON2	0x24c
 
 struct rk_spdif_dev {
 	struct device *dev;
@@ -42,9 +61,11 @@ struct rk_spdif_dev {
 	struct snd_dmaengine_dai_dma_data playback_dma_data;
 
 	struct regmap *regmap;
+	bool non_pcm;
+	enum rk_spdif_type type;
 };
 
-static const struct of_device_id rk_spdif_match[] = {
+static const struct of_device_id rk_spdif_match[] __maybe_unused = {
 	{ .compatible = "rockchip,rk3066-spdif",
 	  .data = (void *)RK_SPDIF_RK3066 },
 	{ .compatible = "rockchip,rk3188-spdif",
@@ -63,6 +84,10 @@ static const struct of_device_id rk_spdif_match[] = {
 	  .data = (void *)RK_SPDIF_RK3366 },
 	{ .compatible = "rockchip,rk3568-spdif",
 	  .data = (void *)RK_SPDIF_RK3366 },
+	{ .compatible = "rockchip,rk3588-spdif",
+	  .data = (void *)RK_SPDIF_RK3366 },
+	{ .compatible = "rockchip,rk3538-spdif",
+	  .data = (void *)RK_SPDIF_RK3538 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, rk_spdif_match);
@@ -91,6 +116,7 @@ static int __maybe_unused rk_spdif_runtime_resume(struct device *dev)
 
 	ret = clk_prepare_enable(spdif->hclk);
 	if (ret) {
+		clk_disable_unprepare(spdif->mclk);
 		dev_err(spdif->dev, "hclk clock enable failed %d\n", ret);
 		return ret;
 	}
@@ -113,11 +139,39 @@ static int rk_spdif_hw_params(struct snd_pcm_substream *substream,
 {
 	struct rk_spdif_dev *spdif = snd_soc_dai_get_drvdata(dai);
 	unsigned int val = SPDIF_CFGR_HALFWORD_ENABLE;
-	int srate, mclk;
-	int ret;
+	unsigned int mclk_rate = clk_get_rate(spdif->mclk);
+	int bmc, div, ret, i;
+	u8 cs[CS_BYTE];
+	u16 *fc = (u16 *)cs;
 
-	srate = params_rate(params);
-	mclk = srate * 128;
+	ret = snd_pcm_create_iec958_consumer_hw_params(params, cs, sizeof(cs));
+	if (ret < 0)
+		return ret;
+
+	if (spdif->non_pcm) {
+		cs[0] |= IEC958_AES0_NONAUDIO;
+		for (i = 0; i < AES_IEC958_STATUS_SIZE / 2; i++)
+			regmap_write(spdif->regmap, SPDIF_VLDFRn(i), 0xffffffff);
+		regmap_update_bits(spdif->regmap, SPDIF_CFGR, SPDIF_CFGR_VFE_MASK,
+				   SPDIF_CFGR_VFE_EN);
+	} else {
+		cs[0] &= ~IEC958_AES0_NONAUDIO;
+		for (i = 0; i < AES_IEC958_STATUS_SIZE / 2; i++)
+			regmap_write(spdif->regmap, SPDIF_VLDFRn(i), 0x0);
+		regmap_update_bits(spdif->regmap, SPDIF_CFGR, SPDIF_CFGR_VFE_MASK,
+				   SPDIF_CFGR_VFE_DIS);
+	}
+
+	for (i = 0; i < CS_BYTE / 2; i++)
+		regmap_write(spdif->regmap, SPDIF_CHNSRn(i), CS_FRAME(fc[i]));
+
+	regmap_update_bits(spdif->regmap, SPDIF_CFGR, SPDIF_CFGR_CSE_MASK,
+			   SPDIF_CFGR_CSE_EN);
+
+	/* bmc = 128fs */
+	bmc = 128 * params_rate(params);
+	div = DIV_ROUND_CLOSEST(mclk_rate, bmc);
+	val |= SPDIF_CFGR_CLK_DIV(div);
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
@@ -128,23 +182,25 @@ static int rk_spdif_hw_params(struct snd_pcm_substream *substream,
 		break;
 	case SNDRV_PCM_FORMAT_S24_LE:
 		val |= SPDIF_CFGR_VDW_24;
+		val |= SPDIF_CFGR_ADJ_RIGHT_J;
+		break;
+	case SNDRV_PCM_FORMAT_S32_LE:
+		val |= SPDIF_CFGR_VDW_24;
+		val |= SPDIF_CFGR_ADJ_LEFT_J;
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	/* Set clock and calculate divider */
-	ret = clk_set_rate(spdif->mclk, mclk);
-	if (ret != 0) {
-		dev_err(spdif->dev, "Failed to set module clock rate: %d\n",
-			ret);
-		return ret;
-	}
+	regmap_update_bits(spdif->regmap, SPDIF_CFGR, SPDIF_CFGR_CLR_MASK,
+			   SPDIF_CFGR_CLR_EN);
 
+	udelay(1);
 	ret = regmap_update_bits(spdif->regmap, SPDIF_CFGR,
 				 SPDIF_CFGR_CLK_DIV_MASK |
 				 SPDIF_CFGR_HALFWORD_ENABLE |
-				 SDPIF_CFGR_VDW_MASK, val);
+				 SDPIF_CFGR_VDW_MASK |
+				 SPDIF_CFGR_ADJ_MASK, val);
 
 	return ret;
 }
@@ -194,16 +250,45 @@ static int rk_spdif_trigger(struct snd_pcm_substream *substream,
 	return ret;
 }
 
+static DECLARE_TLV_DB_MINMAX(gain_tlv, -6562, 3000);
+static const struct snd_kcontrol_new rk_spdif_volume_controls[] = {
+	SOC_SINGLE("MUTE ENABLE", SPDIF_XFER, 2, 1, 0),
+	SOC_SINGLE("GAIN ENABLE", SPDIF_GAINCTRL, 0, 1, 0),
+	SOC_SINGLE_TLV("GAIN VALUE", SPDIF_GAINCTRL, 1, 255, 0, gain_tlv),
+};
+
 static int rk_spdif_dai_probe(struct snd_soc_dai *dai)
 {
 	struct rk_spdif_dev *spdif = snd_soc_dai_get_drvdata(dai);
 
 	dai->playback_dma_data = &spdif->playback_dma_data;
 
+	if (spdif->type >= RK_SPDIF_RK3538)
+		snd_soc_add_component_controls(dai->component,
+					       rk_spdif_volume_controls,
+					       ARRAY_SIZE(rk_spdif_volume_controls));
+
 	return 0;
 }
 
+static int rk_spdif_set_sysclk(struct snd_soc_dai *dai,
+			       int clk_id, unsigned int freq, int dir)
+{
+	struct rk_spdif_dev *spdif = snd_soc_dai_get_drvdata(dai);
+	int ret = 0;
+
+	if (!freq)
+		return 0;
+
+	ret = clk_set_rate(spdif->mclk, freq);
+	if (ret)
+		dev_err(spdif->dev, "Failed to set mclk: %d\n", ret);
+
+	return ret;
+}
+
 static const struct snd_soc_dai_ops rk_spdif_dai_ops = {
+	.set_sysclk = rk_spdif_set_sysclk,
 	.hw_params = rk_spdif_hw_params,
 	.trigger = rk_spdif_trigger,
 };
@@ -214,20 +299,56 @@ static struct snd_soc_dai_driver rk_spdif_dai = {
 		.stream_name = "Playback",
 		.channels_min = 2,
 		.channels_max = 2,
-		.rates = (SNDRV_PCM_RATE_32000 |
-			  SNDRV_PCM_RATE_44100 |
-			  SNDRV_PCM_RATE_48000 |
-			  SNDRV_PCM_RATE_96000 |
-			  SNDRV_PCM_RATE_192000),
+		.rates = SNDRV_PCM_RATE_8000_192000,
 		.formats = (SNDRV_PCM_FMTBIT_S16_LE |
 			    SNDRV_PCM_FMTBIT_S20_3LE |
-			    SNDRV_PCM_FMTBIT_S24_LE),
+			    SNDRV_PCM_FMTBIT_S24_LE |
+			    SNDRV_PCM_FMTBIT_S32_LE),
 	},
 	.ops = &rk_spdif_dai_ops,
 };
 
+static const char * const non_pcm_text[] = { "pcm", "non pcm" };
+static const struct soc_enum __maybe_unused non_pcm_switch =
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(non_pcm_text), non_pcm_text);
+
+static int rk_spdif_non_pcm_get(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct rk_spdif_dev *spdif = snd_soc_component_get_drvdata(component);
+
+	ucontrol->value.enumerated.item[0] = spdif->non_pcm;
+
+	return 0;
+}
+
+static int rk_spdif_non_pcm_put(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct rk_spdif_dev *spdif = snd_soc_component_get_drvdata(component);
+	bool non_pcm;
+
+	non_pcm = !!ucontrol->value.enumerated.item[0];
+	if (non_pcm == spdif->non_pcm)
+		return 0;
+
+	spdif->non_pcm = non_pcm;
+
+	return 1;
+}
+
+static const struct snd_kcontrol_new rk_spdif_controls[] = {
+	SOC_ENUM_EXT("AUDIO MODE", non_pcm_switch,
+		     rk_spdif_non_pcm_get, rk_spdif_non_pcm_put),
+};
+
 static const struct snd_soc_component_driver rk_spdif_component = {
 	.name = "rockchip-spdif",
+	.controls = rk_spdif_controls,
+	.num_controls = ARRAY_SIZE(rk_spdif_controls),
+	.legacy_dai_naming = 1,
 };
 
 static bool rk_spdif_wr_reg(struct device *dev, unsigned int reg)
@@ -238,6 +359,10 @@ static bool rk_spdif_wr_reg(struct device *dev, unsigned int reg)
 	case SPDIF_INTCR:
 	case SPDIF_XFER:
 	case SPDIF_SMPDR:
+	case SPDIF_VLDFRn(0) ... SPDIF_VLDFRn(11):
+	case SPDIF_USRDRn(0) ... SPDIF_USRDRn(11):
+	case SPDIF_CHNSRn(0) ... SPDIF_CHNSRn(11):
+	case SPDIF_GAINCTRL:
 		return true;
 	default:
 		return false;
@@ -253,6 +378,10 @@ static bool rk_spdif_rd_reg(struct device *dev, unsigned int reg)
 	case SPDIF_INTSR:
 	case SPDIF_XFER:
 	case SPDIF_SMPDR:
+	case SPDIF_VLDFRn(0) ... SPDIF_VLDFRn(11):
+	case SPDIF_USRDRn(0) ... SPDIF_USRDRn(11):
+	case SPDIF_CHNSRn(0) ... SPDIF_CHNSRn(11):
+	case SPDIF_GAINCTRL:
 		return true;
 	default:
 		return false;
@@ -275,7 +404,7 @@ static const struct regmap_config rk_spdif_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = 4,
 	.val_bits = 32,
-	.max_register = SPDIF_SMPDR,
+	.max_register = SPDIF_VERSION,
 	.writeable_reg = rk_spdif_wr_reg,
 	.readable_reg = rk_spdif_rd_reg,
 	.volatile_reg = rk_spdif_volatile_reg,
@@ -320,8 +449,7 @@ static int rk_spdif_probe(struct platform_device *pdev)
 	if (IS_ERR(spdif->mclk))
 		return PTR_ERR(spdif->mclk);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	regs = devm_ioremap_resource(&pdev->dev, res);
+	regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(regs))
 		return PTR_ERR(regs);
 
@@ -337,6 +465,20 @@ static int rk_spdif_probe(struct platform_device *pdev)
 	spdif->dev = &pdev->dev;
 	dev_set_drvdata(&pdev->dev, spdif);
 
+	spdif->type = (enum rk_spdif_type)match->data;
+	if (spdif->type >= RK_SPDIF_RK3538) {
+		ret = clk_prepare_enable(spdif->hclk);
+		if (ret)
+			return ret;
+
+		/* set default gain 0db */
+		regmap_update_bits(spdif->regmap, SPDIF_GAINCTRL,
+				   SPDIF_GAINCTRL_CTRL_MASK,
+				   SPDIF_GAINCTRL_CTRL(175));
+
+		clk_disable_unprepare(spdif->hclk);
+	}
+
 	pm_runtime_enable(&pdev->dev);
 	if (!pm_runtime_enabled(&pdev->dev)) {
 		ret = rk_spdif_runtime_resume(&pdev->dev);
@@ -344,17 +486,17 @@ static int rk_spdif_probe(struct platform_device *pdev)
 			goto err_pm_runtime;
 	}
 
+	ret = devm_snd_dmaengine_pcm_register(&pdev->dev, NULL, 0);
+	if (ret) {
+		dev_err(&pdev->dev, "Could not register PCM\n");
+		goto err_pm_suspend;
+	}
+
 	ret = devm_snd_soc_register_component(&pdev->dev,
 					      &rk_spdif_component,
 					      &rk_spdif_dai, 1);
 	if (ret) {
 		dev_err(&pdev->dev, "Could not register DAI\n");
-		goto err_pm_suspend;
-	}
-
-	ret = devm_snd_dmaengine_pcm_register(&pdev->dev, NULL, 0);
-	if (ret) {
-		dev_err(&pdev->dev, "Could not register PCM\n");
 		goto err_pm_suspend;
 	}
 

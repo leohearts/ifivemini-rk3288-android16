@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/mm/proc-v7m.S
  *
  *  Copyright (C) 2008 ARM Ltd.
  *  Copyright (C) 2001 Deep Blue Solutions Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  *  This is the "shell" of the ARMv7-M processor support.
  */
@@ -150,10 +147,10 @@ __v7m_setup_cont:
 
 	@ Configure caches (if implemented)
 	teq     r8, #0
-	stmneia	sp, {r0-r6, lr}		@ v7m_invalidate_l1 touches r0-r6
+	stmiane	sp, {r0-r6, lr}		@ v7m_invalidate_l1 touches r0-r6
 	blne	v7m_invalidate_l1
 	teq     r8, #0			@ re-evalutae condition
-	ldmneia	sp, {r0-r6, lr}
+	ldmiane	sp, {r0-r6, lr}
 
 	@ Configure the System Control Register to ensure 8-byte stack alignment
 	@ Note the STKALIGN bit is either RW or RAO.
@@ -195,6 +192,26 @@ ENDPROC(__v7m_setup)
 	.long	0			/* proc_info_list.user */
 	.long	\cache_fns
 .endm
+
+	/*
+	 * Match ARM Cortex-M55 processor.
+	 */
+	.type	__v7m_cm55_proc_info, #object
+__v7m_cm55_proc_info:
+	.long	0x410fd220		/* ARM Cortex-M55 0xD22 */
+	.long	0xff0ffff0		/* Mask off revision, patch release */
+	__v7m_proc __v7m_cm55_proc_info, __v7m_cm7_setup, hwcaps = HWCAP_EDSP, cache_fns = v7m_cache_fns, proc_fns = cm7_processor_functions
+	.size	__v7m_cm55_proc_info, . - __v7m_cm55_proc_info
+
+	/*
+	 * Match ARM Cortex-M33 processor.
+	 */
+	.type	__v7m_cm33_proc_info, #object
+__v7m_cm33_proc_info:
+	.long	0x410fd210		/* ARM Cortex-M33 0xD21 */
+	.long	0xff0ffff0		/* Mask off revision, patch release */
+	__v7m_proc __v7m_cm33_proc_info, __v7m_setup, hwcaps = HWCAP_EDSP
+	.size	__v7m_cm33_proc_info, . - __v7m_cm33_proc_info
 
 	/*
 	 * Match ARM Cortex-M7 processor.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012,2013 Infineon Technologies
  *
@@ -13,13 +14,6 @@
  *
  * It is based on the original tpm_tis device driver from Leendert van
  * Dorn and Kyleen Hall.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
- *
- *
  */
 #include <linux/i2c.h>
 #include <linux/module.h>
@@ -549,8 +543,10 @@ static int tpm_tis_i2c_send(struct tpm_chip *chip, u8 *buf, size_t len)
 		burstcnt = get_burstcount(chip);
 
 		/* burstcnt < 0 = TPM is busy */
-		if (burstcnt < 0)
-			return burstcnt;
+		if (burstcnt < 0) {
+			rc = burstcnt;
+			goto out_err;
+		}
 
 		if (burstcnt > (len - 1 - count))
 			burstcnt = len - 1 - count;
@@ -712,15 +708,13 @@ static int tpm_tis_i2c_probe(struct i2c_client *client,
 	return rc;
 }
 
-static int tpm_tis_i2c_remove(struct i2c_client *client)
+static void tpm_tis_i2c_remove(struct i2c_client *client)
 {
 	struct tpm_chip *chip = tpm_dev.chip;
 
 	tpm_chip_unregister(chip);
 	release_locality(chip, tpm_dev.locality, 1);
 	tpm_dev.client = NULL;
-
-	return 0;
 }
 
 static struct i2c_driver tpm_tis_i2c_driver = {

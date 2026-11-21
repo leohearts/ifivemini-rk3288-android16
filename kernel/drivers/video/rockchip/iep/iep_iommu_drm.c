@@ -13,12 +13,12 @@
  * GNU General Public License for more details.
  *
  */
-#include <drm/drmP.h>
-#include <linux/dma-iommu.h>
+#include <drm/drm_device.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/kref.h>
+#include <linux/slab.h>
 
 #include "iep_iommu_ops.h"
 
@@ -229,10 +229,6 @@ iep_drm_unmap_iommu(struct iep_iommu_session_info *session_info,
 	struct device *dev = session_info->dev;
 	struct iep_drm_buffer *drm_buffer;
 
-	/* Force to flush iommu table */
-	if (of_machine_is_compatible("rockchip,rk3288"))
-		rockchip_iovmm_invalidate_tlb(session_info->mmu_dev);
-
 	mutex_lock(&session_info->list_mutex);
 	drm_buffer = iep_drm_get_buffer_no_lock(session_info, idx);
 	mutex_unlock(&session_info->list_mutex);
@@ -254,10 +250,6 @@ static int iep_drm_map_iommu(struct iep_iommu_session_info *session_info,
 {
 	struct device *dev = session_info->dev;
 	struct iep_drm_buffer *drm_buffer;
-
-	/* Force to flush iommu table */
-	if (of_machine_is_compatible("rockchip,rk3288"))
-		rockchip_iovmm_invalidate_tlb(session_info->mmu_dev);
 
 	mutex_lock(&session_info->list_mutex);
 	drm_buffer = iep_drm_get_buffer_no_lock(session_info, idx);

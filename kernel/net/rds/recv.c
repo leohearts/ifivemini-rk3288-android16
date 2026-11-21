@@ -43,18 +43,14 @@
 void rds_inc_init(struct rds_incoming *inc, struct rds_connection *conn,
 		 struct in6_addr *saddr)
 {
-	int i;
-
 	refcount_set(&inc->i_refcount, 1);
 	INIT_LIST_HEAD(&inc->i_item);
 	inc->i_conn = conn;
 	inc->i_saddr = *saddr;
-	inc->i_rdma_cookie = 0;
-	inc->i_rx_tstamp.tv_sec = 0;
-	inc->i_rx_tstamp.tv_usec = 0;
+	inc->i_usercopy.rdma_cookie = 0;
+	inc->i_usercopy.rx_tstamp = ktime_set(0, 0);
 
-	for (i = 0; i < RDS_RX_MAX_TRACES; i++)
-		inc->i_rx_lat_trace[i] = 0;
+	memset(inc->i_rx_lat_trace, 0, sizeof(inc->i_rx_lat_trace));
 }
 EXPORT_SYMBOL_GPL(rds_inc_init);
 
@@ -66,9 +62,8 @@ void rds_inc_path_init(struct rds_incoming *inc, struct rds_conn_path *cp,
 	inc->i_conn = cp->cp_conn;
 	inc->i_conn_path = cp;
 	inc->i_saddr = *saddr;
-	inc->i_rdma_cookie = 0;
-	inc->i_rx_tstamp.tv_sec = 0;
-	inc->i_rx_tstamp.tv_usec = 0;
+	inc->i_usercopy.rdma_cookie = 0;
+	inc->i_usercopy.rx_tstamp = ktime_set(0, 0);
 }
 EXPORT_SYMBOL_GPL(rds_inc_path_init);
 
@@ -191,7 +186,7 @@ static void rds_recv_incoming_exthdrs(struct rds_incoming *inc, struct rds_sock 
 		case RDS_EXTHDR_RDMA_DEST:
 			/* We ignore the size for now. We could stash it
 			 * somewhere and use it for error checking. */
-			inc->i_rdma_cookie = rds_rdma_make_cookie(
+			inc->i_usercopy.rdma_cookie = rds_rdma_make_cookie(
 					be32_to_cpu(buffer.rdma_dest.h_rdma_rkey),
 					be32_to_cpu(buffer.rdma_dest.h_rdma_offset));
 
@@ -385,7 +380,7 @@ void rds_recv_incoming(struct rds_connection *conn, struct in6_addr *saddr,
 				      be32_to_cpu(inc->i_hdr.h_len),
 				      inc->i_hdr.h_dport);
 		if (sock_flag(sk, SOCK_RCVTSTAMP))
-			do_gettimeofday(&inc->i_rx_tstamp);
+			inc->i_usercopy.rx_tstamp = ktime_get_real();
 		rds_inc_addref(inc);
 		inc->i_rx_lat_trace[RDS_MSG_RX_END] = local_clock();
 		list_add_tail(&inc->i_item, &rs->rs_recv_queue);
@@ -429,6 +424,7 @@ static int rds_still_queued(struct rds_sock *rs, struct rds_incoming *inc,
 	struct sock *sk = rds_rs_to_sk(rs);
 	int ret = 0;
 	unsigned long flags;
+	struct rds_incoming *to_drop = NULL;
 
 	write_lock_irqsave(&rs->rs_recv_lock, flags);
 	if (!list_empty(&inc->i_item)) {
@@ -439,10 +435,13 @@ static int rds_still_queued(struct rds_sock *rs, struct rds_incoming *inc,
 					      -be32_to_cpu(inc->i_hdr.h_len),
 					      inc->i_hdr.h_dport);
 			list_del_init(&inc->i_item);
-			rds_inc_put(inc);
+			to_drop = inc;
 		}
 	}
 	write_unlock_irqrestore(&rs->rs_recv_lock, flags);
+
+	if (to_drop)
+		rds_inc_put(to_drop);
 
 	rdsdebug("inc %p rs %p still %d dropped %d\n", inc, rs, ret, drop);
 	return ret;
@@ -546,18 +545,32 @@ static int rds_cmsg_recv(struct rds_incoming *inc, struct msghdr *msg,
 {
 	int ret = 0;
 
-	if (inc->i_rdma_cookie) {
+	if (inc->i_usercopy.rdma_cookie) {
 		ret = put_cmsg(msg, SOL_RDS, RDS_CMSG_RDMA_DEST,
-				sizeof(inc->i_rdma_cookie), &inc->i_rdma_cookie);
+				sizeof(inc->i_usercopy.rdma_cookie),
+				&inc->i_usercopy.rdma_cookie);
 		if (ret)
 			goto out;
 	}
 
-	if ((inc->i_rx_tstamp.tv_sec != 0) &&
+	if ((inc->i_usercopy.rx_tstamp != 0) &&
 	    sock_flag(rds_rs_to_sk(rs), SOCK_RCVTSTAMP)) {
-		ret = put_cmsg(msg, SOL_SOCKET, SCM_TIMESTAMP,
-			       sizeof(struct timeval),
-			       &inc->i_rx_tstamp);
+		struct __kernel_old_timeval tv =
+			ns_to_kernel_old_timeval(inc->i_usercopy.rx_tstamp);
+
+		if (!sock_flag(rds_rs_to_sk(rs), SOCK_TSTAMP_NEW)) {
+			ret = put_cmsg(msg, SOL_SOCKET, SO_TIMESTAMP_OLD,
+				       sizeof(tv), &tv);
+		} else {
+			struct __kernel_sock_timeval sk_tv;
+
+			sk_tv.tv_sec = tv.tv_sec;
+			sk_tv.tv_usec = tv.tv_usec;
+
+			ret = put_cmsg(msg, SOL_SOCKET, SO_TIMESTAMP_NEW,
+				       sizeof(sk_tv), &sk_tv);
+		}
+
 		if (ret)
 			goto out;
 	}
@@ -713,8 +726,6 @@ int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 
 		if (msg->msg_name) {
 			if (ipv6_addr_v4mapped(&inc->i_saddr)) {
-				sin = (struct sockaddr_in *)msg->msg_name;
-
 				sin->sin_family = AF_INET;
 				sin->sin_port = inc->i_hdr.h_sport;
 				sin->sin_addr.s_addr =
@@ -722,8 +733,6 @@ int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 				memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
 				msg->msg_namelen = sizeof(*sin);
 			} else {
-				sin6 = (struct sockaddr_in6 *)msg->msg_name;
-
 				sin6->sin6_family = AF_INET6;
 				sin6->sin6_port = inc->i_hdr.h_sport;
 				sin6->sin6_addr = inc->i_saddr;
@@ -752,16 +761,21 @@ void rds_clear_recv_queue(struct rds_sock *rs)
 	struct sock *sk = rds_rs_to_sk(rs);
 	struct rds_incoming *inc, *tmp;
 	unsigned long flags;
+	LIST_HEAD(to_drop);
 
 	write_lock_irqsave(&rs->rs_recv_lock, flags);
 	list_for_each_entry_safe(inc, tmp, &rs->rs_recv_queue, i_item) {
 		rds_recv_rcvbuf_delta(rs, sk, inc->i_conn->c_lcong,
 				      -be32_to_cpu(inc->i_hdr.h_len),
 				      inc->i_hdr.h_dport);
+		list_move(&inc->i_item, &to_drop);
+	}
+	write_unlock_irqrestore(&rs->rs_recv_lock, flags);
+
+	list_for_each_entry_safe(inc, tmp, &to_drop, i_item) {
 		list_del_init(&inc->i_item);
 		rds_inc_put(inc);
 	}
-	write_unlock_irqrestore(&rs->rs_recv_lock, flags);
 }
 
 /*
@@ -776,6 +790,7 @@ void rds_inc_info_copy(struct rds_incoming *inc,
 
 	minfo.seq = be64_to_cpu(inc->i_hdr.h_sequence);
 	minfo.len = be32_to_cpu(inc->i_hdr.h_len);
+	minfo.tos = inc->i_conn->c_tos;
 
 	if (flip) {
 		minfo.laddr = daddr;
@@ -804,7 +819,7 @@ void rds6_inc_info_copy(struct rds_incoming *inc,
 
 	minfo6.seq = be64_to_cpu(inc->i_hdr.h_sequence);
 	minfo6.len = be32_to_cpu(inc->i_hdr.h_len);
-	minfo6.tos = 0;
+	minfo6.tos = inc->i_conn->c_tos;
 
 	if (flip) {
 		minfo6.laddr = *daddr;

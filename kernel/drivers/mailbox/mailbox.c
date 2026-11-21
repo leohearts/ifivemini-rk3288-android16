@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Mailbox: Common code for Mailbox controllers and users
  *
  * Copyright (C) 2013-2014 Linaro Ltd.
  * Author: Jassi Brar <jassisinghbrar@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/interrupt.h>
@@ -53,7 +50,7 @@ static int add_to_rbuf(struct mbox_chan *chan, void *mssg)
 	return idx;
 }
 
-static int __msg_submit(struct mbox_chan *chan)
+static void msg_submit(struct mbox_chan *chan)
 {
 	unsigned count, idx;
 	unsigned long flags;
@@ -85,29 +82,11 @@ static int __msg_submit(struct mbox_chan *chan)
 exit:
 	spin_unlock_irqrestore(&chan->lock, flags);
 
-	return err;
-}
-
-static void msg_submit(struct mbox_chan *chan)
-{
-	int err = 0;
-
-	/*
-	 * If the controller returns -EAGAIN, then it means, our spinlock
-	 * here is preventing the controller from receiving its interrupt,
-	 * that would help clear the controller channels that are currently
-	 * blocked waiting on the interrupt response.
-	 * Retry again.
-	 */
-	do {
-		err = __msg_submit(chan);
-	} while (err == -EAGAIN);
-
-	/* kick start the timer immediately to avoid delays */
 	if (!err && (chan->txdone_method & TXDONE_BY_POLL)) {
-		/* but only if not already active */
-		if (!hrtimer_active(&chan->mbox->poll_hrt))
-			hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL);
+		/* kick start the timer immediately to avoid delays */
+		spin_lock_irqsave(&chan->mbox->poll_hrt_lock, flags);
+		hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL);
+		spin_unlock_irqrestore(&chan->mbox->poll_hrt_lock, flags);
 	}
 }
 
@@ -141,20 +120,30 @@ static enum hrtimer_restart txdone_hrtimer(struct hrtimer *hrtimer)
 		container_of(hrtimer, struct mbox_controller, poll_hrt);
 	bool txdone, resched = false;
 	int i;
+	unsigned long flags;
 
 	for (i = 0; i < mbox->num_chans; i++) {
 		struct mbox_chan *chan = &mbox->chans[i];
 
 		if (chan->active_req && chan->cl) {
-			resched = true;
 			txdone = chan->mbox->ops->last_tx_done(chan);
 			if (txdone)
 				tx_tick(chan, 0);
+			else
+				resched = true;
 		}
 	}
 
 	if (resched) {
-		hrtimer_forward_now(hrtimer, ms_to_ktime(mbox->txpoll_period));
+		spin_lock_irqsave(&mbox->poll_hrt_lock, flags);
+		if (!hrtimer_is_queued(hrtimer)) {
+			if (IS_REACHABLE(CONFIG_MAILBOX_POLL_PERIOD_US))
+				hrtimer_forward_now(hrtimer, ns_to_ktime(mbox->txpoll_period * NSEC_PER_USEC));
+			else
+				hrtimer_forward_now(hrtimer, ms_to_ktime(mbox->txpoll_period));
+		}
+		spin_unlock_irqrestore(&mbox->poll_hrt_lock, flags);
+
 		return HRTIMER_RESTART;
 	}
 	return HRTIMER_NORESTART;
@@ -304,6 +293,100 @@ int mbox_send_message(struct mbox_chan *chan, void *mssg)
 EXPORT_SYMBOL_GPL(mbox_send_message);
 
 /**
+ * mbox_flush - flush a mailbox channel
+ * @chan: mailbox channel to flush
+ * @timeout: time, in milliseconds, to allow the flush operation to succeed
+ *
+ * Mailbox controllers that need to work in atomic context can implement the
+ * ->flush() callback to busy loop until a transmission has been completed.
+ * The implementation must call mbox_chan_txdone() upon success. Clients can
+ * call the mbox_flush() function at any time after mbox_send_message() to
+ * flush the transmission. After the function returns success, the mailbox
+ * transmission is guaranteed to have completed.
+ *
+ * Returns: 0 on success or a negative error code on failure.
+ */
+int mbox_flush(struct mbox_chan *chan, unsigned long timeout)
+{
+	int ret;
+
+	if (!chan->mbox->ops->flush)
+		return -ENOTSUPP;
+
+	ret = chan->mbox->ops->flush(chan, timeout);
+	if (ret < 0)
+		tx_tick(chan, ret);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mbox_flush);
+
+static int __mbox_bind_client(struct mbox_chan *chan, struct mbox_client *cl)
+{
+	struct device *dev = cl->dev;
+	unsigned long flags;
+	int ret;
+
+	if (chan->cl || !try_module_get(chan->mbox->dev->driver->owner)) {
+		dev_dbg(dev, "%s: mailbox not free\n", __func__);
+		return -EBUSY;
+	}
+
+	spin_lock_irqsave(&chan->lock, flags);
+	chan->msg_free = 0;
+	chan->msg_count = 0;
+	chan->active_req = NULL;
+	chan->cl = cl;
+	init_completion(&chan->tx_complete);
+
+	if (chan->txdone_method	== TXDONE_BY_POLL && cl->knows_txdone)
+		chan->txdone_method = TXDONE_BY_ACK;
+
+	spin_unlock_irqrestore(&chan->lock, flags);
+
+	if (chan->mbox->ops->startup) {
+		ret = chan->mbox->ops->startup(chan);
+
+		if (ret) {
+			dev_err(dev, "Unable to startup the chan (%d)\n", ret);
+			mbox_free_channel(chan);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * mbox_bind_client - Request a mailbox channel.
+ * @chan: The mailbox channel to bind the client to.
+ * @cl: Identity of the client requesting the channel.
+ *
+ * The Client specifies its requirements and capabilities while asking for
+ * a mailbox channel. It can't be called from atomic context.
+ * The channel is exclusively allocated and can't be used by another
+ * client before the owner calls mbox_free_channel.
+ * After assignment, any packet received on this channel will be
+ * handed over to the client via the 'rx_callback'.
+ * The framework holds reference to the client, so the mbox_client
+ * structure shouldn't be modified until the mbox_free_channel returns.
+ *
+ * Return: 0 if the channel was assigned to the client successfully.
+ *         <0 for request failure.
+ */
+int mbox_bind_client(struct mbox_chan *chan, struct mbox_client *cl)
+{
+	int ret;
+
+	mutex_lock(&con_mutex);
+	ret = __mbox_bind_client(chan, cl);
+	mutex_unlock(&con_mutex);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mbox_bind_client);
+
+/**
  * mbox_request_channel - Request a mailbox channel.
  * @cl: Identity of the client requesting the channel.
  * @index: Index of mailbox specifier in 'mboxes' property.
@@ -326,7 +409,6 @@ struct mbox_chan *mbox_request_channel(struct mbox_client *cl, int index)
 	struct mbox_controller *mbox;
 	struct of_phandle_args spec;
 	struct mbox_chan *chan;
-	unsigned long flags;
 	int ret;
 
 	if (!dev || !dev->of_node) {
@@ -336,18 +418,20 @@ struct mbox_chan *mbox_request_channel(struct mbox_client *cl, int index)
 
 	mutex_lock(&con_mutex);
 
-	if (of_parse_phandle_with_args(dev->of_node, "mboxes",
-				       "#mbox-cells", index, &spec)) {
+	ret = of_parse_phandle_with_args(dev->of_node, "mboxes", "#mbox-cells",
+					 index, &spec);
+	if (ret) {
 		dev_dbg(dev, "%s: can't parse \"mboxes\" property\n", __func__);
 		mutex_unlock(&con_mutex);
-		return ERR_PTR(-ENODEV);
+		return ERR_PTR(ret);
 	}
 
 	chan = ERR_PTR(-EPROBE_DEFER);
 	list_for_each_entry(mbox, &mbox_cons, node)
 		if (mbox->dev->of_node == spec.np) {
 			chan = mbox->of_xlate(mbox, &spec);
-			break;
+			if (!IS_ERR(chan))
+				break;
 		}
 
 	of_node_put(spec.np);
@@ -357,33 +441,9 @@ struct mbox_chan *mbox_request_channel(struct mbox_client *cl, int index)
 		return chan;
 	}
 
-	if (chan->cl || !try_module_get(mbox->dev->driver->owner)) {
-		dev_dbg(dev, "%s: mailbox not free\n", __func__);
-		mutex_unlock(&con_mutex);
-		return ERR_PTR(-EBUSY);
-	}
-
-	spin_lock_irqsave(&chan->lock, flags);
-	chan->msg_free = 0;
-	chan->msg_count = 0;
-	chan->active_req = NULL;
-	chan->cl = cl;
-	init_completion(&chan->tx_complete);
-
-	if (chan->txdone_method	== TXDONE_BY_POLL && cl->knows_txdone)
-		chan->txdone_method = TXDONE_BY_ACK;
-
-	spin_unlock_irqrestore(&chan->lock, flags);
-
-	if (chan->mbox->ops->startup) {
-		ret = chan->mbox->ops->startup(chan);
-
-		if (ret) {
-			dev_err(dev, "Unable to startup the chan (%d)\n", ret);
-			mbox_free_channel(chan);
-			chan = ERR_PTR(ret);
-		}
-	}
+	ret = __mbox_bind_client(chan, cl);
+	if (ret)
+		chan = ERR_PTR(ret);
 
 	mutex_unlock(&con_mutex);
 	return chan;
@@ -443,8 +503,8 @@ void mbox_free_channel(struct mbox_chan *chan)
 	if (chan->txdone_method == TXDONE_BY_ACK)
 		chan->txdone_method = TXDONE_BY_POLL;
 
-	module_put(chan->mbox->dev->driver->owner);
 	spin_unlock_irqrestore(&chan->lock, flags);
+	module_put(chan->mbox->dev->driver->owner);
 }
 EXPORT_SYMBOL_GPL(mbox_free_channel);
 
@@ -452,12 +512,10 @@ static struct mbox_chan *
 of_mbox_index_xlate(struct mbox_controller *mbox,
 		    const struct of_phandle_args *sp)
 {
-	int ind = sp->args[0];
-
-	if (ind >= mbox->num_chans)
+	if (sp->args_count < 1 || sp->args[0] >= mbox->num_chans)
 		return ERR_PTR(-EINVAL);
 
-	return &mbox->chans[ind];
+	return &mbox->chans[sp->args[0]];
 }
 
 /**
@@ -491,6 +549,7 @@ int mbox_controller_register(struct mbox_controller *mbox)
 		hrtimer_init(&mbox->poll_hrt, CLOCK_MONOTONIC,
 			     HRTIMER_MODE_REL);
 		mbox->poll_hrt.function = txdone_hrtimer;
+		spin_lock_init(&mbox->poll_hrt_lock);
 	}
 
 	for (i = 0; i < mbox->num_chans; i++) {
@@ -537,3 +596,73 @@ void mbox_controller_unregister(struct mbox_controller *mbox)
 	mutex_unlock(&con_mutex);
 }
 EXPORT_SYMBOL_GPL(mbox_controller_unregister);
+
+static void __devm_mbox_controller_unregister(struct device *dev, void *res)
+{
+	struct mbox_controller **mbox = res;
+
+	mbox_controller_unregister(*mbox);
+}
+
+static int devm_mbox_controller_match(struct device *dev, void *res, void *data)
+{
+	struct mbox_controller **mbox = res;
+
+	if (WARN_ON(!mbox || !*mbox))
+		return 0;
+
+	return *mbox == data;
+}
+
+/**
+ * devm_mbox_controller_register() - managed mbox_controller_register()
+ * @dev: device owning the mailbox controller being registered
+ * @mbox: mailbox controller being registered
+ *
+ * This function adds a device-managed resource that will make sure that the
+ * mailbox controller, which is registered using mbox_controller_register()
+ * as part of this function, will be unregistered along with the rest of
+ * device-managed resources upon driver probe failure or driver removal.
+ *
+ * Returns 0 on success or a negative error code on failure.
+ */
+int devm_mbox_controller_register(struct device *dev,
+				  struct mbox_controller *mbox)
+{
+	struct mbox_controller **ptr;
+	int err;
+
+	ptr = devres_alloc(__devm_mbox_controller_unregister, sizeof(*ptr),
+			   GFP_KERNEL);
+	if (!ptr)
+		return -ENOMEM;
+
+	err = mbox_controller_register(mbox);
+	if (err < 0) {
+		devres_free(ptr);
+		return err;
+	}
+
+	devres_add(dev, ptr);
+	*ptr = mbox;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(devm_mbox_controller_register);
+
+/**
+ * devm_mbox_controller_unregister() - managed mbox_controller_unregister()
+ * @dev: device owning the mailbox controller being unregistered
+ * @mbox: mailbox controller being unregistered
+ *
+ * This function unregisters the mailbox controller and removes the device-
+ * managed resource that was set up to automatically unregister the mailbox
+ * controller on driver probe failure or driver removal. It's typically not
+ * necessary to call this function.
+ */
+void devm_mbox_controller_unregister(struct device *dev, struct mbox_controller *mbox)
+{
+	WARN_ON(devres_release(dev, __devm_mbox_controller_unregister,
+			       devm_mbox_controller_match, mbox));
+}
+EXPORT_SYMBOL_GPL(devm_mbox_controller_unregister);

@@ -112,6 +112,8 @@ static struct platform_device *fsl_usb2_device_register(
 			goto error;
 	}
 
+	device_set_of_node_from_dev(&pdev->dev, &ofdev->dev);
+
 	retval = platform_device_add(pdev);
 	if (retval)
 		goto error;
@@ -227,6 +229,10 @@ static int fsl_usb2_mph_dr_of_probe(struct platform_device *ofdev)
 		of_property_read_bool(np, "fsl,usb-erratum-a005275");
 	pdata->has_fsl_erratum_a005697 =
 		of_property_read_bool(np, "fsl,usb_erratum-a005697");
+	pdata->has_fsl_erratum_a006918 =
+		of_property_read_bool(np, "fsl,usb_erratum-a006918");
+	pdata->has_fsl_erratum_14 =
+		of_property_read_bool(np, "fsl,usb_erratum-14");
 
 	/*
 	 * Determine whether phy_clk_valid needs to be checked

@@ -11,9 +11,10 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/gpio/consumer.h>
+#include <linux/usb/tcpci.h>
 #include <linux/usb/tcpm.h>
 #include <linux/regmap.h>
-#include "tcpci.h"
+#include <linux/regulator/consumer.h>
 
 #define RT1711H_VID		0x29CF
 #define RT1711H_PID		0x1711
@@ -23,8 +24,11 @@
 #define RT1711H_PHYCTRL1	0x80
 #define RT1711H_PHYCTRL2	0x81
 
-#define RT1711H_RTCTRL8		0x9B
+#define RT1711H_RTCTRL4		0x93
+/* rx threshold of rd/rp: 1b0 for level 0.4V/0.7V, 1b1 for 0.35V/0.75V */
+#define RT1711H_BMCIO_RXDZSEL	BIT(0)
 
+#define RT1711H_RTCTRL8		0x9B
 /* Autoidle timeout = (tout * 2 + 1) * 6.4ms */
 #define RT1711H_RTCTRL8_SET(ck300, ship_off, auto_idle, tout) \
 			    (((ck300) << 7) | ((ship_off) << 5) | \
@@ -43,11 +47,16 @@
 #define RT1711H_RTCTRL15	0xA2
 #define RT1711H_RTCTRL16	0xA3
 
+#define RT1711H_RTCTRL18	0xAF
+/* 1b0 as fixed rx threshold of rd/rp 0.55V, 1b1 depends on RTCRTL4[0] */
+#define BMCIO_RXDZEN	BIT(0)
+
 struct rt1711h_chip {
 	struct tcpci_data data;
 	struct tcpci *tcpci;
 	struct device *dev;
-	struct gpio_desc *gpio_vbus_5v;
+	struct regulator *vbus;
+	bool src_en;
 	u16 did;
 };
 
@@ -135,17 +144,22 @@ static int rt1711h_init(struct tcpci *tcpci, struct tcpci_data *tdata)
 }
 
 static int rt1711h_set_vbus(struct tcpci *tcpci, struct tcpci_data *tdata,
-			    bool source, bool sink)
+			    bool src, bool snk)
 {
 	struct rt1711h_chip *chip = tdata_to_rt1711h(tdata);
+	int ret;
 
-        if (chip->gpio_vbus_5v) {
-                gpiod_set_value(chip->gpio_vbus_5v, source);
-		dev_dbg(chip->dev, "rt1711h set vbus to %s\n", source ? "enable" : "disable");
-	} else
-		return -ENODEV;
+	if (chip->src_en == src)
+		return 0;
 
-	return 0;
+	if (src)
+		ret = regulator_enable(chip->vbus);
+	else
+		ret = regulator_disable(chip->vbus);
+
+	if (!ret)
+		chip->src_en = src;
+	return ret;
 }
 
 static int rt1711h_set_vconn(struct tcpci *tcpci, struct tcpci_data *tdata,
@@ -155,6 +169,53 @@ static int rt1711h_set_vconn(struct tcpci *tcpci, struct tcpci_data *tdata,
 
 	return regmap_update_bits(chip->data.regmap, RT1711H_RTCTRL8,
 				  RT1711H_AUTOIDLEEN, enable ? 0 : RT1711H_AUTOIDLEEN);
+}
+
+/*
+ * Selects the CC PHY noise filter voltage level according to the remote current
+ * CC voltage level.
+ *
+ * @status: The port's current cc status read from IC
+ * Return 0 if writes succeed; failure code otherwise
+ */
+static inline int rt1711h_init_cc_params(struct rt1711h_chip *chip, u8 status)
+{
+	int ret, cc1, cc2;
+	u8 role = 0;
+	u32 rxdz_en, rxdz_sel;
+
+	ret = rt1711h_read8(chip, TCPC_ROLE_CTRL, &role);
+	if (ret < 0)
+		return ret;
+
+	cc1 = tcpci_to_typec_cc((status >> TCPC_CC_STATUS_CC1_SHIFT) &
+				TCPC_CC_STATUS_CC1_MASK,
+				status & TCPC_CC_STATUS_TERM ||
+				tcpc_presenting_rd(role, CC1));
+	cc2 = tcpci_to_typec_cc((status >> TCPC_CC_STATUS_CC2_SHIFT) &
+				TCPC_CC_STATUS_CC2_MASK,
+				status & TCPC_CC_STATUS_TERM ||
+				tcpc_presenting_rd(role, CC2));
+
+	if ((cc1 >= TYPEC_CC_RP_1_5 && cc2 < TYPEC_CC_RP_DEF) ||
+	    (cc2 >= TYPEC_CC_RP_1_5 && cc1 < TYPEC_CC_RP_DEF)) {
+		rxdz_en = BMCIO_RXDZEN;
+		if (chip->did == RT1715_DID)
+			rxdz_sel = RT1711H_BMCIO_RXDZSEL;
+		else
+			rxdz_sel = 0;
+	} else {
+		rxdz_en = 0;
+		rxdz_sel = RT1711H_BMCIO_RXDZSEL;
+	}
+
+	ret = regmap_update_bits(chip->data.regmap, RT1711H_RTCTRL18,
+				 BMCIO_RXDZEN, rxdz_en);
+	if (ret < 0)
+		return ret;
+
+	return regmap_update_bits(chip->data.regmap, RT1711H_RTCTRL4,
+				  RT1711H_BMCIO_RXDZSEL, rxdz_sel);
 }
 
 static int rt1711h_start_drp_toggling(struct tcpci *tcpci,
@@ -217,6 +278,8 @@ static irqreturn_t rt1711h_irq(int irq, void *dev_id)
 		/* Clear cc change event triggered by starting toggling */
 		if (status & TCPC_CC_STATUS_TOGGLING)
 			rt1711h_write8(chip, TCPC_ALERT, TCPC_ALERT_CC_STATUS);
+		else
+			rt1711h_init_cc_params(chip, status);
 	}
 
 out:
@@ -269,6 +332,11 @@ static int rt1711h_probe(struct i2c_client *client,
 {
 	int ret;
 	struct rt1711h_chip *chip;
+	const u16 alert_mask = TCPC_ALERT_TX_SUCCESS | TCPC_ALERT_TX_DISCARDED |
+			       TCPC_ALERT_TX_FAILED | TCPC_ALERT_RX_HARD_RST |
+			       TCPC_ALERT_RX_STATUS | TCPC_ALERT_POWER_STATUS |
+			       TCPC_ALERT_CC_STATUS | TCPC_ALERT_RX_BUF_OVF |
+			       TCPC_ALERT_FAULT;
 
 	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
@@ -290,16 +358,6 @@ static int rt1711h_probe(struct i2c_client *client,
 	chip->dev = &client->dev;
 	i2c_set_clientdata(client, chip);
 
-	/* Get Vbus 5V gpio */
-	chip->gpio_vbus_5v = devm_gpiod_get_optional(chip->dev, "vbus-5v",
-                                                     GPIOD_OUT_LOW);
-        if (IS_ERR(chip->gpio_vbus_5v))
-                dev_warn(chip->dev,
-                         "Could not get named GPIO for VBus5V!\n");
-
-	if (chip->gpio_vbus_5v)
-                gpiod_set_value(chip->gpio_vbus_5v, 0);
-
 	ret = rt1711h_sw_reset(chip);
 	if (ret < 0)
 		return ret;
@@ -309,9 +367,12 @@ static int rt1711h_probe(struct i2c_client *client,
 	if (ret < 0)
 		return ret;
 
+	chip->vbus = devm_regulator_get(&client->dev, "vbus");
+	if (IS_ERR(chip->vbus))
+		return PTR_ERR(chip->vbus);
+
 	chip->data.init = rt1711h_init;
-	if (chip->gpio_vbus_5v)
-		chip->data.set_vbus = rt1711h_set_vbus;
+	chip->data.set_vbus = rt1711h_set_vbus;
 	chip->data.set_vconn = rt1711h_set_vconn;
 	chip->data.start_drp_toggling = rt1711h_start_drp_toggling;
 	chip->tcpci = tcpci_register_port(chip->dev, &chip->data);
@@ -324,17 +385,22 @@ static int rt1711h_probe(struct i2c_client *client,
 					dev_name(chip->dev), chip);
 	if (ret < 0)
 		return ret;
-	//enable_irq_wake(client->irq);
+
+	/* Enable alert interrupts */
+	ret = rt1711h_write16(chip, TCPC_ALERT_MASK, alert_mask);
+	if (ret < 0)
+		return ret;
+
+	enable_irq_wake(client->irq);
 
 	return 0;
 }
 
-static int rt1711h_remove(struct i2c_client *client)
+static void rt1711h_remove(struct i2c_client *client)
 {
 	struct rt1711h_chip *chip = i2c_get_clientdata(client);
 
 	tcpci_unregister_port(chip->tcpci);
-	return 0;
 }
 
 static const struct i2c_device_id rt1711h_id[] = {

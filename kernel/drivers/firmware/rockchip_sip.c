@@ -24,6 +24,7 @@
 #include <linux/ptrace.h>
 #include <linux/sched/clock.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 #include <soc/rockchip/rockchip_sip.h>
 
 #ifdef CONFIG_64BIT
@@ -210,28 +211,29 @@ struct dram_addrmap_info *sip_smc_get_dram_map(void)
 {
 	struct arm_smccc_res res;
 	static struct dram_addrmap_info *map;
+	struct dram_addrmap_info *m;
 
 	if (map)
-		return map;
+		return map->bank_bit_first ? map : NULL;
 
 	/* Request share memory size 4KB */
 	res = sip_smc_request_share_mem(1, SHARE_PAGE_TYPE_DDR_ADDRMAP);
 	if (res.a0 != 0) {
-		pr_err("no ATF memory for init\n");
+		pr_err("%s: request share memory error!\n", __func__);
 		return NULL;
 	}
-
-	map = (struct dram_addrmap_info *)res.a1;
+	m = (struct dram_addrmap_info *)res.a1;
+	memset_io(m, 0x0, sizeof(*m));
 
 	res = sip_smc_dram(SHARE_PAGE_TYPE_DDR_ADDRMAP, 0,
 			   ROCKCHIP_SIP_CONFIG_DRAM_ADDRMAP_GET);
 	if (res.a0) {
-		pr_err("rockchip_sip_config_dram_init error:%lx\n", res.a0);
-		map = NULL;
+		pr_err("rockchip_sip_config_dram_addrmap_get error:%lx\n", res.a0);
 		return NULL;
 	}
+	map = m;
 
-	return map;
+	return map->bank_bit_first ? map : NULL;
 }
 EXPORT_SYMBOL_GPL(sip_smc_get_dram_map);
 
@@ -262,6 +264,23 @@ struct arm_smccc_res sip_smc_lastlog_request(void)
 
 	return res;
 }
+EXPORT_SYMBOL_GPL(sip_smc_lastlog_request);
+
+int sip_smc_access_mem_os_reg(u32 func, u32 id, u32 *val)
+{
+	struct arm_smccc_res res;
+
+	if (val == NULL)
+		return SIP_RET_INVALID_PARAMS;
+
+	res = __invoke_sip_fn_smc(SIP_ACCESS_MEM_OS_REG, func, id, *val);
+
+	if (func == RK_MEM_OS_REG_READ)
+		*val = res.a1;
+
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_smc_access_mem_os_reg);
 
 int sip_smc_amp_config(u32 sub_func_id, u32 arg1, u32 arg2, u32 arg3)
 {
@@ -271,6 +290,7 @@ int sip_smc_amp_config(u32 sub_func_id, u32 arg1, u32 arg2, u32 arg3)
 		      0, 0, 0, &res);
 	return res.a0;
 }
+EXPORT_SYMBOL_GPL(sip_smc_amp_config);
 
 struct arm_smccc_res sip_smc_get_amp_info(u32 sub_func_id, u32 arg1)
 {
@@ -279,8 +299,112 @@ struct arm_smccc_res sip_smc_get_amp_info(u32 sub_func_id, u32 arg1)
 	arm_smccc_smc(RK_SIP_AMP_CFG, sub_func_id, arg1, 0, 0, 0, 0, 0, &res);
 	return res;
 }
+EXPORT_SYMBOL_GPL(sip_smc_get_amp_info);
 
-EXPORT_SYMBOL_GPL(sip_smc_lastlog_request);
+struct arm_smccc_res sip_smc_get_pvtpll_info(u32 sub_func_id, u32 arg1)
+{
+	struct arm_smccc_res res;
+
+	/*
+	 * res.a0: error code(0: success, !0: error).
+	 * res.a1: low temp config flag(0: support, !0: don't support).
+	 */
+	arm_smccc_smc(SIP_PVTPLL_CFG, sub_func_id, arg1, 0, 0, 0, 0, 0, &res);
+	return res;
+}
+EXPORT_SYMBOL_GPL(sip_smc_get_pvtpll_info);
+
+struct arm_smccc_res sip_smc_pvtpll_config(u32 sub_func_id, u32 arg1, u32 arg2,
+					   u32 arg3, u32 arg4, u32 arg5, u32 arg6)
+{
+	struct arm_smccc_res res;
+
+	/*
+	 * res.a0: error code(0: success, !0: error).
+	 */
+	arm_smccc_smc(SIP_PVTPLL_CFG, sub_func_id, arg1, arg2, arg3, arg4, arg5,
+		      arg6, &res);
+	return res;
+}
+EXPORT_SYMBOL_GPL(sip_smc_pvtpll_config);
+
+void __iomem *sip_hdcp_request_share_memory(int id)
+{
+	static void __iomem *base;
+	struct arm_smccc_res res;
+
+	if (id < 0 || id >= MAX_DEVICE) {
+		pr_err("%s: invalid device id\n", __func__);
+		return NULL;
+	}
+
+	if (!base) {
+		/* request page share memory */
+		res = sip_smc_request_share_mem(2, SHARE_PAGE_TYPE_HDCP);
+		if (IS_SIP_ERROR(res.a0))
+			return NULL;
+		base = (void __iomem *)res.a1;
+	}
+
+	return base + id * 1024;
+}
+EXPORT_SYMBOL_GPL(sip_hdcp_request_share_memory);
+
+struct arm_smccc_res sip_hdcp_config(u32 arg0, u32 arg1, u32 arg2)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(SIP_HDCP_CONFIG, arg0, arg1, arg2);
+	return res;
+}
+EXPORT_SYMBOL_GPL(sip_hdcp_config);
+
+struct arm_smccc_res sip_smc_gpio_config(u32 sub_func_id, u32 arg1, u32 arg2,
+					 u32 arg3)
+{
+	struct arm_smccc_res res;
+
+	/*
+	 * res.a0: error code(0: success, !0: error).
+	 */
+	arm_smccc_smc(SIP_GPIO_CFG, sub_func_id, arg1, arg2, arg3, 0, 0, 0, &res);
+	return res;
+}
+EXPORT_SYMBOL_GPL(sip_smc_gpio_config);
+
+int sip_smc_cpu_pm_config(u32 func, u32 id, u32 cfg)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(SIP_CPU_PM_CFG, func, id, cfg);
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_smc_cpu_pm_config);
+
+int sip_smc_cci_config(u32 func, u32 id, u32 cfg)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(SIP_CCI_CFG, func, id, cfg);
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_smc_cci_config);
+
+int sip_smc_access_cpu_reg(u32 func, u32 id, unsigned long *val)
+{
+	struct arm_smccc_res res;
+
+	if (val == NULL)
+		return SIP_RET_INVALID_PARAMS;
+
+	res = __invoke_sip_fn_smc(SIP_ACCESS_CPU_REG, func, id, *val);
+
+	if (func == RK_CPU_REG_READ)
+		*val = res.a1;
+
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_smc_access_cpu_reg);
 
 /************************** fiq debugger **************************************/
 /*
@@ -304,8 +428,7 @@ static int fiq_target_cpu;
 static unsigned long fiq_stack_top;
 static phys_addr_t ft_fiq_mem_phy;
 static void __iomem *ft_fiq_mem_base;
-static void (*sip_fiq_debugger_uart_irq_tf)(struct pt_regs *_pt_regs,
-					    unsigned long cpu);
+static sip_fiq_debugger_uart_irq_tf_cb_t sip_fiq_debugger_uart_irq_tf;
 static struct pt_regs fiq_pt_regs;
 
 int sip_fiq_debugger_is_enabled(void)
@@ -407,7 +530,7 @@ static void sip_fiq_debugger_uart_irq_tf_cb(unsigned long sp_el1,
 	__invoke_sip_fn_smc(SIP_UARTDBG_FN, 0, 0, UARTDBG_CFG_OSHDL_TO_OS);
 }
 
-int sip_fiq_debugger_uart_irq_tf_init(u32 irq_id, void *callback_fn)
+int sip_fiq_debugger_uart_irq_tf_init(u32 irq_id, sip_fiq_debugger_uart_irq_tf_cb_t callback_fn)
 {
 	struct arm_smccc_res res;
 
@@ -457,22 +580,33 @@ static ulong cpu_logical_map_mpidr(u32 cpu)
 {
 #ifdef MODULE
 	/* Empirically, local "cpu_logical_map()" for rockchip platforms */
-	ulong mpidr = 0x00;
+	ulong mpidr = read_cpuid_mpidr();
 
-	if (cpu < 4)
-		/* 0x00, 0x01, 0x02, 0x03 */
-		mpidr = cpu;
-	else if (cpu < 8)
-		/* 0x100, 0x101, 0x102, 0x103 */
-		mpidr = 0x100 | (cpu - 4);
-	else
-		pr_err("Unsupported map cpu: %d\n", cpu);
+	if (mpidr & MPIDR_MT_BITMASK) {
+		/* 0x100, 0x200, 0x300, 0x400 ... */
+		mpidr = (cpu & 0xff) << 8;
+	} else {
+		if (cpu < 4)
+			/* 0x00, 0x01, 0x02, 0x03 */
+			mpidr = cpu;
+		else if (cpu < 8)
+			/* 0x100, 0x101, 0x102, 0x103 */
+			mpidr = 0x100 | (cpu - 4);
+		else
+			pr_err("Unsupported map cpu: %d\n", cpu);
+	}
 
 	return mpidr;
 #else
 	return cpu_logical_map(cpu);
 #endif
 }
+
+ulong sip_cpu_logical_map_mpidr(u32 cpu)
+{
+	return cpu_logical_map_mpidr(cpu);
+}
+EXPORT_SYMBOL_GPL(sip_cpu_logical_map_mpidr);
 
 int sip_fiq_debugger_switch_cpu(u32 cpu)
 {
@@ -560,6 +694,58 @@ void sip_fiq_debugger_enable_fiq(bool enable, uint32_t tgt_cpu)
 }
 EXPORT_SYMBOL_GPL(sip_fiq_debugger_enable_fiq);
 
+int sip_fiq_control(u32 sub_func, u32 irq, unsigned long data)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(RK_SIP_FIQ_CTRL,
+				  sub_func, irq, data);
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_fiq_control);
+
+int sip_wdt_config(u32 sub_func, u32 arg1, u32 arg2, u32 arg3)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(SIP_WDT_CFG, sub_func, arg1, arg2, arg3,
+		      0, 0, 0, &res);
+
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_wdt_config);
+
+int sip_hdmirx_config(u32 sub_func, u32 arg1, u32 arg2, u32 arg3)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(SIP_HDMIRX_CFG, sub_func, arg1, arg2, arg3,
+		      0, 0, 0, &res);
+
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_hdmirx_config);
+
+int sip_hdcpkey_init(u32 hdcp_id)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(TRUSTED_OS_HDCPKEY_INIT, hdcp_id, 0, 0);
+
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_hdcpkey_init);
+
+int sip_smc_mcu_config(unsigned long mcu_id,
+		       unsigned long func,
+		       unsigned long arg2)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(SIP_MCU_CFG, mcu_id, func, arg2);
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(sip_smc_mcu_config);
 /******************************************************************************/
 #ifdef CONFIG_ARM
 static __init int sip_firmware_init(void)

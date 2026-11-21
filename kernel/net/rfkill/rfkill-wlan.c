@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012 ROCKCHIP, Inc.
+ * Copyright (C) 2012 Rockchip Electronics Co., Ltd.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -216,6 +216,7 @@ int rfkill_get_wifi_power_state(int *power)
 
 	return 0;
 }
+EXPORT_SYMBOL(rfkill_get_wifi_power_state);
 
 /**************************************************************************
  *
@@ -239,9 +240,6 @@ int rockchip_wifi_power(int on)
 		    __func__);
 		return -1;
 	}
-
-	if (!on && primary_sdio_host)
-		mmc_pwrseq_power_off(primary_sdio_host);
 
 	if (mrfkill->pdata->wifi_power_remain && power_set_time) {
 		LOG("%s: wifi power is setted to be remain on.", __func__);
@@ -271,12 +269,17 @@ int rockchip_wifi_power(int on)
 			regulator_set_voltage(ldo, 3000000, 3000000);
 			LOG("%s: %s enabled\n", __func__, ldostr);
 			ret = regulator_enable(ldo);
+			if (ret)
+				LOG("ldo enable failed\n");
 			wifi_power_state = 1;
 			LOG("wifi turn on power.\n");
 		} else {
 			LOG("%s: %s disabled\n", __func__, ldostr);
-			while (regulator_is_enabled(ldo) > 0)
+			while (regulator_is_enabled(ldo) > 0) {
 				ret = regulator_disable(ldo);
+				if (ret)
+					LOG("ldo disable failed\n");
+			}
 			wifi_power_state = 0;
 			LOG("wifi shut off power.\n");
 		}
@@ -342,10 +345,9 @@ EXPORT_SYMBOL(rockchip_wifi_power);
  * Wifi Sdio Detect Func
  *
  *************************************************************************/
-extern int mmc_host_rescan(struct mmc_host *host, int val, int irq_type);
 int rockchip_wifi_set_carddetect(int val)
 {
-	return mmc_host_rescan(NULL, val, 1);
+	return 0;
 }
 EXPORT_SYMBOL(rockchip_wifi_set_carddetect);
 
@@ -432,14 +434,14 @@ static int get_wifi_addr_vendor(unsigned char *addr)
 		LOG("%s: rk_vendor_read wifi mac address failed (%d)\n",
 		    __func__, ret);
 #ifdef CONFIG_WIFI_GENERATE_RANDOM_MAC_ADDR
-		random_ether_addr(addr);
+		eth_random_addr(addr);
 		LOG("%s: generate random wifi mac address: "
 		    "%02x:%02x:%02x:%02x:%02x:%02x\n",
 		    __func__, addr[0], addr[1], addr[2], addr[3], addr[4],
 		    addr[5]);
 		ret = rk_vendor_write(WIFI_MAC_ID, addr, 6);
 		if (ret != 0) {
-			LOG("%s: rk_vendor_write failed %d\n"
+			LOG("%s: rk_vendor_write failed %d\n",
 			    __func__, ret);
 			memset(addr, 0, 6);
 			return -1;
@@ -562,7 +564,8 @@ static int wlan_platdata_parse_dt(struct device *dev,
 		    __func__);
 		strcpy(wifi_chip_type_string, "rkwifi");
 	} else {
-		strcpy(wifi_chip_type_string, strings);
+		if (strings && strlen(strings) < 64)
+			strcpy(wifi_chip_type_string, strings);
 	}
 	LOG("%s: wifi_chip_type = %s\n", __func__, wifi_chip_type_string);
 
@@ -669,29 +672,6 @@ static int wlan_platdata_parse_dt(struct device *dev,
 		if (of_machine_is_compatible("rockchip,rk3308"))
 			regmap_write(data->grf, 0x0314, 0x00020002);
 	}
-	gpio = of_get_named_gpio_flags(node, "WIFI,m2e_dis1_n", 0,
-					       &flags);
-	if (gpio_is_valid(gpio)) {
-		data->poweron1.io = gpio;
-		data->poweron1.enable =
-			(flags == GPIO_ACTIVE_HIGH) ? 1 : 0;
-		LOG("%s: WIFI,m2e_dis1_n = %d flags = %d.\n",
-			 __func__, gpio, flags);
-	} else {
-		data->poweron1.io = -1;
-	}
-
-	gpio = of_get_named_gpio_flags(node, "WIFI,m2e_dis2_n", 0,
-					       &flags);
-	if (gpio_is_valid(gpio)) {
-		data->poweron2.io = gpio;
-		data->poweron2.enable =
-			(flags == GPIO_ACTIVE_HIGH) ? 1 : 0;
-		LOG("%s: WIFI,m2e_dis2_n = %d flags = %d.\n",
-			 __func__, gpio, flags);
-	} else {
-		data->poweron2.io = -1;
-	}
 
 	return 0;
 }
@@ -714,11 +694,11 @@ static void wlan_late_resume(struct early_suspend *h)
 	return;
 }
 
-struct early_suspend wlan_early_suspend {
-	.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN - 20;
-	.suspend = wlan_early_suspend;
-	.resume = wlan_late_resume;
-}
+static struct early_suspend wlan_early_suspend_handler = {
+	.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN - 20,
+	.suspend = wlan_early_suspend,
+	.resume = wlan_late_resume,
+};
 #endif
 
 static void
@@ -850,11 +830,9 @@ static int rfkill_wlan_probe(struct platform_device *pdev)
 
 	LOG("Enter %s\n", __func__);
 
-	class_register(&rkwifi_power);
-
 	if (!pdata) {
 #ifdef CONFIG_OF
-		pdata = kzalloc(sizeof(*pdata), GFP_KERNEL);
+		pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 		if (!pdata)
 			return -ENOMEM;
 
@@ -868,9 +846,9 @@ static int rfkill_wlan_probe(struct platform_device *pdev)
 #endif
 	}
 
-	rfkill = kzalloc(sizeof(*rfkill), GFP_KERNEL);
+	rfkill = devm_kzalloc(&pdev->dev, sizeof(*rfkill), GFP_KERNEL);
 	if (!rfkill)
-		goto rfkill_alloc_fail;
+		return -ENOMEM;
 
 	rfkill->pdata = pdata;
 	g_rfkill = rfkill;
@@ -881,17 +859,12 @@ static int rfkill_wlan_probe(struct platform_device *pdev)
 		ret = rfkill_rk_setup_gpio(&pdata->vbat_n, wlan_name,
 					   "wlan_vbat");
 		if (ret)
-			goto fail_alloc;
-
-		ret = rfkill_rk_setup_gpio(&pdata->power_n, wlan_name,
-					   "wlan_poweren");
-		if (ret)
-			goto fail_alloc;
+			goto fail_gpio;
 
 		ret = rfkill_rk_setup_gpio(&pdata->reset_n, wlan_name,
 					   "wlan_reset");
 		if (ret)
-			goto fail_alloc;
+			goto fail_gpio;
 	}
 
 	wake_lock_init(&rfkill->wlan_irq_wl, WAKE_LOCK_SUSPEND,
@@ -901,28 +874,8 @@ static int rfkill_wlan_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_SDIO_KEEPALIVE
 	if (gpio_is_valid(pdata->power_n.io) &&
-	    primary_sdio_host && primary_sdio_host->support_chip_alive)
 		gpio_direction_output(pdata->power_n.io, pdata->power_n.enable);
-#else
-	if (gpio_is_valid(pdata->power_n.io))
-		gpio_direction_output(pdata->power_n.io, !pdata->power_n.enable);
 #endif
-
-	ret = rfkill_rk_setup_gpio(&pdata->poweron1, wlan_name,
-					   "wlan_dis1_n");
-	if (ret)
-		goto fail_alloc;
-
-	ret = rfkill_rk_setup_gpio(&pdata->poweron2, wlan_name,
-					   "wlan_dis2_n");
-	if (ret)
-		goto fail_alloc;
-
-	if (gpio_is_valid(pdata->poweron1.io))
-		gpio_direction_output(pdata->poweron1.io, pdata->poweron1.enable);
-
-	if (gpio_is_valid(pdata->poweron2.io))
-		gpio_direction_output(pdata->poweron2.io, pdata->poweron2.enable);
 
 
 	if (pdata->wifi_power_remain)
@@ -933,7 +886,7 @@ static int rfkill_wlan_probe(struct platform_device *pdev)
 #endif
 
 #if defined(CONFIG_HAS_EARLYSUSPEND)
-	register_early_suspend(wlan_early_suspend);
+	register_early_suspend(&wlan_early_suspend_handler);
 #endif
 
 	fb_register_client(&rfkill_wlan_fb_notifier);
@@ -942,11 +895,7 @@ static int rfkill_wlan_probe(struct platform_device *pdev)
 
 	return 0;
 
-fail_alloc:
-	kfree(rfkill);
-rfkill_alloc_fail:
-	kfree(pdata);
-
+fail_gpio:
 	g_rfkill = NULL;
 
 	return ret;
@@ -954,7 +903,7 @@ rfkill_alloc_fail:
 
 static int rfkill_wlan_remove(struct platform_device *pdev)
 {
-	struct rfkill_wlan_data *rfkill = platform_get_drvdata(pdev);
+	struct rfkill_wlan_data *rfkill = g_rfkill;
 
 	LOG("Enter %s\n", __func__);
 
@@ -962,16 +911,27 @@ static int rfkill_wlan_remove(struct platform_device *pdev)
 
 	fb_unregister_client(&rfkill_wlan_fb_notifier);
 
+#if defined(CONFIG_HAS_EARLYSUSPEND)
+	unregister_early_suspend(&wlan_early_suspend_handler);
+#endif
+
 	if (gpio_is_valid(rfkill->pdata->power_n.io))
 		gpio_free(rfkill->pdata->power_n.io);
 
 	if (gpio_is_valid(rfkill->pdata->reset_n.io))
 		gpio_free(rfkill->pdata->reset_n.io);
 
-	kfree(rfkill);
 	g_rfkill = NULL;
 
 	return 0;
+}
+
+static void rfkill_wlan_shutdown(struct platform_device *pdev)
+{
+	LOG("Enter %s\n", __func__);
+
+	rockchip_wifi_power(0);
+	rfkill_set_wifi_bt_power(0);
 }
 
 static int rfkill_wlan_suspend(struct platform_device *pdev, pm_message_t state)
@@ -997,24 +957,29 @@ MODULE_DEVICE_TABLE(of, wlan_platdata_of_match);
 static struct platform_driver rfkill_wlan_driver = {
 	.probe = rfkill_wlan_probe,
 	.remove = rfkill_wlan_remove,
-    .suspend = rfkill_wlan_suspend,
-    .resume = rfkill_wlan_resume,
+	.shutdown = rfkill_wlan_shutdown,
+	.suspend = rfkill_wlan_suspend,
+	.resume = rfkill_wlan_resume,
 	.driver = {
 		.name = "wlan-platdata",
 		.owner = THIS_MODULE,
-        .of_match_table = of_match_ptr(wlan_platdata_of_match),
+		.of_match_table = of_match_ptr(wlan_platdata_of_match),
 	},
 };
 
 int __init rfkill_wlan_init(void)
 {
 	LOG("Enter %s\n", __func__);
+
+	class_register(&rkwifi_power);
 	return platform_driver_register(&rfkill_wlan_driver);
 }
 
 void __exit rfkill_wlan_exit(void)
 {
 	LOG("Enter %s\n", __func__);
+
+	class_unregister(&rkwifi_power);
 	platform_driver_unregister(&rfkill_wlan_driver);
 }
 

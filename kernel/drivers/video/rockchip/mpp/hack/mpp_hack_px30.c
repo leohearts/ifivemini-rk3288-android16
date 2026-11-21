@@ -19,6 +19,7 @@
 #include "../mpp_common.h"
 #include "../mpp_iommu.h"
 #include "mpp_hack_px30.h"
+#include <soc/rockchip/rockchip_iommu.h>
 
 #define RK_MMU_DTE_ADDR			0x00 /* Directory table address */
 #define RK_MMU_STATUS			0x04
@@ -175,9 +176,23 @@ int px30_workaround_combo_init(struct mpp_dev *mpp)
 			iommu->mmu_num++;
 		}
 		iommu->grf_val = mpp->grf_info->val & MPP_GRF_VAL_MASK;
+		/*
+		 * switch grf ctrl bit to ensure working in current hardware
+		 */
+		mpp_set_grf(mpp->grf_info);
 		if (mpp->hw_ops->clk_on)
 			mpp->hw_ops->clk_on(mpp);
-		iommu->dte_addr =  mpp_iommu_get_dte_addr(iommu);
+		/*
+		 * ensure that iommu is enable, so that read valid dte value
+		 */
+		if (rockchip_iommu_is_enabled(mpp->dev))
+			iommu->dte_addr = mpp_iommu_get_dte_addr(iommu);
+		else {
+			rockchip_iommu_enable(mpp->dev);
+			iommu->dte_addr = mpp_iommu_get_dte_addr(iommu);
+			rockchip_iommu_disable(mpp->dev);
+		}
+		dev_err(mpp->dev, "%s dte_addr %08x\n", __func__, iommu->dte_addr);
 		if (mpp->hw_ops->clk_off)
 			mpp->hw_ops->clk_off(mpp);
 		INIT_LIST_HEAD(&iommu->link);

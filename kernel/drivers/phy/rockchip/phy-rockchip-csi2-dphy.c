@@ -14,6 +14,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 #include <media/media-entity.h>
@@ -21,7 +22,20 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 #include <media/v4l2-device.h>
+#include <linux/phy/phy.h>
 #include "phy-rockchip-csi2-dphy-common.h"
+#include "phy-rockchip-samsung-dcphy.h"
+
+static struct rkmodule_csi_dphy_param rk3588_dcphy_param = {
+	.vendor = PHY_VENDOR_SAMSUNG,
+	.lp_vol_ref = 3,
+	.lp_hys_sw = {3, 0, 0, 0},
+	.lp_escclk_pol_sel = {1, 0, 0, 0},
+	.skew_data_cal_clk = {0, 3, 3, 3},
+	.clk_hs_term_sel = 2,
+	.data_hs_term_sel = {2, 2, 2, 2},
+	.reserved = {0},
+};
 
 struct sensor_async_subdev {
 	struct v4l2_async_subdev asd;
@@ -29,7 +43,6 @@ struct sensor_async_subdev {
 	int lanes;
 };
 
-static DEFINE_MUTEX(csi2dphy_dev_mutex);
 static LIST_HEAD(csi2dphy_device_list);
 
 static inline struct csi2_dphy *to_csi2_dphy(struct v4l2_subdev *subdev)
@@ -41,15 +54,18 @@ static struct v4l2_subdev *get_remote_sensor(struct v4l2_subdev *sd)
 {
 	struct media_pad *local, *remote;
 	struct media_entity *sensor_me;
+	struct csi2_dphy *dphy = to_csi2_dphy(sd);
 
+	if (dphy->num_sensors == 0)
+		return NULL;
 	local = &sd->entity.pads[CSI2_DPHY_RX_PAD_SINK];
-	remote = media_entity_remote_pad(local);
+	remote = media_pad_remote_pad_first(local);
 	if (!remote) {
 		v4l2_warn(sd, "No link between dphy and sensor\n");
 		return NULL;
 	}
 
-	sensor_me = media_entity_remote_pad(local)->entity;
+	sensor_me = media_pad_remote_pad_first(local)->entity;
 	return media_entity_to_v4l2_subdev(sensor_me);
 }
 
@@ -71,7 +87,10 @@ static int csi2_dphy_get_sensor_data_rate(struct v4l2_subdev *sd)
 	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
 	struct v4l2_ctrl *link_freq;
 	struct v4l2_querymenu qm = { .id = V4L2_CID_LINK_FREQ, };
-	int ret;
+	int ret = 0;
+
+	if (!sensor_sd)
+		return -ENODEV;
 
 	link_freq = v4l2_ctrl_find(sensor_sd->ctrl_handler, V4L2_CID_LINK_FREQ);
 	if (!link_freq) {
@@ -97,56 +116,435 @@ static int csi2_dphy_get_sensor_data_rate(struct v4l2_subdev *sd)
 	return 0;
 }
 
-static int csi2_dphy_update_sensor_mbus(struct v4l2_subdev *sd)
+static int rockchip_csi2_dphy_attach_hw(struct csi2_dphy *dphy, int csi_idx, int index)
 {
-	struct csi2_dphy *dphy = to_csi2_dphy(sd);
-	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
-	struct csi2_sensor *sensor = sd_to_sensor(dphy, sensor_sd);
-	struct v4l2_mbus_config mbus;
-	int ret;
+	struct csi2_dphy_hw *dphy_hw;
+	struct samsung_mipi_dcphy *dcphy_hw;
+	struct v4l2_subdev *sensor_sd = get_remote_sensor(&dphy->sd);
+	struct csi2_sensor *sensor = NULL;
+	int lanes = 2;
 
-	ret = v4l2_subdev_call(sensor_sd, video, g_mbus_config, &mbus);
-	if (ret)
-		return ret;
+	if (sensor_sd) {
+		sensor = sd_to_sensor(dphy, sensor_sd);
+		lanes = sensor->lanes;
+	}
 
-	sensor->mbus = mbus;
-	switch (mbus.flags & V4L2_MBUS_CSI2_LANES) {
-	case V4L2_MBUS_CSI2_1_LANE:
-		sensor->lanes = 1;
-		break;
-	case V4L2_MBUS_CSI2_2_LANE:
-		sensor->lanes = 2;
-		break;
-	case V4L2_MBUS_CSI2_3_LANE:
-		sensor->lanes = 3;
-		break;
-	case V4L2_MBUS_CSI2_4_LANE:
-		sensor->lanes = 4;
-		break;
-	default:
+	if (dphy->drv_data->chip_id == CHIP_ID_RK3568 ||
+	    dphy->drv_data->chip_id == CHIP_ID_RV1106) {
+		dphy_hw = dphy->dphy_hw_group[0];
+		mutex_lock(&dphy_hw->mutex);
+		dphy_hw->dphy_dev[dphy_hw->dphy_dev_num] = dphy;
+		dphy_hw->dphy_dev_num++;
+		switch (dphy->phy_index) {
+		case 0:
+			dphy->lane_mode = PHY_FULL_MODE;
+			dphy_hw->lane_mode = LANE_MODE_FULL;
+			break;
+		case 1:
+			dphy->lane_mode = PHY_SPLIT_01;
+			dphy_hw->lane_mode = LANE_MODE_SPLIT;
+			break;
+		case 2:
+			dphy->lane_mode = PHY_SPLIT_23;
+			dphy_hw->lane_mode = LANE_MODE_SPLIT;
+			break;
+		default:
+			dphy->lane_mode = PHY_FULL_MODE;
+			dphy_hw->lane_mode = LANE_MODE_FULL;
+			break;
+		}
+		dphy->dphy_hw = dphy_hw;
+		dphy->phy_hw[index] = (void *)dphy_hw;
+		dphy->csi_info.dphy_vendor[index] = PHY_VENDOR_INNO;
+		mutex_unlock(&dphy_hw->mutex);
+	} else if (dphy->drv_data->chip_id == CHIP_ID_RK3588) {
+		if (csi_idx < 2) {
+			dcphy_hw = dphy->samsung_phy_group[csi_idx];
+			mutex_lock(&dcphy_hw->mutex);
+			dcphy_hw->dphy_dev[dcphy_hw->dphy_dev_num] = dphy;
+			dcphy_hw->dphy_dev_num++;
+			mutex_unlock(&dcphy_hw->mutex);
+			dphy->samsung_phy = dcphy_hw;
+			dphy->phy_hw[index] = (void *)dcphy_hw;
+			dphy->dphy_param = rk3588_dcphy_param;
+			dphy->csi_info.dphy_vendor[index] = PHY_VENDOR_SAMSUNG;
+		} else {
+			dphy_hw = dphy->dphy_hw_group[(csi_idx - 2) / 2];
+			mutex_lock(&dphy_hw->mutex);
+			if (csi_idx == 2 || csi_idx == 4) {
+				if (lanes == 4) {
+					dphy->lane_mode = PHY_FULL_MODE;
+					dphy_hw->lane_mode = LANE_MODE_FULL;
+					if (csi_idx == 2)
+						dphy->phy_index = 0;
+					else
+						dphy->phy_index = 3;
+				} else {
+					dphy->lane_mode = PHY_SPLIT_01;
+					dphy_hw->lane_mode = LANE_MODE_SPLIT;
+					if (csi_idx == 2)
+						dphy->phy_index = 1;
+					else
+						dphy->phy_index = 4;
+				}
+			} else if (csi_idx == 3 || csi_idx == 5) {
+				if (lanes == 4) {
+					dev_info(dphy->dev, "%s csi host%d only support PHY_SPLIT_23\n",
+						 __func__, csi_idx);
+					mutex_unlock(&dphy_hw->mutex);
+					return -EINVAL;
+				}
+				dphy->lane_mode = PHY_SPLIT_23;
+				dphy_hw->lane_mode = LANE_MODE_SPLIT;
+				if (csi_idx == 3)
+					dphy->phy_index = 2;
+				else
+					dphy->phy_index = 5;
+			}
+			dphy_hw->dphy_dev[dphy_hw->dphy_dev_num] = dphy;
+			dphy_hw->dphy_dev_num++;
+			dphy->dphy_hw = dphy_hw;
+			dphy->phy_hw[index] = (void *)dphy_hw;
+			dphy->csi_info.dphy_vendor[index] = PHY_VENDOR_INNO;
+			mutex_unlock(&dphy_hw->mutex);
+		}
+	} else if (dphy->drv_data->chip_id == CHIP_ID_RK3562 ||
+		   dphy->drv_data->chip_id == CHIP_ID_RV1126B) {
+		dphy_hw = dphy->dphy_hw_group[csi_idx / 2];
+		mutex_lock(&dphy_hw->mutex);
+		if (csi_idx == 0 || csi_idx == 2) {
+			if (lanes == 4) {
+				dphy->lane_mode = PHY_FULL_MODE;
+				dphy_hw->lane_mode = LANE_MODE_FULL;
+				if (csi_idx == 0)
+					dphy->phy_index = 0;
+				else
+					dphy->phy_index = 3;
+			} else {
+				dphy->lane_mode = PHY_SPLIT_01;
+				dphy_hw->lane_mode = LANE_MODE_SPLIT;
+				if (csi_idx == 0)
+					dphy->phy_index = 1;
+				else
+					dphy->phy_index = 4;
+			}
+		} else if (csi_idx == 1 || csi_idx == 3) {
+			if (lanes == 4) {
+				dev_info(dphy->dev, "%s csi host%d only support PHY_SPLIT_23\n",
+					 __func__, csi_idx);
+				mutex_unlock(&dphy_hw->mutex);
+				return -EINVAL;
+			}
+			dphy->lane_mode = PHY_SPLIT_23;
+			dphy_hw->lane_mode = LANE_MODE_SPLIT;
+			if (csi_idx == 1)
+				dphy->phy_index = 2;
+			else
+				dphy->phy_index = 5;
+		} else {
+			dev_info(dphy->dev, "%s error csi host%d\n",
+				 __func__, csi_idx);
+			mutex_unlock(&dphy_hw->mutex);
+			return -EINVAL;
+		}
+		dphy_hw->dphy_dev[dphy_hw->dphy_dev_num] = dphy;
+		dphy_hw->dphy_dev_num++;
+		dphy->phy_hw[index] = (void *)dphy_hw;
+		dphy->csi_info.dphy_vendor[index] = PHY_VENDOR_INNO;
+		mutex_unlock(&dphy_hw->mutex);
+	} else if (dphy->drv_data->chip_id == CHIP_ID_RK3576) {
+		if (csi_idx < 1) {
+			dcphy_hw = dphy->samsung_phy_group[csi_idx];
+			mutex_lock(&dcphy_hw->mutex);
+			dcphy_hw->dphy_dev[dcphy_hw->dphy_dev_num] = dphy;
+			dcphy_hw->dphy_dev_num++;
+			mutex_unlock(&dcphy_hw->mutex);
+			dphy->samsung_phy = dcphy_hw;
+			dphy->phy_hw[index] = (void *)dcphy_hw;
+			dphy->dphy_param = rk3588_dcphy_param;
+			dphy->csi_info.dphy_vendor[index] = PHY_VENDOR_SAMSUNG;
+		} else {
+			dphy_hw = dphy->dphy_hw_group[(csi_idx - 1) / 2];
+			mutex_lock(&dphy_hw->mutex);
+			if (csi_idx == 1 || csi_idx == 3) {
+				if (lanes == 4) {
+					dphy->lane_mode = PHY_FULL_MODE;
+					dphy_hw->lane_mode = LANE_MODE_FULL;
+					if (csi_idx == 1)
+						dphy->phy_index = 0;
+					else
+						dphy->phy_index = 3;
+				} else {
+					dphy->lane_mode = PHY_SPLIT_01;
+					dphy_hw->lane_mode = LANE_MODE_SPLIT;
+					if (csi_idx == 1)
+						dphy->phy_index = 1;
+					else
+						dphy->phy_index = 4;
+				}
+			} else if (csi_idx == 2 || csi_idx == 4) {
+				if (lanes == 4) {
+					dev_info(dphy->dev, "%s csi host%d only support PHY_SPLIT_23\n",
+						 __func__, csi_idx);
+					mutex_unlock(&dphy_hw->mutex);
+					return -EINVAL;
+				}
+				dphy->lane_mode = PHY_SPLIT_23;
+				dphy_hw->lane_mode = LANE_MODE_SPLIT;
+				if (csi_idx == 2)
+					dphy->phy_index = 2;
+				else
+					dphy->phy_index = 5;
+			}
+			dphy_hw->dphy_dev[dphy_hw->dphy_dev_num] = dphy;
+			dphy_hw->dphy_dev_num++;
+			dphy->dphy_hw = dphy_hw;
+			dphy->phy_hw[index] = (void *)dphy_hw;
+			dphy->csi_info.dphy_vendor[index] = PHY_VENDOR_INNO;
+			mutex_unlock(&dphy_hw->mutex);
+		}
+	} else {
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
+static void rockchip_csi2_samsung_phy_remove_dphy_dev(struct csi2_dphy *dphy,
+						   struct samsung_mipi_dcphy *dcphy_hw)
+{
+	int i = 0;
+	bool is_find_dev = false;
+	struct csi2_dphy *csi2_dphy = NULL;
+
+	for (i = 0; i < dcphy_hw->dphy_dev_num; i++) {
+		csi2_dphy = dcphy_hw->dphy_dev[i];
+		if (csi2_dphy &&
+		    csi2_dphy->phy_index == dphy->phy_index)
+			is_find_dev = true;
+		if (is_find_dev) {
+			if (i < dcphy_hw->dphy_dev_num - 1)
+				dcphy_hw->dphy_dev[i] = dcphy_hw->dphy_dev[i + 1];
+			else
+				dcphy_hw->dphy_dev[i] = NULL;
+		}
+	}
+	if (is_find_dev)
+		dcphy_hw->dphy_dev_num--;
+}
+
+static void rockchip_csi2_inno_phy_remove_dphy_dev(struct csi2_dphy *dphy,
+						   struct csi2_dphy_hw *dphy_hw)
+{
+	int i = 0;
+	bool is_find_dev = false;
+	struct csi2_dphy *csi2_dphy = NULL;
+
+	for (i = 0; i < dphy_hw->dphy_dev_num; i++) {
+		csi2_dphy = dphy_hw->dphy_dev[i];
+		if (csi2_dphy &&
+		    csi2_dphy->phy_index == dphy->phy_index)
+			is_find_dev = true;
+		if (is_find_dev) {
+			if (i < dphy_hw->dphy_dev_num - 1)
+				dphy_hw->dphy_dev[i] = dphy_hw->dphy_dev[i + 1];
+			else
+				dphy_hw->dphy_dev[i] = NULL;
+		}
+	}
+	if (is_find_dev)
+		dphy_hw->dphy_dev_num--;
+}
+
+static int rockchip_csi2_dphy_detach_hw(struct csi2_dphy *dphy, int csi_idx, int index)
+{
+	struct csi2_dphy_hw *dphy_hw = NULL;
+	struct samsung_mipi_dcphy *dcphy_hw = NULL;
+
+	if (dphy->drv_data->chip_id == CHIP_ID_RK3568 ||
+	    dphy->drv_data->chip_id == CHIP_ID_RV1106) {
+		dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[index];
+		if (!dphy_hw) {
+			dev_err(dphy->dev, "%s csi_idx %d detach hw failed\n",
+				__func__, csi_idx);
+			return -EINVAL;
+		}
+		mutex_lock(&dphy_hw->mutex);
+		rockchip_csi2_inno_phy_remove_dphy_dev(dphy, dphy_hw);
+		mutex_unlock(&dphy_hw->mutex);
+	} else if (dphy->drv_data->chip_id == CHIP_ID_RK3588) {
+		if (csi_idx < 2) {
+			dcphy_hw = (struct samsung_mipi_dcphy *)dphy->phy_hw[index];
+			if (!dcphy_hw) {
+				dev_err(dphy->dev, "%s csi_idx %d detach hw failed\n",
+					__func__, csi_idx);
+				return -EINVAL;
+			}
+			mutex_lock(&dcphy_hw->mutex);
+			rockchip_csi2_samsung_phy_remove_dphy_dev(dphy, dcphy_hw);
+			mutex_unlock(&dcphy_hw->mutex);
+		} else {
+			dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[index];
+			if (!dphy_hw) {
+				dev_err(dphy->dev, "%s csi_idx %d detach hw failed\n",
+					__func__, csi_idx);
+				return -EINVAL;
+			}
+			mutex_lock(&dphy_hw->mutex);
+			rockchip_csi2_inno_phy_remove_dphy_dev(dphy, dphy_hw);
+			mutex_unlock(&dphy_hw->mutex);
+		}
+	} else if (dphy->drv_data->chip_id == CHIP_ID_RK3562 ||
+		   dphy->drv_data->chip_id == CHIP_ID_RV1126B) {
+		dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[index];
+		if (!dphy_hw) {
+			dev_err(dphy->dev, "%s csi_idx %d detach hw failed\n",
+				__func__, csi_idx);
+			return -EINVAL;
+		}
+		mutex_lock(&dphy_hw->mutex);
+		rockchip_csi2_inno_phy_remove_dphy_dev(dphy, dphy_hw);
+		mutex_unlock(&dphy_hw->mutex);
+	} else if (dphy->drv_data->chip_id == CHIP_ID_RK3576) {
+		if (csi_idx < 1) {
+			dcphy_hw = (struct samsung_mipi_dcphy *)dphy->phy_hw[index];
+			if (!dcphy_hw) {
+				dev_err(dphy->dev, "%s csi_idx %d detach hw failed\n",
+					__func__, csi_idx);
+				return -EINVAL;
+			}
+			mutex_lock(&dcphy_hw->mutex);
+			rockchip_csi2_samsung_phy_remove_dphy_dev(dphy, dcphy_hw);
+			mutex_unlock(&dcphy_hw->mutex);
+		} else {
+			dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[index];
+			if (!dphy_hw) {
+				dev_err(dphy->dev, "%s csi_idx %d detach hw failed\n",
+					__func__, csi_idx);
+				return -EINVAL;
+			}
+			mutex_lock(&dphy_hw->mutex);
+			rockchip_csi2_inno_phy_remove_dphy_dev(dphy, dphy_hw);
+			mutex_unlock(&dphy_hw->mutex);
+		}
+	} else {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int csi2_dphy_update_sensor_mbus(struct v4l2_subdev *sd)
+{
+	struct csi2_dphy *dphy = to_csi2_dphy(sd);
+	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
+	struct csi2_sensor *sensor;
+	struct v4l2_mbus_config mbus;
+	int ret = 0;
+
+	if (!sensor_sd)
+		return -ENODEV;
+	sensor = sd_to_sensor(dphy, sensor_sd);
+	if (!sensor)
+		return -ENODEV;
+
+	ret = v4l2_subdev_call(sensor_sd, pad, get_mbus_config, 0, &mbus);
+	if (ret) {
+		dev_err(dphy->dev, "%s get_mbus_config fail, pls check it\n",
+			sensor_sd->name);
+		return ret;
+	}
+
+	sensor->mbus = mbus;
+
+	if (mbus.type == V4L2_MBUS_CSI2_DPHY ||
+	    mbus.type == V4L2_MBUS_CSI2_CPHY)
+		sensor->lanes = mbus.bus.mipi_csi2.num_data_lanes;
+	else if (mbus.type == V4L2_MBUS_CCP2)
+		sensor->lanes = mbus.bus.mipi_csi1.data_lane;
+
+	return 0;
+}
+
+static int csi2_dphy_update_config(struct v4l2_subdev *sd)
+{
+	struct csi2_dphy *dphy = to_csi2_dphy(sd);
+	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
+	struct rkmodule_csi_dphy_param dphy_param;
+	struct rkmodule_bus_config bus_config;
+	int csi_idx = 0;
+	int ret = 0;
+	int i = 0;
+
+	for (i = 0; i < dphy->csi_info.csi_num; i++) {
+		if (dphy->drv_data->chip_id != CHIP_ID_RK3568 &&
+		    dphy->drv_data->chip_id != CHIP_ID_RV1106) {
+			csi_idx = dphy->csi_info.csi_idx[i];
+			rockchip_csi2_dphy_attach_hw(dphy, csi_idx, i);
+		}
+		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_INNO) {
+			ret = v4l2_subdev_call(sensor_sd, core, ioctl,
+					       RKMODULE_GET_BUS_CONFIG, &bus_config);
+			if (!ret) {
+				dev_info(dphy->dev, "phy_mode %d,lane %d\n",
+					bus_config.bus.phy_mode, bus_config.bus.lanes);
+				if (bus_config.bus.phy_mode == PHY_FULL_MODE) {
+					if (dphy->phy_index % 3 == 2) {
+						dev_err(dphy->dev, "%s dphy%d only use for PHY_SPLIT_23\n",
+							__func__, dphy->phy_index);
+						return -EINVAL;
+					}
+					dphy->lane_mode = PHY_FULL_MODE;
+					dphy->dphy_hw->lane_mode = LANE_MODE_FULL;
+				} else if (bus_config.bus.phy_mode == PHY_SPLIT_01) {
+					if (dphy->phy_index % 3 == 2) {
+						dev_err(dphy->dev, "%s dphy%d only use for PHY_SPLIT_23\n",
+							__func__, dphy->phy_index);
+						return -EINVAL;
+					}
+					dphy->lane_mode = PHY_SPLIT_01;
+					dphy->dphy_hw->lane_mode = LANE_MODE_SPLIT;
+				} else if (bus_config.bus.phy_mode == PHY_SPLIT_23) {
+					if (dphy->phy_index % 3 != 2) {
+						dev_err(dphy->dev, "%s dphy%d not support PHY_SPLIT_23\n",
+							__func__, dphy->phy_index);
+						return -EINVAL;
+					}
+					dphy->lane_mode = PHY_SPLIT_23;
+					dphy->dphy_hw->lane_mode = LANE_MODE_SPLIT;
+				}
+			}
+		}
+	}
+	ret = v4l2_subdev_call(sensor_sd, core, ioctl,
+			       RKMODULE_GET_CSI_DPHY_PARAM,
+			       &dphy_param);
+	if (!ret)
+		dphy->dphy_param = dphy_param;
+	return 0;
+}
+
 static int csi2_dphy_s_stream_start(struct v4l2_subdev *sd)
 {
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
-	struct csi2_dphy_hw *hw = dphy->dphy_hw;
-	int  ret = 0;
+	int i = 0;
+	int ret = 0;
 
-	if (dphy->is_streaming)
-		return 0;
-
-	ret = csi2_dphy_get_sensor_data_rate(sd);
+	ret = csi2_dphy_update_sensor_mbus(sd);
 	if (ret < 0)
 		return ret;
 
-	csi2_dphy_update_sensor_mbus(sd);
-
-	if (hw->stream_on)
-		hw->stream_on(dphy, sd);
+	for (i = 0; i < dphy->csi_info.csi_num; i++) {
+		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
+			dphy->samsung_phy = (struct samsung_mipi_dcphy *)dphy->phy_hw[i];
+			if (dphy->samsung_phy && dphy->samsung_phy->stream_on)
+				dphy->samsung_phy->stream_on(dphy, sd);
+		} else {
+			dphy->dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
+			if (dphy->dphy_hw && dphy->dphy_hw->stream_on)
+				dphy->dphy_hw->stream_on(dphy, sd);
+		}
+	}
 
 	dphy->is_streaming = true;
 
@@ -156,13 +554,22 @@ static int csi2_dphy_s_stream_start(struct v4l2_subdev *sd)
 static int csi2_dphy_s_stream_stop(struct v4l2_subdev *sd)
 {
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
-	struct csi2_dphy_hw *hw = dphy->dphy_hw;
+	int i = 0;
 
-	if (!dphy->is_streaming)
-		return 0;
-
-	if (hw->stream_off)
-		hw->stream_off(dphy, sd);
+	for (i = 0; i < dphy->csi_info.csi_num; i++) {
+		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
+			dphy->samsung_phy = (struct samsung_mipi_dcphy *)dphy->phy_hw[i];
+			if (dphy->samsung_phy && dphy->samsung_phy->stream_off)
+				dphy->samsung_phy->stream_off(dphy, sd);
+		} else {
+			dphy->dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
+			if (dphy->dphy_hw && dphy->dphy_hw->stream_off)
+				dphy->dphy_hw->stream_off(dphy, sd);
+		}
+		if (dphy->drv_data->chip_id != CHIP_ID_RK3568 &&
+		    dphy->drv_data->chip_id != CHIP_ID_RV1106)
+			rockchip_csi2_dphy_detach_hw(dphy, dphy->csi_info.csi_idx[i], i);
+	}
 
 	dphy->is_streaming = false;
 
@@ -172,20 +579,94 @@ static int csi2_dphy_s_stream_stop(struct v4l2_subdev *sd)
 	return 0;
 }
 
+static int csi2_dphy_enable_clk(struct csi2_dphy *dphy)
+{
+	struct csi2_dphy_hw *hw = NULL;
+	struct samsung_mipi_dcphy *samsung_phy = NULL;
+	int ret;
+	int i = 0;
+
+	for (i = 0; i < dphy->csi_info.csi_num; i++) {
+		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
+			samsung_phy = (struct samsung_mipi_dcphy *)dphy->phy_hw[i];
+			if (samsung_phy)
+				pm_runtime_get_sync(samsung_phy->dev);
+		} else {
+			hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
+			if (hw) {
+				ret = clk_bulk_prepare_enable(hw->num_clks, hw->clks_bulk);
+				if (ret) {
+					dev_err(hw->dev, "failed to enable clks\n");
+					return ret;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+static void csi2_dphy_disable_clk(struct csi2_dphy *dphy)
+{
+	struct csi2_dphy_hw *hw = NULL;
+	struct samsung_mipi_dcphy *samsung_phy = NULL;
+	int i = 0;
+
+	for (i = 0; i < dphy->csi_info.csi_num; i++) {
+		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
+			samsung_phy = (struct samsung_mipi_dcphy *)dphy->phy_hw[i];
+			if (samsung_phy)
+				pm_runtime_put(samsung_phy->dev);
+		} else {
+			hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
+			if (hw)
+				clk_bulk_disable_unprepare(hw->num_clks, hw->clks_bulk);
+		}
+	}
+}
+
 static int csi2_dphy_s_stream(struct v4l2_subdev *sd, int on)
 {
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
 	int ret = 0;
 
 	mutex_lock(&dphy->mutex);
-	if (on)
+	if (on) {
+		if (dphy->is_streaming) {
+			mutex_unlock(&dphy->mutex);
+			return 0;
+		}
+
+		ret = csi2_dphy_get_sensor_data_rate(sd);
+		if (ret < 0) {
+			mutex_unlock(&dphy->mutex);
+			return ret;
+		}
+
+		csi2_dphy_update_sensor_mbus(sd);
+		ret = csi2_dphy_update_config(sd);
+		if (ret < 0) {
+			mutex_unlock(&dphy->mutex);
+			return ret;
+		}
+
+		ret = csi2_dphy_enable_clk(dphy);
+		if (ret) {
+			mutex_unlock(&dphy->mutex);
+			return ret;
+		}
 		ret = csi2_dphy_s_stream_start(sd);
-	else
+	} else {
+		if (!dphy->is_streaming) {
+			mutex_unlock(&dphy->mutex);
+			return 0;
+		}
 		ret = csi2_dphy_s_stream_stop(sd);
+		csi2_dphy_disable_clk(dphy);
+	}
 	mutex_unlock(&dphy->mutex);
 
-	dev_info(dphy->dev, "%s stream on:%d, dphy%d\n",
-		 __func__, on, dphy->phy_index);
+	dev_info(dphy->dev, "%s stream on:%d, dphy%d, ret %d\n",
+		 __func__, on, dphy->phy_index, ret);
 
 	return ret;
 }
@@ -202,19 +683,23 @@ static int csi2_dphy_g_frame_interval(struct v4l2_subdev *sd,
 }
 
 static int csi2_dphy_g_mbus_config(struct v4l2_subdev *sd,
-				  struct v4l2_mbus_config *config)
+				   unsigned int pad_id,
+				   struct v4l2_mbus_config *config)
 {
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
 	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
 	struct csi2_sensor *sensor;
+	int ret = 0;
 
 	if (!sensor_sd)
 		return -ENODEV;
 	sensor = sd_to_sensor(dphy, sensor_sd);
-	csi2_dphy_update_sensor_mbus(sd);
+	if (!sensor)
+		return -ENODEV;
+	ret = csi2_dphy_update_sensor_mbus(sd);
 	*config = sensor->mbus;
 
-	return 0;
+	return ret;
 }
 
 static int csi2_dphy_s_power(struct v4l2_subdev *sd, int on)
@@ -232,41 +717,28 @@ static __maybe_unused int csi2_dphy_runtime_suspend(struct device *dev)
 	struct media_entity *me = dev_get_drvdata(dev);
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(me);
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
-	struct csi2_dphy_hw *hw = dphy->dphy_hw;
 
-	if (hw)
-		clk_bulk_disable_unprepare(hw->num_clks, hw->clks);
+	if (dphy->is_streaming) {
+		csi2_dphy_s_stream(sd, 0);
+		dphy->is_streaming = false;
+	}
 
 	return 0;
 }
 
 static __maybe_unused int csi2_dphy_runtime_resume(struct device *dev)
 {
-	struct media_entity *me = dev_get_drvdata(dev);
-	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(me);
-	struct csi2_dphy *dphy = to_csi2_dphy(sd);
-	struct csi2_dphy_hw *hw = dphy->dphy_hw;
-	int ret;
-
-	if (hw) {
-		ret = clk_bulk_prepare_enable(hw->num_clks, hw->clks);
-		if (ret) {
-			dev_err(hw->dev, "failed to enable clks\n");
-			return ret;
-		}
-	}
-
 	return 0;
 }
 
 /* dphy accepts all fmt/size from sensor */
 static int csi2_dphy_get_set_fmt(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_format *fmt)
 {
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
 	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
-	struct csi2_sensor *sensor = sd_to_sensor(dphy, sensor_sd);
+	struct csi2_sensor *sensor;
 	int ret;
 	/*
 	 * Do not allow format changes and just relay whatever
@@ -274,14 +746,19 @@ static int csi2_dphy_get_set_fmt(struct v4l2_subdev *sd,
 	 */
 	if (!sensor_sd)
 		return -ENODEV;
+	sensor = sd_to_sensor(dphy, sensor_sd);
+	if (!sensor)
+		return -ENODEV;
+	fmt->pad = 0;
+	fmt->which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	ret = v4l2_subdev_call(sensor_sd, pad, get_fmt, NULL, fmt);
-	if (!ret && fmt->pad == 0)
+	if (!ret && fmt->pad == 0 && fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE)
 		sensor->format = fmt->format;
 	return ret;
 }
 
 static int csi2_dphy_get_selection(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_selection *sel)
 {
 	struct v4l2_subdev *sensor = get_remote_sensor(sd);
@@ -289,13 +766,79 @@ static int csi2_dphy_get_selection(struct v4l2_subdev *sd,
 	return v4l2_subdev_call(sensor, pad, get_selection, NULL, sel);
 }
 
+static long rkcif_csi2_dphy_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct csi2_dphy *dphy = to_csi2_dphy(sd);
+	long ret = 0;
+	int i = 0;
+	int on = 0;
+
+	switch (cmd) {
+	case RKCIF_CMD_SET_CSI_IDX:
+		if (dphy->drv_data->chip_id != CHIP_ID_RK3568 &&
+		    dphy->drv_data->chip_id != CHIP_ID_RV1106)
+			dphy->csi_info = *((struct rkcif_csi_info *)arg);
+		break;
+	case RKMODULE_SET_QUICK_STREAM:
+		for (i = 0; i < dphy->csi_info.csi_num; i++) {
+			if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_INNO) {
+				dphy->dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
+				if (!dphy->dphy_hw ||
+				    !dphy->dphy_hw->quick_stream_off ||
+				    !dphy->dphy_hw->quick_stream_on) {
+					ret = -EINVAL;
+					break;
+				}
+				on = *(int *)arg;
+				if (on)
+					dphy->dphy_hw->quick_stream_on(dphy, sd);
+				else
+					dphy->dphy_hw->quick_stream_off(dphy, sd);
+			}
+		}
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long rkcif_csi2_dphy_compat_ioctl32(struct v4l2_subdev *sd,
+				      unsigned int cmd, unsigned long arg)
+{
+	void __user *up = compat_ptr(arg);
+	struct rkcif_csi_info csi_info = {0};
+	long ret;
+
+	switch (cmd) {
+	case RKCIF_CMD_SET_CSI_IDX:
+		if (copy_from_user(&csi_info, up, sizeof(struct rkcif_csi_info)))
+			return -EFAULT;
+
+		ret = rkcif_csi2_dphy_ioctl(sd, cmd, &csi_info);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+#endif
+
 static const struct v4l2_subdev_core_ops csi2_dphy_core_ops = {
 	.s_power = csi2_dphy_s_power,
+	.ioctl = rkcif_csi2_dphy_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = rkcif_csi2_dphy_compat_ioctl32,
+#endif
 };
 
 static const struct v4l2_subdev_video_ops csi2_dphy_video_ops = {
 	.g_frame_interval = csi2_dphy_g_frame_interval,
-	.g_mbus_config = csi2_dphy_g_mbus_config,
 	.s_stream = csi2_dphy_s_stream,
 };
 
@@ -303,6 +846,7 @@ static const struct v4l2_subdev_pad_ops csi2_dphy_subdev_pad_ops = {
 	.set_fmt = csi2_dphy_get_set_fmt,
 	.get_fmt = csi2_dphy_get_set_fmt,
 	.get_selection = csi2_dphy_get_selection,
+	.get_mbus_config = csi2_dphy_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops csi2_dphy_subdev_ops = {
@@ -373,7 +917,8 @@ rockchip_csi2_dphy_notifier_unbind(struct v4l2_async_notifier *notifier,
 						  notifier);
 	struct csi2_sensor *sensor = sd_to_sensor(dphy, sd);
 
-	sensor->sd = NULL;
+	if (sensor)
+		sensor->sd = NULL;
 }
 
 static const struct
@@ -382,46 +927,83 @@ v4l2_async_notifier_operations rockchip_csi2_dphy_async_ops = {
 	.unbind = rockchip_csi2_dphy_notifier_unbind,
 };
 
-static int rockchip_csi2_dphy_fwnode_parse(struct device *dev,
-					  struct v4l2_fwnode_endpoint *vep,
-					  struct v4l2_async_subdev *asd)
+/* Parse fwnode with port0, if an empty function is used, each node will parse
+ * all ports, causing the device to repeatedly join the link and unable to
+ * complete the link
+ */
+static int rockchip_csi2_dphy_fwnode_parse(struct csi2_dphy *dphy)
 {
-	struct sensor_async_subdev *s_asd =
-			container_of(asd, struct sensor_async_subdev, asd);
-	struct v4l2_mbus_config *config = &s_asd->mbus;
+	struct device *dev = dphy->dev;
+	struct fwnode_handle *ep = NULL;
+	struct sensor_async_subdev *s_asd = NULL;
+	struct v4l2_mbus_config *config = NULL;
+	struct fwnode_handle *remote_ep = NULL;
+	struct v4l2_fwnode_endpoint vep = {
+		.bus_type = V4L2_MBUS_CSI2_DPHY
+	};
+	struct device *remote_dev = NULL;
+	int ret;
 
-	if (vep->base.port != 0) {
-		dev_err(dev, "The PHY has only port 0\n");
-		return -EINVAL;
+	fwnode_graph_for_each_endpoint(dev_fwnode(dev), ep) {
+		ret = v4l2_fwnode_endpoint_parse(ep, &vep);
+		if (ret)
+			goto err_parse;
+
+		/* only add fwnode form port 0 to notifier list */
+		if (vep.base.port != 0)
+			continue;
+
+		remote_ep = fwnode_graph_get_remote_port_parent(ep);
+
+		/* skip device dts status is disabled */
+		if (!fwnode_device_is_available(remote_ep)) {
+			fwnode_handle_put(remote_ep);
+			continue;
+		}
+
+		/* check sensor register state on i2c/spi bus for gki*/
+		if (!IS_ENABLED(CONFIG_NO_GKI)) {
+			remote_dev = bus_find_device_by_fwnode(&i2c_bus_type, remote_ep);
+			if (!remote_dev || !remote_dev->driver) {
+				remote_dev = bus_find_device_by_fwnode(&spi_bus_type, remote_ep);
+				if (!remote_dev || !remote_dev->driver) {
+					fwnode_handle_put(remote_ep);
+					continue;
+				}
+			}
+		}
+
+		fwnode_handle_put(remote_ep);
+
+		s_asd = v4l2_async_nf_add_fwnode_remote(&dphy->notifier, ep,
+							struct
+							sensor_async_subdev);
+		if (IS_ERR(s_asd)) {
+			ret = PTR_ERR(s_asd);
+			goto err_parse;
+		}
+
+		config = &s_asd->mbus;
+		if (vep.bus_type == V4L2_MBUS_CSI2_DPHY ||
+		    vep.bus_type == V4L2_MBUS_CSI2_CPHY) {
+			config->type = vep.bus_type;
+			config->bus.mipi_csi2.flags = vep.bus.mipi_csi2.flags;
+			s_asd->lanes = vep.bus.mipi_csi2.num_data_lanes;
+		} else if (vep.bus_type == V4L2_MBUS_CCP2) {
+			/* V4L2_MBUS_CCP2 for lvds */
+			config->type = V4L2_MBUS_CCP2;
+			s_asd->lanes = vep.bus.mipi_csi1.data_lane;
+		} else {
+			dev_err(dev, "Only CSI2 and CCP2 bus type is currently supported\n");
+			ret = -EINVAL;
+			goto err_parse;
+		}
 	}
-
-	if (vep->bus_type == V4L2_MBUS_CSI2) {
-		config->type = V4L2_MBUS_CSI2;
-		config->flags = vep->bus.mipi_csi2.flags;
-		s_asd->lanes = vep->bus.mipi_csi2.num_data_lanes;
-	} else {
-		dev_err(dev, "Only CSI2 type is currently supported\n");
-		return -EINVAL;
-	}
-
-	switch (s_asd->lanes) {
-	case 1:
-		config->flags |= V4L2_MBUS_CSI2_1_LANE;
-		break;
-	case 2:
-		config->flags |= V4L2_MBUS_CSI2_2_LANE;
-		break;
-	case 3:
-		config->flags |= V4L2_MBUS_CSI2_3_LANE;
-		break;
-	case 4:
-		config->flags |= V4L2_MBUS_CSI2_4_LANE;
-		break;
-	default:
-		return -EINVAL;
-	}
-
 	return 0;
+
+err_parse:
+	fwnode_handle_put(ep);
+	return ret;
 }
 
 static int rockchip_csi2dphy_media_init(struct csi2_dphy *dphy)
@@ -438,129 +1020,231 @@ static int rockchip_csi2dphy_media_init(struct csi2_dphy *dphy)
 	if (ret < 0)
 		return ret;
 
-	ret = v4l2_async_notifier_parse_fwnode_endpoints_by_port(
-		dphy->dev, &dphy->notifier,
-		sizeof(struct sensor_async_subdev), 0,
-		rockchip_csi2_dphy_fwnode_parse);
-	if (ret < 0)
-		return ret;
+	v4l2_async_nf_init(&dphy->notifier);
 
-	if (!dphy->notifier.num_subdevs)
-		return -ENODEV;	/* no endpoint */
+	ret = rockchip_csi2_dphy_fwnode_parse(dphy);
+	if (ret)
+		return ret;
 
 	dphy->sd.subdev_notifier = &dphy->notifier;
 	dphy->notifier.ops = &rockchip_csi2_dphy_async_ops;
-	ret = v4l2_async_subdev_notifier_register(&dphy->sd, &dphy->notifier);
+	ret = v4l2_async_subdev_nf_register(&dphy->sd, &dphy->notifier);
 	if (ret) {
 		dev_err(dphy->dev,
 			"failed to register async notifier : %d\n", ret);
-		v4l2_async_notifier_cleanup(&dphy->notifier);
+		v4l2_async_nf_cleanup(&dphy->notifier);
 		return ret;
 	}
+	dphy->clk_phase = 0;
 
 	return v4l2_async_register_subdev(&dphy->sd);
 }
 
-static int rockchip_csi2_dphy_attach_hw(struct csi2_dphy *dphy)
-{
-	struct platform_device *plat_dev;
-	struct device *dev = dphy->dev;
-	struct csi2_dphy_hw *dphy_hw;
-	struct device_node *np;
-	enum csi2_dphy_lane_mode target_mode;
-	int i;
+static struct dphy_drv_data rk3568_dphy_drv_data = {
+	.dev_name = "csi2dphy",
+	.chip_id = CHIP_ID_RK3568,
+	.num_inno_phy = 1,
+	.num_samsung_phy = 0,
+};
 
-	if (dphy->phy_index == 0)
-		target_mode = LANE_MODE_FULL;
-	else
-		target_mode = LANE_MODE_SPLIT;
+static struct dphy_drv_data rk3588_dphy_drv_data = {
+	.dev_name = "csi2dphy",
+	.chip_id = CHIP_ID_RK3588,
+	.num_inno_phy = 2,
+	.num_samsung_phy = 2,
+};
 
-	np = of_parse_phandle(dev->of_node, "rockchip,hw", 0);
-	if (!np || !of_device_is_available(np)) {
-		dev_err(dphy->dev,
-			"failed to get dphy%d hw node\n", dphy->phy_index);
-		return -ENODEV;
-	}
+static struct dphy_drv_data rv1106_dphy_drv_data = {
+	.dev_name = "csi2dphy",
+	.chip_id = CHIP_ID_RV1106,
+	.num_inno_phy = 1,
+	.num_samsung_phy = 0,
+};
 
-	plat_dev = of_find_device_by_node(np);
-	of_node_put(np);
-	if (!plat_dev) {
-		dev_err(dphy->dev,
-			"failed to get dphy%d hw from node\n",
-			dphy->phy_index);
-		return -ENODEV;
-	}
+static struct dphy_drv_data rk3562_dphy_drv_data = {
+	.dev_name = "csi2dphy",
+	.chip_id = CHIP_ID_RK3562,
+	.num_inno_phy = 2,
+	.num_samsung_phy = 0,
+};
 
-	dphy_hw = platform_get_drvdata(plat_dev);
-	if (!dphy_hw) {
-		dev_err(dphy->dev,
-			"failed attach dphy%d hw\n",
-			dphy->phy_index);
-		return -EINVAL;
-	}
+static struct dphy_drv_data rk3576_dphy_drv_data = {
+	.dev_name = "csi2dphy",
+	.chip_id = CHIP_ID_RK3576,
+	.num_inno_phy = 2,
+	.num_samsung_phy = 1,
+};
 
-	if (dphy_hw->lane_mode == LANE_MODE_UNDEF) {
-		dphy_hw->lane_mode = target_mode;
-	} else {
-		struct csi2_dphy *phy = dphy_hw->dphy_dev[0];
-
-		for (i = 0; i < dphy_hw->dphy_dev_num; i++) {
-			if (dphy_hw->dphy_dev[i]->lane_mode == dphy_hw->lane_mode) {
-				phy = dphy_hw->dphy_dev[i];
-				break;
-			}
-		}
-
-		if (target_mode != dphy_hw->lane_mode) {
-			dev_err(dphy->dev,
-				"Err:csi2 dphy hw has been set as %s mode by phy%d, target mode is:%s\n",
-				dphy_hw->lane_mode == LANE_MODE_FULL ? "full" : "split",
-				phy->phy_index,
-				target_mode == LANE_MODE_FULL ? "full" : "split");
-			return -ENODEV;
-		}
-	}
-
-	dphy_hw->dphy_dev[dphy_hw->dphy_dev_num] = dphy;
-	dphy_hw->dphy_dev_num++;
-	dphy->dphy_hw = dphy_hw;
-
-	return 0;
-}
-
-static int rockchip_csi2_dphy_detach_hw(struct csi2_dphy *dphy)
-{
-	struct csi2_dphy_hw *dphy_hw = dphy->dphy_hw;
-	struct csi2_dphy *csi2_dphy = NULL;
-	int i;
-
-	for (i = 0; i < dphy_hw->dphy_dev_num; i++) {
-		csi2_dphy = dphy_hw->dphy_dev[i];
-		if (csi2_dphy &&
-		    csi2_dphy->phy_index == dphy->phy_index) {
-			dphy_hw->dphy_dev[i] = NULL;
-			dphy_hw->dphy_dev_num--;
-			break;
-		}
-	}
-
-	return 0;
-}
+static struct dphy_drv_data rv1126b_dphy_drv_data = {
+	.dev_name = "csi2dphy",
+	.chip_id = CHIP_ID_RV1126B,
+	.num_inno_phy = 2,
+	.num_samsung_phy = 0,
+};
 
 static const struct of_device_id rockchip_csi2_dphy_match_id[] = {
 	{
 		.compatible = "rockchip,rk3568-csi2-dphy",
+		.data = &rk3568_dphy_drv_data,
+	},
+	{
+		.compatible = "rockchip,rk3588-csi2-dphy",
+		.data = &rk3588_dphy_drv_data,
+	},
+	{
+		.compatible = "rockchip,rv1106-csi2-dphy",
+		.data = &rv1106_dphy_drv_data,
+	},
+	{
+		.compatible = "rockchip,rk3562-csi2-dphy",
+		.data = &rk3562_dphy_drv_data,
+	},
+	{
+		.compatible = "rockchip,rk3576-csi2-dphy",
+		.data = &rk3576_dphy_drv_data,
+	},
+	{
+		.compatible = "rockchip,rv1126b-csi2-dphy",
+		.data = &rv1126b_dphy_drv_data,
 	},
 	{}
 };
 MODULE_DEVICE_TABLE(of, rockchip_csi2_dphy_match_id);
 
+static int rockchip_csi2_dphy_get_samsung_phy_hw(struct csi2_dphy *dphy)
+{
+	struct phy *dcphy;
+	struct device *dev = dphy->dev;
+	struct samsung_mipi_dcphy *dcphy_hw;
+	char phy_name[32];
+	int i = 0;
+	int ret = 0;
+
+	for (i = 0; i < dphy->drv_data->num_samsung_phy; i++) {
+		sprintf(phy_name, "dcphy%d", i);
+		dcphy = devm_phy_optional_get(dev, phy_name);
+		if (IS_ERR(dcphy)) {
+			ret = PTR_ERR(dcphy);
+			dev_err(dphy->dev, "failed to get mipi dcphy: %d\n", ret);
+			return ret;
+		}
+		dcphy_hw = phy_get_drvdata(dcphy);
+		dphy->samsung_phy_group[i] = dcphy_hw;
+	}
+	return 0;
+}
+
+static int rockchip_csi2_dphy_get_inno_phy_hw(struct csi2_dphy *dphy)
+{
+	struct platform_device *plat_dev;
+	struct device *dev = dphy->dev;
+	struct csi2_dphy_hw *dphy_hw;
+	struct device_node *np;
+	int i = 0;
+
+	for (i = 0; i < dphy->drv_data->num_inno_phy; i++) {
+		np = of_parse_phandle(dev->of_node, "rockchip,hw", i);
+		if (!np || !of_device_is_available(np)) {
+			dev_err(dphy->dev,
+				"failed to get dphy%d hw node\n", dphy->phy_index);
+			return -ENODEV;
+		}
+		plat_dev = of_find_device_by_node(np);
+		of_node_put(np);
+		if (!plat_dev) {
+			dev_err(dphy->dev,
+				"failed to get dphy%d hw from node\n",
+				dphy->phy_index);
+			return -ENODEV;
+		}
+		dphy_hw = platform_get_drvdata(plat_dev);
+		if (!dphy_hw) {
+			dev_err(dphy->dev,
+				"failed attach dphy%d hw\n",
+				dphy->phy_index);
+			return -EINVAL;
+		}
+		dphy_hw->hw_idx = i;
+		dphy->dphy_hw_group[i] = dphy_hw;
+	}
+	return 0;
+}
+
+static int rockchip_csi2_dphy_get_hw(struct csi2_dphy *dphy)
+{
+	int ret = 0;
+
+	if (dphy->drv_data->chip_id == CHIP_ID_RK3588 ||
+	    dphy->drv_data->chip_id == CHIP_ID_RK3576) {
+		ret = rockchip_csi2_dphy_get_samsung_phy_hw(dphy);
+		if (ret)
+			return ret;
+		ret = rockchip_csi2_dphy_get_inno_phy_hw(dphy);
+	} else {
+		ret = rockchip_csi2_dphy_get_inno_phy_hw(dphy);
+	}
+	return ret;
+}
+
+#define USED_SYS_DEBUG
+#ifdef USED_SYS_DEBUG
+static ssize_t set_clk_phase(struct device *dev,
+	struct device_attribute *attr,
+	const char *buf,
+	size_t count)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct csi2_dphy *csi2dphy = to_csi2_dphy(sd);
+	int status = 0;
+	int ret = 0;
+
+	ret = kstrtoint(buf, 0, &status);
+	if (!ret) {
+		if (status >= 0 && status <= 7)
+			csi2dphy->clk_phase = status;
+		else
+			dev_err(dev, "clk_phase %d, is out of range(0~7)\n", status);
+	} else {
+		dev_err(dev, "set clk_phase %d failed\n", status);
+	}
+	return count;
+}
+
+static struct device_attribute attributes[] = {
+	__ATTR(clk_phase, 0200, NULL, set_clk_phase),
+};
+
+static int add_sysfs_interfaces(struct device *dev)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(attributes); i++)
+		if (device_create_file(dev, attributes + i))
+			goto undo;
+	return 0;
+undo:
+	for (i--; i >= 0 ; i--)
+		device_remove_file(dev, attributes + i);
+	dev_err(dev, "%s: failed to create sysfs interface\n", __func__);
+	return -ENODEV;
+}
+
+static void remove_sysfs_interfaces(struct device *dev)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(attributes); i++)
+		device_remove_file(dev, attributes + i);
+	dev_err(dev, "%s: remove sysfs interface\n", __func__);
+}
+#endif
+
 static int rockchip_csi2_dphy_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	const struct of_device_id *of_id;
 	struct csi2_dphy *csi2dphy;
 	struct v4l2_subdev *sd;
+	const struct dphy_drv_data *drv_data;
 	int ret;
 
 	csi2dphy = devm_kzalloc(dev, sizeof(*csi2dphy), GFP_KERNEL);
@@ -568,22 +1252,26 @@ static int rockchip_csi2_dphy_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	csi2dphy->dev = dev;
 
-	of_id = of_match_device(rockchip_csi2_dphy_match_id, dev);
-	if (!of_id)
+	drv_data = device_get_match_data(dev);
+	if (!drv_data)
 		return -EINVAL;
+	csi2dphy->drv_data = drv_data;
 
-	csi2dphy->phy_index = of_alias_get_id(dev->of_node, "csi2dphy");
-	if (csi2dphy->phy_index < 0 || csi2dphy->phy_index > 2)
+	csi2dphy->phy_index = of_alias_get_id(dev->of_node, drv_data->dev_name);
+	if (csi2dphy->phy_index < 0 || csi2dphy->phy_index >= PHY_MAX)
 		csi2dphy->phy_index = 0;
 
-	ret = rockchip_csi2_dphy_attach_hw(csi2dphy);
-	if (ret) {
-		dev_err(dev,
-			"csi2 dphy hw can't be attached, register dphy%d failed!\n",
-			csi2dphy->phy_index);
-		return -ENODEV;
+	ret = rockchip_csi2_dphy_get_hw(csi2dphy);
+	if (ret)
+		return -EINVAL;
+	if (csi2dphy->drv_data->chip_id == CHIP_ID_RK3568 ||
+	    csi2dphy->drv_data->chip_id == CHIP_ID_RV1106) {
+		csi2dphy->csi_info.csi_num = 1;
+		csi2dphy->csi_info.dphy_vendor[0] = PHY_VENDOR_INNO;
+		rockchip_csi2_dphy_attach_hw(csi2dphy, 0, 0);
+	} else {
+		csi2dphy->csi_info.csi_num = 0;
 	}
-
 	sd = &csi2dphy->sd;
 	mutex_init(&csi2dphy->mutex);
 	v4l2_subdev_init(sd, &csi2_dphy_subdev_ops);
@@ -599,6 +1287,9 @@ static int rockchip_csi2_dphy_probe(struct platform_device *pdev)
 		goto detach_hw;
 
 	pm_runtime_enable(&pdev->dev);
+#ifdef USED_SYS_DEBUG
+	add_sysfs_interfaces(dev);
+#endif
 
 	dev_info(dev, "csi2 dphy%d probe successfully!\n", csi2dphy->phy_index);
 
@@ -606,9 +1297,7 @@ static int rockchip_csi2_dphy_probe(struct platform_device *pdev)
 
 detach_hw:
 	mutex_destroy(&csi2dphy->mutex);
-	rockchip_csi2_dphy_detach_hw(csi2dphy);
-
-	return 0;
+	return -EINVAL;
 }
 
 static int rockchip_csi2_dphy_remove(struct platform_device *pdev)
@@ -616,49 +1305,19 @@ static int rockchip_csi2_dphy_remove(struct platform_device *pdev)
 	struct media_entity *me = platform_get_drvdata(pdev);
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(me);
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
+	int i = 0;
 
+#ifdef USED_SYS_DEBUG
+	remove_sysfs_interfaces(&pdev->dev);
+#endif
+	for (i = 0; i < dphy->csi_info.csi_num; i++)
+		rockchip_csi2_dphy_detach_hw(dphy, dphy->csi_info.csi_idx[i], i);
 	media_entity_cleanup(&sd->entity);
 
 	pm_runtime_disable(&pdev->dev);
 	mutex_destroy(&dphy->mutex);
 	return 0;
 }
-static int __maybe_unused __rockchip_csi2dphy_clr_unready_dev(void)
-{
-	struct csi2_dphy *csi2dphy;
-
-	mutex_lock(&csi2dphy_dev_mutex);
-	list_for_each_entry(csi2dphy, &csi2dphy_device_list, list)
-		v4l2_async_notifier_clr_unready_dev(&csi2dphy->notifier);
-	mutex_unlock(&csi2dphy_dev_mutex);
-
-	return 0;
-}
-
-static int rockchip_csi2dphy_clr_unready_dev_param_set(const char *val,
-						       const struct kernel_param *kp)
-{
-#ifdef MODULE
-	__rockchip_csi2dphy_clr_unready_dev();
-#endif
-
-	return 0;
-}
-
-module_param_call(clr_unready_dev,
-		  rockchip_csi2dphy_clr_unready_dev_param_set,
-		  NULL, NULL, 0200);
-MODULE_PARM_DESC(clr_unready_dev, "clear unready devices");
-
-#ifndef MODULE
-static int __init rockchip_csi2_dphy_clr_unready_dev(void)
-{
-	__rockchip_csi2dphy_clr_unready_dev();
-
-	return 0;
-}
-late_initcall_sync(rockchip_csi2_dphy_clr_unready_dev);
-#endif
 
 static const struct dev_pm_ops rockchip_csi2_dphy_pm_ops = {
 	SET_RUNTIME_PM_OPS(csi2_dphy_runtime_suspend,
@@ -674,7 +1333,19 @@ struct platform_driver rockchip_csi2_dphy_driver = {
 		.of_match_table = rockchip_csi2_dphy_match_id,
 	},
 };
-EXPORT_SYMBOL(rockchip_csi2_dphy_driver);
+
+int rockchip_csi2_dphy_init(void)
+{
+	return platform_driver_register(&rockchip_csi2_dphy_driver);
+}
+
+#if defined(CONFIG_VIDEO_ROCKCHIP_THUNDER_BOOT_ISP)
+subsys_initcall_sync(rockchip_csi2_dphy_init);
+#else
+#if !defined(CONFIG_VIDEO_REVERSE_IMAGE)
+module_platform_driver(rockchip_csi2_dphy_driver);
+#endif
+#endif
 
 MODULE_AUTHOR("Rockchip Camera/ISP team");
 MODULE_DESCRIPTION("Rockchip MIPI CSI2 DPHY driver");

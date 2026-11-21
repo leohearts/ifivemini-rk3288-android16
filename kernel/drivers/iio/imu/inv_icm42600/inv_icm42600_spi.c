@@ -57,9 +57,10 @@ static int inv_icm42600_probe(struct spi_device *spi)
 	match = device_get_match_data(&spi->dev);
 	if (!match)
 		return -EINVAL;
-	chip = (enum inv_icm42600_chip)match;
+	chip = (uintptr_t)match;
 
-	regmap = devm_regmap_init_spi(spi, &inv_icm42600_regmap_config);
+	/* use SPI specific regmap */
+	regmap = devm_regmap_init_spi(spi, &inv_icm42600_spi_regmap_config);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
@@ -69,9 +70,6 @@ static int inv_icm42600_probe(struct spi_device *spi)
 
 static const struct of_device_id inv_icm42600_of_matches[] = {
 	{
-		.compatible = "invensense,icm40608",
-		.data = (void *)INV_CHIP_ICM40608,
-	}, {
 		.compatible = "invensense,icm42600",
 		.data = (void *)INV_CHIP_ICM42600,
 	}, {

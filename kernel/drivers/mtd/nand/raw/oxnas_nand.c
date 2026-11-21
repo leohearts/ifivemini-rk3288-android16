@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Oxford Semiconductor OXNAS NAND driver
 
@@ -6,11 +7,6 @@
  * Author: Vitaly Wool <vitalywool@gmail.com>
  * Copyright (C) 2013 Ma Haijun <mahaijuns@gmail.com>
  * Copyright (C) 2012 John Crispin <blogic@openwrt.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/err.h>
@@ -39,35 +35,32 @@ struct oxnas_nand_ctrl {
 	unsigned int nchips;
 };
 
-static uint8_t oxnas_nand_read_byte(struct mtd_info *mtd)
+static uint8_t oxnas_nand_read_byte(struct nand_chip *chip)
 {
-	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct oxnas_nand_ctrl *oxnas = nand_get_controller_data(chip);
 
 	return readb(oxnas->io_base);
 }
 
-static void oxnas_nand_read_buf(struct mtd_info *mtd, u8 *buf, int len)
+static void oxnas_nand_read_buf(struct nand_chip *chip, u8 *buf, int len)
 {
-	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct oxnas_nand_ctrl *oxnas = nand_get_controller_data(chip);
 
 	ioread8_rep(oxnas->io_base, buf, len);
 }
 
-static void oxnas_nand_write_buf(struct mtd_info *mtd, const u8 *buf, int len)
+static void oxnas_nand_write_buf(struct nand_chip *chip, const u8 *buf,
+				 int len)
 {
-	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct oxnas_nand_ctrl *oxnas = nand_get_controller_data(chip);
 
 	iowrite8_rep(oxnas->io_base, buf, len);
 }
 
 /* Single CS command control */
-static void oxnas_nand_cmd_ctrl(struct mtd_info *mtd, int cmd,
+static void oxnas_nand_cmd_ctrl(struct nand_chip *chip, int cmd,
 				unsigned int ctrl)
 {
-	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct oxnas_nand_ctrl *oxnas = nand_get_controller_data(chip);
 
 	if (ctrl & NAND_CLE)
@@ -86,7 +79,6 @@ static int oxnas_nand_probe(struct platform_device *pdev)
 	struct oxnas_nand_ctrl *oxnas;
 	struct nand_chip *chip;
 	struct mtd_info *mtd;
-	struct resource *res;
 	int count = 0;
 	int err = 0;
 	int i;
@@ -99,8 +91,7 @@ static int oxnas_nand_probe(struct platform_device *pdev)
 
 	nand_controller_init(&oxnas->base);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	oxnas->io_base = devm_ioremap_resource(&pdev->dev, res);
+	oxnas->io_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(oxnas->io_base))
 		return PTR_ERR(oxnas->io_base);
 
@@ -136,11 +127,11 @@ static int oxnas_nand_probe(struct platform_device *pdev)
 		mtd->dev.parent = &pdev->dev;
 		mtd->priv = chip;
 
-		chip->cmd_ctrl = oxnas_nand_cmd_ctrl;
-		chip->read_buf = oxnas_nand_read_buf;
-		chip->read_byte = oxnas_nand_read_byte;
-		chip->write_buf = oxnas_nand_write_buf;
-		chip->chip_delay = 30;
+		chip->legacy.cmd_ctrl = oxnas_nand_cmd_ctrl;
+		chip->legacy.read_buf = oxnas_nand_read_buf;
+		chip->legacy.read_byte = oxnas_nand_read_byte;
+		chip->legacy.write_buf = oxnas_nand_write_buf;
+		chip->legacy.chip_delay = 30;
 
 		/* Scan to find existence of the device */
 		err = nand_scan(chip, 1);
@@ -151,8 +142,7 @@ static int oxnas_nand_probe(struct platform_device *pdev)
 		if (err)
 			goto err_cleanup_nand;
 
-		oxnas->chips[oxnas->nchips] = chip;
-		++oxnas->nchips;
+		oxnas->chips[oxnas->nchips++] = chip;
 	}
 
 	/* Exit if no chips found */
@@ -189,7 +179,8 @@ static int oxnas_nand_remove(struct platform_device *pdev)
 
 	for (i = 0; i < oxnas->nchips; i++) {
 		chip = oxnas->chips[i];
-		nand_release(chip);
+		WARN_ON(mtd_device_unregister(nand_to_mtd(chip)));
+		nand_cleanup(chip);
 	}
 
 	clk_disable_unprepare(oxnas->clk);

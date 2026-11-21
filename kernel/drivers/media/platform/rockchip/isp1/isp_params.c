@@ -38,9 +38,6 @@
 #include <media/videobuf2-vmalloc.h>	/* for ISP params */
 #include <media/v4l2-event.h>
 #include <linux/rk-preisp.h>
-#include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/of.h>
 #include "dev.h"
 #include "regs.h"
 
@@ -147,14 +144,7 @@ static void isp_bls_config(struct rkisp1_isp_params_vdev *params_vdev,
 	new_control &= CIF_ISP_BLS_ENA;
 	/* fixed subtraction values */
 	if (!arg->enable_auto) {
-		struct cifisp_bls_fixed_val adj = arg->fixed_val;
-		const struct cifisp_bls_fixed_val *pval = &adj;
-		int off = (int)params_vdev->bls_offset;
-
-		adj.r = clamp(adj.r + off, 0, 0xfff);
-		adj.gr = clamp(adj.gr + off, 0, 0xfff);
-		adj.gb = clamp(adj.gb + off, 0, 0xfff);
-		adj.b = clamp(adj.b + off, 0, 0xfff);
+		const struct cifisp_bls_fixed_val *pval = &arg->fixed_val;
 
 		switch (params_vdev->raw_type) {
 		case RAW_BGGR:
@@ -2411,8 +2401,8 @@ static int rkisp1_params_querycap(struct file *file,
 	snprintf(cap->driver, sizeof(cap->driver),
 		 "%s_v%d", DRIVER_NAME,
 		 params_vdev->dev->isp_ver >> 4);
-	strlcpy(cap->card, vdev->name, sizeof(cap->card));
-	strlcpy(cap->bus_info, "platform: " DRIVER_NAME, sizeof(cap->bus_info));
+	strscpy(cap->card, vdev->name, sizeof(cap->card));
+	strscpy(cap->bus_info, "platform: " DRIVER_NAME, sizeof(cap->bus_info));
 
 	return 0;
 }
@@ -2616,11 +2606,8 @@ int rkisp1_register_params_vdev(struct rkisp1_isp_params_vdev *params_vdev,
 
 	params_vdev->dev = dev;
 	spin_lock_init(&params_vdev->config_lock);
-	params_vdev->bls_offset = 0;
-	of_property_read_u32(dev->dev->of_node, "rockchip,bls-offset",
-			     &params_vdev->bls_offset);
 
-	strlcpy(vdev->name, "rkisp1-input-params", sizeof(vdev->name));
+	strscpy(vdev->name, "rkisp1-input-params", sizeof(vdev->name));
 
 	video_set_drvdata(vdev, params_vdev);
 	vdev->ioctl_ops = &rkisp1_params_ioctl;
@@ -2643,7 +2630,7 @@ int rkisp1_register_params_vdev(struct rkisp1_isp_params_vdev *params_vdev,
 	ret = media_entity_pads_init(&vdev->entity, 1, &node->pad);
 	if (ret < 0)
 		goto err_release_queue;
-	ret = video_register_device(vdev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
 		dev_err(&vdev->dev,
 			"could not register Video for Linux device\n");

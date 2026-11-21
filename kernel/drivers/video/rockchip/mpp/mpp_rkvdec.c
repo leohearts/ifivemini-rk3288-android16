@@ -12,7 +12,6 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/devfreq.h>
-#include <linux/devfreq_cooling.h>
 #include <linux/gfp.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
@@ -36,6 +35,7 @@
 #include "mpp_debug.h"
 #include "mpp_common.h"
 #include "mpp_iommu.h"
+#include <soc/rockchip/rockchip_iommu.h>
 
 #include "hack/mpp_hack_px30.h"
 
@@ -181,10 +181,7 @@ struct rkvdec_dev {
 	struct devfreq *devfreq;
 	struct devfreq *parent_devfreq;
 	struct notifier_block devfreq_nb;
-	struct thermal_cooling_device *devfreq_cooling;
-	struct thermal_zone_device *thermal_zone;
-	u32 static_power_coeff;
-	s32 ts[4];
+	struct rockchip_opp_info opp_info;
 	/* set clk lock */
 	struct mutex set_clk_lock;
 	unsigned int thermal_div;
@@ -328,8 +325,8 @@ static int devfreq_target(struct device *dev,
 	struct dev_pm_opp *opp;
 	unsigned long target_volt, target_freq;
 	unsigned long aclk_rate_hz, core_rate_hz, cabac_rate_hz;
-
-	struct rkvdec_dev *dec = dev_get_drvdata(dev);
+	struct mpp_dev *mpp = dev_get_drvdata(dev);
+	struct rkvdec_dev *dec = to_rkvdec_dev(mpp);
 	struct devfreq *devfreq = dec->devfreq;
 	struct devfreq_dev_status *stat = &devfreq->last_status;
 	unsigned long old_clk_rate = stat->current_frequency;
@@ -395,7 +392,8 @@ static int devfreq_target(struct device *dev,
 static int devfreq_get_cur_freq(struct device *dev,
 				unsigned long *freq)
 {
-	struct rkvdec_dev *dec = dev_get_drvdata(dev);
+	struct mpp_dev *mpp = dev_get_drvdata(dev);
+	struct rkvdec_dev *dec = to_rkvdec_dev(mpp);
 
 	*freq = clk_get_rate(dec->aclk_info.clk);
 
@@ -405,7 +403,8 @@ static int devfreq_get_cur_freq(struct device *dev,
 static int devfreq_get_dev_status(struct device *dev,
 				  struct devfreq_dev_status *stat)
 {
-	struct rkvdec_dev *dec = dev_get_drvdata(dev);
+	struct mpp_dev *mpp = dev_get_drvdata(dev);
+	struct rkvdec_dev *dec = to_rkvdec_dev(mpp);
 	struct devfreq *devfreq = dec->devfreq;
 
 	memcpy(stat, &devfreq->last_status, sizeof(*stat));
@@ -417,105 +416,8 @@ static struct devfreq_dev_profile devfreq_profile = {
 	.target	= devfreq_target,
 	.get_cur_freq = devfreq_get_cur_freq,
 	.get_dev_status	= devfreq_get_dev_status,
+	.is_cooling_device = true,
 };
-
-static unsigned long
-model_static_power(struct devfreq *devfreq,
-		   unsigned long voltage)
-{
-	struct device *dev = devfreq->dev.parent;
-	struct rkvdec_dev *dec = dev_get_drvdata(dev);
-	struct thermal_zone_device *tz = dec->thermal_zone;
-
-	int temperature;
-	unsigned long temp;
-	unsigned long temp_squared, temp_cubed, temp_scaling_factor;
-	const unsigned long voltage_cubed = (voltage * voltage * voltage) >> 10;
-
-	if (!IS_ERR_OR_NULL(tz) && tz->ops->get_temp) {
-		int ret;
-
-		ret = tz->ops->get_temp(tz, &temperature);
-		if (ret) {
-			dev_warn_ratelimited(dev, "ddr thermal zone failed\n");
-			temperature = FALLBACK_STATIC_TEMPERATURE;
-		}
-	} else {
-		temperature = FALLBACK_STATIC_TEMPERATURE;
-	}
-
-	/*
-	 * Calculate the temperature scaling factor. To be applied to the
-	 * voltage scaled power.
-	 */
-	temp = temperature / 1000;
-	temp_squared = temp * temp;
-	temp_cubed = temp_squared * temp;
-	temp_scaling_factor = (dec->ts[3] * temp_cubed)
-	    + (dec->ts[2] * temp_squared) + (dec->ts[1] * temp) + dec->ts[0];
-
-	return (((dec->static_power_coeff * voltage_cubed) >> 20)
-		* temp_scaling_factor) / 1000000;
-}
-
-static struct devfreq_cooling_power cooling_power_data = {
-	.get_static_power = model_static_power,
-	.dyn_power_coeff = 120,
-};
-
-static int power_model_simple_init(struct mpp_dev *mpp)
-{
-	struct rkvdec_dev *dec = to_rkvdec_dev(mpp);
-	struct device_node *np = mpp->dev->of_node;
-
-	u32 temp;
-	const char *tz_name;
-	struct device_node *power_model_node;
-
-	power_model_node = of_get_child_by_name(np, "vcodec_power_model");
-	if (!power_model_node) {
-		dev_err(mpp->dev, "could not find power_model node\n");
-		return -ENODEV;
-	}
-
-	if (of_property_read_string(power_model_node,
-				    "thermal-zone",
-				    &tz_name)) {
-		dev_err(mpp->dev, "ts in power_model not available\n");
-		return -EINVAL;
-	}
-
-	dec->thermal_zone = thermal_zone_get_zone_by_name(tz_name);
-	if (IS_ERR(dec->thermal_zone)) {
-		pr_warn("Error getting ddr thermal zone, not yet ready?\n");
-		dec->thermal_zone = NULL;
-		return -EPROBE_DEFER;
-	}
-
-	if (of_property_read_u32(power_model_node,
-				 "static-power-coefficient",
-				 &dec->static_power_coeff)) {
-		dev_err(mpp->dev, "static-power-coefficient not available\n");
-		return -EINVAL;
-	}
-	if (of_property_read_u32(power_model_node,
-				 "dynamic-power-coefficient",
-				 &temp)) {
-		dev_err(mpp->dev, "dynamic-power-coefficient not available\n");
-		return -EINVAL;
-	}
-	cooling_power_data.dyn_power_coeff = (unsigned long)temp;
-
-	if (of_property_read_u32_array(power_model_node,
-				       "ts",
-				       (u32 *)dec->ts,
-				       4)) {
-		dev_err(mpp->dev, "ts in power_model not available\n");
-		return -EINVAL;
-	}
-
-	return 0;
-}
 
 static int devfreq_notifier_call(struct notifier_block *nb,
 				 unsigned long event,
@@ -557,7 +459,7 @@ static int fill_scaling_list_pps(struct rkvdec_task *task,
 				 int pps_info_size, int sub_addr_offset)
 {
 	struct dma_buf *dmabuf = NULL;
-	void *vaddr = NULL;
+	struct iosys_map map;
 	u8 *pps = NULL;
 	u32 scaling_fd = 0;
 	int ret = 0;
@@ -572,16 +474,15 @@ static int fill_scaling_list_pps(struct rkvdec_task *task,
 	ret = dma_buf_begin_cpu_access(dmabuf, DMA_FROM_DEVICE);
 	if (ret) {
 		mpp_err("can't access the pps buffer\n");
-		goto done;
+		goto access_failed;
 	}
 
-	vaddr = dma_buf_vmap(dmabuf);
-	if (!vaddr) {
+	ret = dma_buf_vmap(dmabuf, &map);
+	if (ret) {
 		mpp_err("can't access the pps buffer\n");
-		ret = -EIO;
-		goto done;
+		goto vmap_failed;
 	}
-	pps = vaddr + offset;
+	pps = map.vaddr + offset;
 	/* NOTE: scaling buffer in pps, have no offset */
 	memcpy(&scaling_fd, pps + base, sizeof(scaling_fd));
 	scaling_fd = le32_to_cpu(scaling_fd);
@@ -593,8 +494,9 @@ static int fill_scaling_list_pps(struct rkvdec_task *task,
 		mem_region = mpp_task_attach_fd(&task->mpp_task,
 						scaling_fd);
 		if (IS_ERR(mem_region)) {
+			mpp_err("scaling list fd %d attach failed\n", scaling_fd);
 			ret = PTR_ERR(mem_region);
-			goto done;
+			goto task_fd_failed;
 		}
 
 		tmp = mem_region->iova & 0xffffffff;
@@ -608,9 +510,11 @@ static int fill_scaling_list_pps(struct rkvdec_task *task,
 			memcpy(pps + base, &tmp, sizeof(tmp));
 	}
 
-done:
-	dma_buf_vunmap(dmabuf, vaddr);
+task_fd_failed:
+	dma_buf_vunmap(dmabuf, &map);
+vmap_failed:
 	dma_buf_end_cpu_access(dmabuf, DMA_FROM_DEVICE);
+access_failed:
 	dma_buf_put(dmabuf);
 
 	return ret;
@@ -727,8 +631,11 @@ static int rkvdec_process_reg_fd(struct mpp_session *session,
 			offset = task->reg[idx] >> 10 << 4;
 		}
 		mem_region = mpp_task_attach_fd(&task->mpp_task, fd);
-		if (IS_ERR(mem_region))
+		if (IS_ERR(mem_region)) {
+			mpp_err("reg[%03d]: %08x fd %d attach failed\n",
+				idx, task->reg[idx], fd);
 			return -EFAULT;
+		}
 
 		iova = mem_region->iova;
 		task->reg[idx] = iova + offset;
@@ -887,6 +794,7 @@ static int rkvdec_run(struct mpp_dev *mpp,
 	int i;
 	u32 reg_en;
 	struct rkvdec_task *task = NULL;
+	u32 timing_en = mpp->srv->timing_en;
 
 	mpp_debug_enter();
 
@@ -918,10 +826,13 @@ static int rkvdec_run(struct mpp_dev *mpp,
 		}
 		/* init current task */
 		mpp->cur_task = mpp_task;
+		mpp_task_run_begin(mpp_task, timing_en, MPP_WORK_TIMEOUT_DELAY);
 		/* Flush the register before the start the device */
 		wmb();
 		mpp_write(mpp, RKVDEC_REG_INT_EN,
 			  task->reg[reg_en] | RKVDEC_DEC_START);
+
+		mpp_task_run_end(mpp_task, timing_en);
 	} break;
 	default:
 		break;
@@ -944,11 +855,11 @@ static int rkvdec_3328_run(struct mpp_dev *mpp,
 	task = to_rkvdec_task(mpp_task);
 
 	/*
-	 * HW defeat workaround: VP9 power save optimization cause decoding
+	 * HW defeat workaround: VP9 and H.265 power save optimization cause decoding
 	 * corruption, disable optimization here.
 	 */
 	fmt = RKVDEC_GET_FORMAT(task->reg[RKVDEC_REG_SYS_CTRL_INDEX]);
-	if (fmt == RKVDEC_FMT_VP9D) {
+	if (fmt == RKVDEC_FMT_VP9D || fmt == RKVDEC_FMT_H265D) {
 		cfg = task->reg[RKVDEC_POWER_CTL_INDEX] | 0xFFFF;
 		task->reg[RKVDEC_POWER_CTL_INDEX] = cfg & (~(1 << 12));
 		mpp_write_relaxed(mpp, RKVDEC_POWER_CTL_BASE,
@@ -969,6 +880,13 @@ static int rkvdec_1126_run(struct mpp_dev *mpp, struct mpp_task *mpp_task)
 	if (task->link_mode == RKVDEC_MODE_ONEFRAME)
 		mpp_iommu_flush_tlb(mpp->iommu_info);
 
+	return rkvdec_run(mpp, mpp_task);
+}
+
+static int rkvdec_px30_run(struct mpp_dev *mpp,
+		    struct mpp_task *mpp_task)
+{
+	mpp_iommu_flush_tlb(mpp->iommu_info);
 	return rkvdec_run(mpp, mpp_task);
 }
 
@@ -1171,6 +1089,10 @@ static int rkvdec_procfs_init(struct mpp_dev *mpp)
 		dec->procfs = NULL;
 		return -EIO;
 	}
+
+	/* for common mpp_dev options */
+	mpp_procfs_create_common(dec->procfs, mpp);
+
 	mpp_procfs_create_u32("aclk", 0644,
 			      dec->procfs, &dec->aclk_info.debug_rate_hz);
 	mpp_procfs_create_u32("clk_core", 0644,
@@ -1261,6 +1183,13 @@ static int rkvdec_px30_init(struct mpp_dev *mpp)
 	return px30_workaround_combo_init(mpp);
 }
 
+static int rkvdec_3036_init(struct mpp_dev *mpp)
+{
+	rkvdec_init(mpp);
+	set_bit(mpp->var->device_type, &mpp->queue->dev_active_flags);
+	return 0;
+}
+
 static int rkvdec_3328_iommu_hdl(struct iommu_domain *iommu,
 				 struct device *iommu_dev,
 				 unsigned long iova,
@@ -1299,7 +1228,7 @@ static int rkvdec_devfreq_remove(struct mpp_dev *mpp)
 	struct rkvdec_dev *dec = to_rkvdec_dev(mpp);
 
 	devfreq_unregister_opp_notifier(mpp->dev, dec->devfreq);
-	dev_pm_opp_of_remove_table(mpp->dev);
+	rockchip_uninit_opp_table(mpp->dev, &dec->opp_info);
 
 	return 0;
 }
@@ -1311,7 +1240,7 @@ static int rkvdec_devfreq_init(struct mpp_dev *mpp)
 	struct rkvdec_dev *dec = to_rkvdec_dev(mpp);
 
 	mutex_init(&dec->set_clk_lock);
-	dec->parent_devfreq = devfreq_get_devfreq_by_phandle(mpp->dev, 0);
+	dec->parent_devfreq = devfreq_get_devfreq_by_phandle(mpp->dev, "rkvdec_devfreq", 0);
 	if (IS_ERR_OR_NULL(dec->parent_devfreq)) {
 		if (PTR_ERR(dec->parent_devfreq) == -EPROBE_DEFER) {
 			dev_warn(mpp->dev, "parent devfreq is not ready, retry\n");
@@ -1338,42 +1267,28 @@ static int rkvdec_devfreq_init(struct mpp_dev *mpp)
 		return 0;
 	}
 
-	ret = rockchip_init_opp_table(mpp->dev, NULL,
-				      "rkvdec_leakage", "vcodec");
+	ret = rockchip_init_opp_table(mpp->dev, &dec->opp_info, NULL, "vcodec");
 	if (ret) {
 		dev_err(mpp->dev, "Failed to init_opp_table\n");
-		goto done;
+		return ret;
 	}
 	dec->devfreq = devm_devfreq_add_device(mpp->dev, &devfreq_profile,
 					       "userspace", NULL);
 	if (IS_ERR(dec->devfreq)) {
 		ret = PTR_ERR(dec->devfreq);
-		goto done;
+		return ret;
 	}
 
 	stat = &dec->devfreq->last_status;
 	stat->current_frequency = clk_get_rate(dec->aclk_info.clk);
 
 	ret = devfreq_register_opp_notifier(mpp->dev, dec->devfreq);
-	if (ret)
-		goto done;
-
-	/* power simplle init */
-	ret = power_model_simple_init(mpp);
-	if (!ret && dec->devfreq) {
-		dec->devfreq_cooling =
-			of_devfreq_cooling_register_power(mpp->dev->of_node,
-							  dec->devfreq,
-							  &cooling_power_data);
-		if (IS_ERR_OR_NULL(dec->devfreq_cooling)) {
-			ret = -ENXIO;
-			dev_err(mpp->dev, "Failed to register cooling\n");
-			goto done;
-		}
+	if (ret < 0) {
+		dev_err(mpp->dev, "failed to register opp notifier\n");
+		return ret;
 	}
 
-done:
-	return ret;
+	return 0;
 }
 #else
 static inline int rkvdec_devfreq_remove(struct mpp_dev *mpp)
@@ -1402,7 +1317,7 @@ static int rkvdec_3328_init(struct mpp_dev *mpp)
 		goto done;
 	}
 	dec->aux_iova = -1;
-	mpp->iommu_info->hdl = rkvdec_3328_iommu_hdl;
+	mpp->fault_handler = rkvdec_3328_iommu_hdl;
 
 	ret = rkvdec_devfreq_init(mpp);
 done:
@@ -1510,6 +1425,52 @@ static int rkvdec_3368_set_grf(struct mpp_dev *mpp)
 
 	dec->grf_changed = mpp_grf_is_changed(mpp->grf_info);
 	mpp_set_grf(mpp->grf_info);
+
+	return 0;
+}
+
+static int rkvdec_3036_set_grf(struct mpp_dev *mpp)
+{
+	int grf_changed;
+	struct mpp_dev *loop = NULL, *n;
+	struct mpp_taskqueue *queue = mpp->queue;
+	bool pd_is_on;
+
+	grf_changed = mpp_grf_is_changed(mpp->grf_info);
+	if (grf_changed) {
+
+		/*
+		 * in this case, devices share the queue also share the same pd&clk,
+		 * so use mpp->dev's pd to control all the process is okay
+		 */
+		pd_is_on = rockchip_pmu_pd_is_on(mpp->dev);
+		if (!pd_is_on)
+			rockchip_pmu_pd_on(mpp->dev);
+		mpp->hw_ops->clk_on(mpp);
+
+		list_for_each_entry_safe(loop, n, &queue->dev_list, queue_link) {
+			if (test_bit(loop->var->device_type, &queue->dev_active_flags)) {
+				mpp_set_grf(loop->grf_info);
+				if (loop->hw_ops->clk_on)
+					loop->hw_ops->clk_on(loop);
+				if (loop->hw_ops->reset)
+					loop->hw_ops->reset(loop);
+				rockchip_iommu_disable(loop->dev);
+				if (loop->hw_ops->clk_off)
+					loop->hw_ops->clk_off(loop);
+				clear_bit(loop->var->device_type, &queue->dev_active_flags);
+			}
+		}
+
+		mpp_set_grf(mpp->grf_info);
+		rockchip_iommu_enable(mpp->dev);
+		set_bit(mpp->var->device_type, &queue->dev_active_flags);
+
+		mpp->hw_ops->clk_off(mpp);
+		if (!pd_is_on)
+			rockchip_pmu_pd_off(mpp->dev);
+	}
+
 
 	return 0;
 }
@@ -1629,7 +1590,7 @@ static int rkvdec_reset(struct mpp_dev *mpp)
 
 	mpp_debug_enter();
 	if (dec->rst_a && dec->rst_h) {
-		rockchip_pmu_idle_request(mpp->dev, true);
+		mpp_pmu_idle_request(mpp, true);
 		mpp_safe_reset(dec->rst_niu_a);
 		mpp_safe_reset(dec->rst_niu_h);
 		mpp_safe_reset(dec->rst_a);
@@ -1645,7 +1606,7 @@ static int rkvdec_reset(struct mpp_dev *mpp)
 		mpp_safe_unreset(dec->rst_core);
 		mpp_safe_unreset(dec->rst_cabac);
 		mpp_safe_unreset(dec->rst_hevc_cabac);
-		rockchip_pmu_idle_request(mpp->dev, false);
+		mpp_pmu_idle_request(mpp, false);
 	}
 	mpp_debug_leave();
 
@@ -1654,18 +1615,18 @@ static int rkvdec_reset(struct mpp_dev *mpp)
 
 static int rkvdec_sip_reset(struct mpp_dev *mpp)
 {
-	struct rkvdec_dev *dec = to_rkvdec_dev(mpp);
+	if (IS_REACHABLE(CONFIG_ROCKCHIP_SIP)) {
+		/* The reset flow in arm trustzone firmware */
+		struct rkvdec_dev *dec = to_rkvdec_dev(mpp);
 
-/* The reset flow in arm trustzone firmware */
-#if IS_ENABLED(CONFIG_ROCKCHIP_SIP)
-	mutex_lock(&dec->sip_reset_lock);
-	sip_smc_vpu_reset(0, 0, 0);
-	mutex_unlock(&dec->sip_reset_lock);
+		mutex_lock(&dec->sip_reset_lock);
+		sip_smc_vpu_reset(0, 0, 0);
+		mutex_unlock(&dec->sip_reset_lock);
 
-	return 0;
-#else
-	return rkvdec_reset(mpp);
-#endif
+		return 0;
+	} else {
+		return rkvdec_reset(mpp);
+	}
 }
 
 static struct mpp_hw_ops rkvdec_v1_hw_ops = {
@@ -1687,6 +1648,17 @@ static struct mpp_hw_ops rkvdec_px30_hw_ops = {
 	.reduce_freq = rkvdec_reduce_freq,
 	.reset = rkvdec_reset,
 	.set_grf = px30_workaround_combo_switch_grf,
+};
+
+static struct mpp_hw_ops rkvdec_3036_hw_ops = {
+	.init = rkvdec_3036_init,
+	.clk_on = rkvdec_clk_on,
+	.clk_off = rkvdec_clk_off,
+	.get_freq = rkvdec_get_freq,
+	.set_freq = rkvdec_set_freq,
+	.reduce_freq = rkvdec_reduce_freq,
+	.reset = rkvdec_reset,
+	.set_grf = rkvdec_3036_set_grf,
 };
 
 static struct mpp_hw_ops rkvdec_3399_hw_ops = {
@@ -1713,6 +1685,16 @@ static struct mpp_hw_ops rkvdec_3368_hw_ops = {
 static struct mpp_dev_ops rkvdec_v1_dev_ops = {
 	.alloc_task = rkvdec_alloc_task,
 	.run = rkvdec_run,
+	.irq = rkvdec_irq,
+	.isr = rkvdec_isr,
+	.finish = rkvdec_finish,
+	.result = rkvdec_result,
+	.free_task = rkvdec_free_task,
+};
+
+static struct mpp_dev_ops rkvdec_px30_dev_ops = {
+	.alloc_task = rkvdec_alloc_task,
+	.run = rkvdec_px30_run,
 	.irq = rkvdec_irq,
 	.isr = rkvdec_isr,
 	.finish = rkvdec_finish,
@@ -1769,6 +1751,14 @@ static const struct mpp_dev_var rk_hevcdec_data = {
 	.dev_ops = &rkvdec_v1_dev_ops,
 };
 
+static const struct mpp_dev_var rk_hevcdec_3036_data = {
+	.device_type = MPP_DEVICE_HEVC_DEC,
+	.hw_info = &rk_hevcdec_hw_info,
+	.trans_info = rk_hevcdec_trans,
+	.hw_ops = &rkvdec_3036_hw_ops,
+	.dev_ops = &rkvdec_v1_dev_ops,
+};
+
 static const struct mpp_dev_var rk_hevcdec_3368_data = {
 	.device_type = MPP_DEVICE_HEVC_DEC,
 	.hw_info = &rk_hevcdec_hw_info,
@@ -1782,7 +1772,7 @@ static const struct mpp_dev_var rk_hevcdec_px30_data = {
 	.hw_info = &rk_hevcdec_hw_info,
 	.trans_info = rk_hevcdec_trans,
 	.hw_ops = &rkvdec_px30_hw_ops,
-	.dev_ops = &rkvdec_v1_dev_ops,
+	.dev_ops = &rkvdec_px30_dev_ops,
 };
 
 static const struct mpp_dev_var rkvdec_v1_data = {
@@ -1826,6 +1816,12 @@ static const struct of_device_id mpp_rkvdec_dt_match[] = {
 	{
 		.compatible = "rockchip,hevc-decoder-px30",
 		.data = &rk_hevcdec_px30_data,
+	},
+#endif
+#ifdef CONFIG_CPU_RK3036
+	{
+		.compatible = "rockchip,hevc-decoder-rk3036",
+		.data = &rk_hevcdec_3036_data,
 	},
 #endif
 #ifdef CONFIG_CPU_RK3368
@@ -1873,7 +1869,7 @@ static int rkvdec_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mpp = &dec->mpp;
-	platform_set_drvdata(pdev, dec);
+	platform_set_drvdata(pdev, mpp);
 
 	if (pdev->dev.of_node) {
 		match = of_match_node(mpp_rkvdec_dt_match,
@@ -1890,7 +1886,7 @@ static int rkvdec_probe(struct platform_device *pdev)
 
 	ret = devm_request_threaded_irq(dev, mpp->irq,
 					mpp_dev_irq,
-					mpp_dev_isr_sched,
+					NULL,
 					IRQF_SHARED,
 					dev_name(dev), mpp);
 	if (ret) {
@@ -1910,40 +1906,23 @@ static int rkvdec_probe(struct platform_device *pdev)
 static int rkvdec_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct rkvdec_dev *dec = platform_get_drvdata(pdev);
+	struct mpp_dev *mpp = platform_get_drvdata(pdev);
 
 	dev_info(dev, "remove device\n");
-	mpp_dev_remove(&dec->mpp);
-	rkvdec_procfs_remove(&dec->mpp);
+	mpp_dev_remove(mpp);
+	rkvdec_procfs_remove(mpp);
 
 	return 0;
-}
-
-static void rkvdec_shutdown(struct platform_device *pdev)
-{
-	int ret;
-	int val;
-	struct device *dev = &pdev->dev;
-	struct rkvdec_dev *dec = platform_get_drvdata(pdev);
-	struct mpp_dev *mpp = &dec->mpp;
-
-	dev_info(dev, "shutdown device\n");
-
-	atomic_inc(&mpp->srv->shutdown_request);
-	ret = readx_poll_timeout(atomic_read,
-				 &mpp->task_count,
-				 val, val == 0, 20000, 200000);
-	if (ret == -ETIMEDOUT)
-		dev_err(dev, "wait total running time out\n");
 }
 
 struct platform_driver rockchip_rkvdec_driver = {
 	.probe = rkvdec_probe,
 	.remove = rkvdec_remove,
-	.shutdown = rkvdec_shutdown,
+	.shutdown = mpp_dev_shutdown,
 	.driver = {
 		.name = RKVDEC_DRIVER_NAME,
 		.of_match_table = of_match_ptr(mpp_rkvdec_dt_match),
+		.pm = &mpp_common_pm_ops,
 	},
 };
 EXPORT_SYMBOL(rockchip_rkvdec_driver);

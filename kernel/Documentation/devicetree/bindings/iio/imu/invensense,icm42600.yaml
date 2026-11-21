@@ -47,10 +47,18 @@ properties:
   vddio-supply:
     description: Regulator that provides power to the bus
 
+  spi-cpha: true
+  spi-cpol: true
+
 required:
   - compatible
   - reg
   - interrupts
+
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+unevaluatedProperties: false
 
 examples:
   - |

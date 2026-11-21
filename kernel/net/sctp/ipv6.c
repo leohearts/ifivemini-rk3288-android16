@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* SCTP kernel implementation
  * (C) Copyright IBM Corp. 2002, 2004
  * Copyright (c) 2001 Nokia, Inc.
@@ -7,22 +8,6 @@
  * This file is part of the SCTP kernel implementation
  *
  * SCTP over IPv6.
- *
- * This SCTP implementation is free software;
- * you can redistribute it and/or modify it under the terms of
- * the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This SCTP implementation is distributed in the hope that it
- * will be useful, but WITHOUT ANY WARRANTY; without even the implied
- *		   ************************
- * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with GNU CC; see the file COPYING.  If not, see
- * <http://www.gnu.org/licenses/>.
  *
  * Please send any bug reports or fixes you make to the
  * email address(es):
@@ -70,6 +55,7 @@
 #include <net/inet_common.h>
 #include <net/inet_ecn.h>
 #include <net/sctp/sctp.h>
+#include <net/udp_tunnel.h>
 
 #include <linux/uaccess.h>
 
@@ -114,8 +100,9 @@ static int sctp_inet6addr_event(struct notifier_block *this, unsigned long ev,
 		list_for_each_entry_safe(addr, temp,
 					&net->sctp.local_addr_list, list) {
 			if (addr->a.sa.sa_family == AF_INET6 &&
-					ipv6_addr_equal(&addr->a.v6.sin6_addr,
-						&ifa->addr)) {
+			    ipv6_addr_equal(&addr->a.v6.sin6_addr,
+					    &ifa->addr) &&
+			    addr->a.v6.sin6_scope_id == ifa->idev->dev->ifindex) {
 				sctp_addr_wq_mgmt(net, addr, SCTP_ADDR_DEL);
 				found = 1;
 				addr->valid = 0;
@@ -136,20 +123,51 @@ static struct notifier_block sctp_inet6addr_notifier = {
 	.notifier_call = sctp_inet6addr_event,
 };
 
-/* ICMP error handler. */
-static void sctp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
-			u8 type, u8 code, int offset, __be32 info)
+static void sctp_v6_err_handle(struct sctp_transport *t, struct sk_buff *skb,
+			       __u8 type, __u8 code, __u32 info)
 {
-	struct inet6_dev *idev;
-	struct sock *sk;
-	struct sctp_association *asoc;
-	struct sctp_transport *transport;
+	struct sctp_association *asoc = t->asoc;
+	struct sock *sk = asoc->base.sk;
 	struct ipv6_pinfo *np;
-	__u16 saveip, savesctp;
-	int err;
-	struct net *net = dev_net(skb->dev);
+	int err = 0;
 
-	idev = in6_dev_get(skb->dev);
+	switch (type) {
+	case ICMPV6_PKT_TOOBIG:
+		if (ip6_sk_accept_pmtu(sk))
+			sctp_icmp_frag_needed(sk, asoc, t, info);
+		return;
+	case ICMPV6_PARAMPROB:
+		if (ICMPV6_UNK_NEXTHDR == code) {
+			sctp_icmp_proto_unreachable(sk, asoc, t);
+			return;
+		}
+		break;
+	case NDISC_REDIRECT:
+		sctp_icmp_redirect(sk, t, skb);
+		return;
+	default:
+		break;
+	}
+
+	np = inet6_sk(sk);
+	icmpv6_err_convert(type, code, &err);
+	if (!sock_owned_by_user(sk) && np->recverr) {
+		sk->sk_err = err;
+		sk_error_report(sk);
+	} else {
+		sk->sk_err_soft = err;
+	}
+}
+
+/* ICMP error handler. */
+static int sctp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
+		       u8 type, u8 code, int offset, __be32 info)
+{
+	struct net *net = dev_net(skb->dev);
+	struct sctp_transport *transport;
+	struct sctp_association *asoc;
+	__u16 saveip, savesctp;
+	struct sock *sk;
 
 	/* Fix up skb to look at the embedded net header. */
 	saveip	 = skb->network_header;
@@ -161,75 +179,93 @@ static void sctp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	skb->network_header   = saveip;
 	skb->transport_header = savesctp;
 	if (!sk) {
-		__ICMP6_INC_STATS(net, idev, ICMP6_MIB_INERRORS);
-		goto out;
+		__ICMP6_INC_STATS(net, __in6_dev_get(skb->dev), ICMP6_MIB_INERRORS);
+		return -ENOENT;
 	}
 
-	/* Warning:  The sock lock is held.  Remember to call
-	 * sctp_err_finish!
-	 */
-
-	switch (type) {
-	case ICMPV6_PKT_TOOBIG:
-		if (ip6_sk_accept_pmtu(sk))
-			sctp_icmp_frag_needed(sk, asoc, transport, ntohl(info));
-		goto out_unlock;
-	case ICMPV6_PARAMPROB:
-		if (ICMPV6_UNK_NEXTHDR == code) {
-			sctp_icmp_proto_unreachable(sk, asoc, transport);
-			goto out_unlock;
-		}
-		break;
-	case NDISC_REDIRECT:
-		sctp_icmp_redirect(sk, transport, skb);
-		goto out_unlock;
-	default:
-		break;
-	}
-
-	np = inet6_sk(sk);
-	icmpv6_err_convert(type, code, &err);
-	if (!sock_owned_by_user(sk) && np->recverr) {
-		sk->sk_err = err;
-		sk->sk_error_report(sk);
-	} else {  /* Only an error on timeout */
-		sk->sk_err_soft = err;
-	}
-
-out_unlock:
+	sctp_v6_err_handle(transport, skb, type, code, ntohl(info));
 	sctp_err_finish(sk, transport);
-out:
-	if (likely(idev != NULL))
-		in6_dev_put(idev);
+
+	return 0;
 }
 
-static int sctp_v6_xmit(struct sk_buff *skb, struct sctp_transport *transport)
+int sctp_udp_v6_err(struct sock *sk, struct sk_buff *skb)
 {
+	struct net *net = dev_net(skb->dev);
+	struct sctp_association *asoc;
+	struct sctp_transport *t;
+	struct icmp6hdr *hdr;
+	__u32 info = 0;
+
+	skb->transport_header += sizeof(struct udphdr);
+	sk = sctp_err_lookup(net, AF_INET6, skb, sctp_hdr(skb), &asoc, &t);
+	if (!sk) {
+		__ICMP6_INC_STATS(net, __in6_dev_get(skb->dev), ICMP6_MIB_INERRORS);
+		return -ENOENT;
+	}
+
+	skb->transport_header -= sizeof(struct udphdr);
+	hdr = (struct icmp6hdr *)(skb_network_header(skb) - sizeof(struct icmp6hdr));
+	if (hdr->icmp6_type == NDISC_REDIRECT) {
+		/* can't be handled without outer ip6hdr known, leave it to udpv6_err */
+		sctp_err_finish(sk, t);
+		return 0;
+	}
+	if (hdr->icmp6_type == ICMPV6_PKT_TOOBIG)
+		info = ntohl(hdr->icmp6_mtu);
+	sctp_v6_err_handle(t, skb, hdr->icmp6_type, hdr->icmp6_code, info);
+
+	sctp_err_finish(sk, t);
+	return 1;
+}
+
+static int sctp_v6_xmit(struct sk_buff *skb, struct sctp_transport *t)
+{
+	struct dst_entry *dst = dst_clone(t->dst);
+	struct flowi6 *fl6 = &t->fl.u.ip6;
 	struct sock *sk = skb->sk;
 	struct ipv6_pinfo *np = inet6_sk(sk);
-	struct flowi6 *fl6 = &transport->fl.u.ip6;
 	__u8 tclass = np->tclass;
-	int res;
+	__be32 label;
 
 	pr_debug("%s: skb:%p, len:%d, src:%pI6 dst:%pI6\n", __func__, skb,
 		 skb->len, &fl6->saddr, &fl6->daddr);
 
-	if (transport->dscp & SCTP_DSCP_SET_MASK)
-		tclass = transport->dscp & SCTP_DSCP_VAL_MASK;
+	if (t->dscp & SCTP_DSCP_SET_MASK)
+		tclass = t->dscp & SCTP_DSCP_VAL_MASK;
 
 	if (INET_ECN_is_capable(tclass))
 		IP6_ECN_flow_xmit(sk, fl6->flowlabel);
 
-	if (!(transport->param_flags & SPP_PMTUD_ENABLE))
+	if (!(t->param_flags & SPP_PMTUD_ENABLE))
 		skb->ignore_df = 1;
 
 	SCTP_INC_STATS(sock_net(sk), SCTP_MIB_OUTSCTPPACKS);
 
-	rcu_read_lock();
-	res = ip6_xmit(sk, skb, fl6, sk->sk_mark, rcu_dereference(np->opt),
-		       tclass);
-	rcu_read_unlock();
-	return res;
+	if (!t->encap_port || !sctp_sk(sk)->udp_port) {
+		int res;
+
+		skb_dst_set(skb, dst);
+		rcu_read_lock();
+		res = ip6_xmit(sk, skb, fl6, sk->sk_mark,
+			       rcu_dereference(np->opt),
+			       tclass, sk->sk_priority);
+		rcu_read_unlock();
+		return res;
+	}
+
+	if (skb_is_gso(skb))
+		skb_shinfo(skb)->gso_type |= SKB_GSO_UDP_TUNNEL_CSUM;
+
+	skb->encapsulation = 1;
+	skb_reset_inner_mac_header(skb);
+	skb_reset_inner_transport_header(skb);
+	skb_set_inner_ipproto(skb, IPPROTO_SCTP);
+	label = ip6_make_flowlabel(sock_net(sk), skb, fl6->flowlabel, true, fl6);
+
+	return udp_tunnel6_xmit_skb(dst, sk, skb, NULL, &fl6->saddr,
+				    &fl6->daddr, tclass, ip6_dst_hoplimit(dst),
+				    label, sctp_sk(sk)->udp_port, t->encap_port, false);
 }
 
 /* Returns the dst cache entry for the given source and destination ip
@@ -266,7 +302,7 @@ static void sctp_v6_get_dst(struct sctp_transport *t, union sctp_addr *saddr,
 		struct ip6_flowlabel *flowlabel;
 
 		flowlabel = fl6_sock_lookup(sk, fl6->flowlabel);
-		if (!flowlabel)
+		if (IS_ERR(flowlabel))
 			goto out;
 		fl6_sock_release(flowlabel);
 	}
@@ -511,7 +547,9 @@ static void sctp_v6_from_sk(union sctp_addr *addr, struct sock *sk)
 {
 	addr->v6.sin6_family = AF_INET6;
 	addr->v6.sin6_port = 0;
+	addr->v6.sin6_flowinfo = 0;
 	addr->v6.sin6_addr = sk->sk_v6_rcv_saddr;
+	addr->v6.sin6_scope_id = 0;
 }
 
 /* Initialize sk->sk_rcv_saddr from sctp_addr. */
@@ -890,9 +928,9 @@ static int sctp_inet6_af_supported(sa_family_t family, struct sctp_sock *sp)
 		return 1;
 	/* v4-mapped-v6 addresses */
 	case AF_INET:
-		if (!__ipv6_only_sock(sctp_opt2sk(sp)))
+		if (!ipv6_only_sock(sctp_opt2sk(sp)))
 			return 1;
-		/* fallthru */
+		fallthrough;
 	default:
 		return 0;
 	}
@@ -916,7 +954,7 @@ static int sctp_inet6_cmp_addr(const union sctp_addr *addr1,
 		return 0;
 
 	/* If the socket is IPv6 only, v4 addrs will not match */
-	if (__ipv6_only_sock(sk) && af1 != af2)
+	if (ipv6_only_sock(sk) && af1 != af2)
 		return 0;
 
 	/* Today, wildcard AF_INET/AF_INET6. */
@@ -1039,6 +1077,7 @@ static const struct proto_ops inet6_seqpacket_ops = {
 	.getname	   = sctp_getname,
 	.poll		   = sctp_poll,
 	.ioctl		   = inet6_ioctl,
+	.gettstamp	   = sock_gettstamp,
 	.listen		   = sctp_inet_listen,
 	.shutdown	   = inet_shutdown,
 	.setsockopt	   = sock_common_setsockopt,
@@ -1047,8 +1086,7 @@ static const struct proto_ops inet6_seqpacket_ops = {
 	.recvmsg	   = inet_recvmsg,
 	.mmap		   = sock_no_mmap,
 #ifdef CONFIG_COMPAT
-	.compat_setsockopt = compat_sock_common_setsockopt,
-	.compat_getsockopt = compat_sock_common_getsockopt,
+	.compat_ioctl	   = inet6_compat_ioctl,
 #endif
 };
 
@@ -1069,6 +1107,7 @@ static struct inet_protosw sctpv6_stream_protosw = {
 
 static int sctp6_rcv(struct sk_buff *skb)
 {
+	SCTP_INPUT_CB(skb)->encap_port = 0;
 	return sctp_rcv(skb) ? -1 : 0;
 }
 
@@ -1103,10 +1142,6 @@ static struct sctp_af sctp_af_inet6 = {
 	.net_header_len	   = sizeof(struct ipv6hdr),
 	.sockaddr_len	   = sizeof(struct sockaddr_in6),
 	.ip_options_len	   = sctp_v6_ip_options_len,
-#ifdef CONFIG_COMPAT
-	.compat_setsockopt = compat_ipv6_setsockopt,
-	.compat_getsockopt = compat_ipv6_getsockopt,
-#endif
 };
 
 static struct sctp_pf sctp_pf_inet6 = {

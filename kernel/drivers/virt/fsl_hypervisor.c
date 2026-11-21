@@ -247,7 +247,7 @@ static long ioctl_memcpy(struct fsl_hv_ioctl_memcpy __user *p)
 
 	/* Get the physical addresses of the source buffer */
 	num_pinned = get_user_pages_fast(param.local_vaddr - lb_offset,
-		num_pages, param.source != -1, pages);
+		num_pages, param.source != -1 ? FOLL_WRITE : 0, pages);
 
 	if (num_pinned != num_pages) {
 		pr_debug("fsl-hv: could not lock source buffer\n");
@@ -659,7 +659,6 @@ static int fsl_hv_open(struct inode *inode, struct file *filp)
 {
 	struct doorbell_queue *dbq;
 	unsigned long flags;
-	int ret = 0;
 
 	dbq = kzalloc(sizeof(struct doorbell_queue), GFP_KERNEL);
 	if (!dbq) {
@@ -676,7 +675,7 @@ static int fsl_hv_open(struct inode *inode, struct file *filp)
 
 	filp->private_data = dbq;
 
-	return ret;
+	return 0;
 }
 
 /*
@@ -687,15 +686,13 @@ static int fsl_hv_close(struct inode *inode, struct file *filp)
 	struct doorbell_queue *dbq = filp->private_data;
 	unsigned long flags;
 
-	int ret = 0;
-
 	spin_lock_irqsave(&db_list_lock, flags);
 	list_del(&dbq->list);
 	spin_unlock_irqrestore(&db_list_lock, flags);
 
 	kfree(dbq);
 
-	return ret;
+	return 0;
 }
 
 static const struct file_operations fsl_hv_fops = {
@@ -705,7 +702,7 @@ static const struct file_operations fsl_hv_fops = {
 	.poll = fsl_hv_poll,
 	.read = fsl_hv_read,
 	.unlocked_ioctl = fsl_hv_ioctl,
-	.compat_ioctl = fsl_hv_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
 };
 
 static struct miscdevice fsl_hv_misc_dev = {

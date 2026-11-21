@@ -9,6 +9,7 @@
  * for more details.
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -494,6 +495,8 @@ static int kyrofb_set_par(struct fb_info *info)
 				    info->var.hsync_len +
 				    info->var.left_margin)) / 1000;
 
+	if (!lineclock)
+		return -EINVAL;
 
 	/* time for a frame in ns (precision in 32bpp) */
 	frameclock = lineclock * (info->var.yres +
@@ -656,7 +659,7 @@ static struct pci_driver kyrofb_pci_driver = {
 	.remove		= kyrofb_remove,
 };
 
-static struct fb_ops kyrofb_ops = {
+static const struct fb_ops kyrofb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_check_var	= kyrofb_check_var,
 	.fb_set_par	= kyrofb_set_par,
@@ -673,6 +676,10 @@ static int kyrofb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct kyrofb_info *currentpar;
 	unsigned long size;
 	int err;
+
+	err = aperture_remove_conflicting_pci_devices(pdev, "kyrofb");
+	if (err)
+		return err;
 
 	if ((err = pci_enable_device(pdev))) {
 		printk(KERN_WARNING "kyrofb: Can't enable pdev: %d\n", err);
@@ -691,7 +698,7 @@ static int kyrofb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	kyro_fix.mmio_len   = pci_resource_len(pdev, 1);
 
 	currentpar->regbase = deviceInfo.pSTGReg =
-		ioremap_nocache(kyro_fix.mmio_start, kyro_fix.mmio_len);
+		ioremap(kyro_fix.mmio_start, kyro_fix.mmio_len);
 	if (!currentpar->regbase)
 		goto out_free_fb;
 

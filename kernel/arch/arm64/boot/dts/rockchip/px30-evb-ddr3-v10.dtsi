@@ -3,14 +3,11 @@
  * Copyright (c) 2017-2019 Fuzhou Rockchip Electronics Co., Ltd
  */
 
-/dts-v1/;
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/rockchip.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/display/drm_mipi_dsi.h>
 #include <dt-bindings/sensor-dev.h>
-#include "px30.dtsi"
-#include "px30-android.dtsi"
 
 / {
 	adc-keys {
@@ -21,14 +18,14 @@
 		keyup-threshold-microvolt = <1800000>;
 
 		esc-key {
-			linux,code = <KEY_ESC>;
-			label = "esc";
+			linux,code = <KEY_BACK>;
+			label = "back";
 			press-threshold-microvolt = <1310000>;
 		};
 
 		home-key {
-			linux,code = <KEY_HOME>;
-			label = "home";
+			linux,code = <KEY_HOMEPAGE>;
+			label = "homepage";
 			press-threshold-microvolt = <624000>;
 		};
 
@@ -99,33 +96,26 @@
 		status = "okay";
 	};
 
-	rk809-sound {
-		compatible = "simple-audio-card";
-		simple-audio-card,format = "i2s";
-		simple-audio-card,name = "rockchip,rk809-codec";
-		simple-audio-card,mclk-fs = <256>;
-		simple-audio-card,widgets =
-			"Microphone", "Mic Jack",
-			"Headphone", "Headphone Jack";
-		simple-audio-card,routing =
-			"Mic Jack", "MICBIAS1",
-			"IN1P", "Mic Jack",
-			"Headphone Jack", "HPOL",
-			"Headphone Jack", "HPOR";
-		simple-audio-card,cpu {
-			sound-dai = <&i2s1_2ch>;
-		};
-		simple-audio-card,codec {
-			sound-dai = <&rk809_codec>;
-		};
-	};
-
-	rk_headset: rk-headset {
-		compatible = "rockchip_headset";
-		headset_gpio = <&gpio3 RK_PA4 GPIO_ACTIVE_LOW>;
+	rk809_sound: rk809-sound {
+		status = "okay";
+		compatible = "rockchip,multicodecs-card";
+		rockchip,card-name = "rockchip-rk809";
+		hp-det-gpio = <&gpio2 RK_PB0 GPIO_ACTIVE_LOW>;
+		io-channels = <&saradc 1>;
+		io-channel-names = "adc-detect";
+		keyup-threshold-microvolt = <1800000>;
+		poll-interval = <100>;
+		rockchip,format = "i2s";
+		rockchip,mclk-fs = <256>;
+		rockchip,cpu = <&i2s1_2ch>;
+		rockchip,codec = <&rk809_codec>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&hp_det>;
-		io-channels = <&saradc 1>;
+		play-pause-key {
+			label = "playpause";
+			linux,code = <KEY_PLAYPAUSE>;
+			press-threshold-microvolt = <2000>;
+		};
 	};
 
 	sdio_pwrseq: sdio-pwrseq {
@@ -168,19 +158,21 @@
 		compatible = "wlan-platdata";
 		wifi_chip_type = "AP6210";
 		WIFI,host_wake_irq = <&gpio0 RK_PB2 GPIO_ACTIVE_HIGH>;
+		WIFI,poweren_gpio = <&gpio0 RK_PA2 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 	};
 
-	wireless-bluetooth {
+	wireless_bluetooth: wireless-bluetooth {
 		compatible = "bluetooth-platdata";
+		bt_port = "/dev/ttyS1";
 		clocks = <&rk809 1>;
 		clock-names = "ext_clock";
 		uart_rts_gpios = <&gpio1 RK_PC3 GPIO_ACTIVE_LOW>;
 		pinctrl-names = "default","rts_gpio";
 		pinctrl-0 = <&uart1_rts>;
-		pinctrl-1 = <&uart1_rts_gpio>;
-		BT,reset_gpio = <&gpio0 RK_PA1 GPIO_ACTIVE_HIGH>;
-		BT,wake_gpio = <&gpio2 RK_PB0 GPIO_ACTIVE_HIGH>;
+		pinctrl-1 = <&uart1_gpios>;
+		BT,reset_gpio = <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
+		BT,wake_gpio = <&gpio0 RK_PA1 GPIO_ACTIVE_HIGH>;
 		BT,wake_host_irq = <&gpio0 RK_PB3 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 	};
@@ -225,7 +217,8 @@
 	bus-width = <8>;
 	cap-mmc-highspeed;
 	mmc-hs200-1_8v;
-	supports-emmc;
+	no-sdio;
+	no-sd;
 	disable-wp;
 	non-removable;
 	num-slots = <1>;
@@ -234,7 +227,11 @@
 
 &gmac {
 	phy-supply = <&vcc_phy>;
-	clock_in_out = "output";
+	clock_in_out = "input";
+	assigned-clocks = <&cru SCLK_GMAC>;
+	assigned-clock-parents = <&gmac_clkin>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&rmii_pins &mac_refclk>;
 	snps,reset-gpio = <&gpio2 13 GPIO_ACTIVE_LOW>;
 	snps,reset-active-low;
 	snps,reset-delays-us = <0 50000 50000>;
@@ -257,9 +254,9 @@
 		pinctrl-names = "default", "pmic-sleep",
 				"pmic-power-off", "pmic-reset";
 		pinctrl-0 = <&pmic_int>;
-		pinctrl-1 = <&soc_slppin_slp>, <&rk817_slppin_slp>;
-		pinctrl-2 = <&soc_slppin_gpio>, <&rk817_slppin_pwrdn>;
-		pinctrl-3 = <&soc_slppin_rst>, <&rk817_slppin_rst>;
+		pinctrl-1 = <&soc_slppin_slp>;
+		pinctrl-2 = <&soc_slppin_gpio>;
+		pinctrl-3 = <&soc_slppin_rst>;
 		rockchip,system-power-controller;
 		wakeup-source;
 		#clock-cells = <1>;
@@ -280,31 +277,6 @@
 
 		pwrkey {
 			status = "okay";
-		};
-
-		pinctrl_rk8xx: pinctrl_rk8xx {
-			gpio-controller;
-			#gpio-cells = <2>;
-
-			rk817_slppin_null: rk817_slppin_null {
-				pins = "gpio_slp";
-				function = "pin_fun0";
-			};
-
-			rk817_slppin_slp: rk817_slppin_slp {
-				pins = "gpio_slp";
-				function = "pin_fun1";
-			};
-
-			rk817_slppin_pwrdn: rk817_slppin_pwrdn {
-				pins = "gpio_slp";
-				function = "pin_fun2";
-			};
-
-			rk817_slppin_rst: rk817_slppin_rst {
-				pins = "gpio_slp";
-				function = "pin_fun3";
-			};
 		};
 
 		regulators {
@@ -487,13 +459,13 @@
 				};
 			};
 
-			vcc5v0_host: SWITCH_REG2 {
+			vcc5v0_host: SWITCH_REG1 {
 				regulator-always-on;
 				regulator-boot-on;
 				regulator-name = "vcc5v0_host";
 			};
 
-			vcc3v3_lcd: SWITCH_REG1 {
+			vcc3v3_lcd: SWITCH_REG2 {
 				regulator-boot-on;
 				regulator-name = "vcc3v3_lcd";
 			};
@@ -557,17 +529,6 @@
 	i2c-scl-falling-time-ns = <50>;
 	i2c-scl-rising-time-ns = <300>;
 
-	dw9714: dw9714@c {
-		compatible = "dongwoon,dw9714";
-		status = "okay";
-		reg = <0x0c>;
-		rockchip,camera-module-index = <0>;
-		rockchip,vcm-start-current = <10>;
-		rockchip,vcm-rated-current = <85>;
-		rockchip,vcm-step-mode = <5>;
-		rockchip,camera-module-facing = "back";
-	};
-
 	ov5695: ov5695@36 {
 		compatible = "ovti,ov5695";
 		reg = <0x36>;
@@ -581,7 +542,6 @@
 		rockchip,camera-module-facing = "back";
 		rockchip,camera-module-name = "TongJu";
 		rockchip,camera-module-lens-name = "CHT842-MD";
-		lens-focus = <&dw9714>;
 		port {
 			ucam_out: endpoint {
 				remote-endpoint = <&mipi_in_ucam>;
@@ -649,7 +609,7 @@
 &pinctrl {
 	headphone {
 		hp_det: hp-det {
-			rockchip,pins = <3 RK_PA4 RK_FUNC_GPIO &pcfg_pull_down>;
+			rockchip,pins = <2 RK_PB0 RK_FUNC_GPIO &pcfg_pull_down>;
 		};
 	};
 
@@ -678,6 +638,12 @@
 	sdio-pwrseq {
 		wifi_enable_h: wifi-enable-h {
 			rockchip,pins = <0 RK_PA2 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
+	wireless-bluetooth {
+		uart1_gpios: uart1-gpios {
+			rockchip,pins = <1 RK_PC3 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
 };
@@ -725,7 +691,8 @@
 	bus-width = <4>;
 	cap-mmc-highspeed;
 	cap-sd-highspeed;
-	supports-sd;
+	no-sdio;
+	no-mmc;
 	card-detect-delay = <800>;
 	ignore-pm-notify;
 	/*cd-gpios = <&gpio2 4 GPIO_ACTIVE_HIGH>; [> CD GPIO <]*/
@@ -741,7 +708,8 @@
 &sdio {
 	bus-width = <4>;
 	cap-sd-highspeed;
-	supports-sdio;
+	no-sd;
+	no-mmc;
 	ignore-pm-notify;
 	keep-power-in-suspend;
 	non-removable;
@@ -752,7 +720,7 @@
 
 &tsadc {
 	pinctrl-names = "gpio", "otpout";
-	pinctrl-0 = <&tsadc_otp_gpio>;
+	pinctrl-0 = <&tsadc_otp_pin>;
 	pinctrl-1 = <&tsadc_otp_out>;
 	status = "okay";
 };

@@ -50,7 +50,7 @@ static DEFINE_SPINLOCK(gemini_clk_lock);
 #define PCI_DLL_TAP_SEL_MASK		0x1f
 
 /**
- * struct gemini_data_data - Gemini gated clocks
+ * struct gemini_gate_data - Gemini gated clocks
  * @bit_idx: the bit used to gate this clock in the clock register
  * @name: the clock name
  * @parent_name: the name of the parent clock
@@ -193,7 +193,7 @@ static struct clk_hw *gemini_pci_clk_setup(const char *name,
 					   struct regmap *map)
 {
 	struct clk_gemini_pci *pciclk;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	int ret;
 
 	pciclk = kzalloc(sizeof(*pciclk), GFP_KERNEL);

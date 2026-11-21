@@ -5,6 +5,7 @@
  * Copyright (C) 2020 Rockchip Electronics Co., Ltd.
  *
  * V0.0X01.0X01 first version
+ * V0.0X01.0X02 support fastboot
  */
 
 //#define DEBUG
@@ -26,6 +27,9 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
 #include <linux/pinctrl/consumer.h>
+#include "../platform/rockchip/isp/rkisp_tb_helper.h"
+#include "cam-tb-setup.h"
+#include "cam-sleep-wakeup.h"
 
 #define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x01)
 
@@ -110,14 +114,6 @@ struct regval {
 	u8 val;
 };
 
-enum sc4336_max_pad {
-	PAD0, /* link to isp */
-	PAD1, /* link to csi wr0 | hdr x2:L x3:M */
-	PAD2, /* link to csi wr1 | hdr      x3:L */
-	PAD3, /* link to csi wr2 | hdr x2:M x3:S */
-	PAD_MAX,
-};
-
 struct sc4336_mode {
 	u32 bus_fmt;
 	u32 width;
@@ -155,11 +151,15 @@ struct sc4336 {
 	bool			streaming;
 	bool			power_on;
 	const struct sc4336_mode *cur_mode;
+	struct v4l2_fract	cur_fps;
 	u32			module_index;
 	const char		*module_facing;
 	const char		*module_name;
 	const char		*len_name;
 	u32			cur_vts;
+	bool			is_thunderboot;
+	bool			is_first_streamoff;
+	struct cam_sw_info	*cam_sw_inf;
 };
 
 #define to_sc4336(sd) container_of(sd, struct sc4336, subdev)
@@ -314,6 +314,8 @@ static const struct regval sc4336_linear_10_2560x1440_regs[] = {
 	{0x5aed, 0x2c},
 	{0x36e9, 0x53},
 	{0x37f9, 0x23},
+	{0x320e, 0x07},
+	{0x320f, 0x08},
 	{REG_NULL, 0x00},
 };
 
@@ -323,15 +325,15 @@ static const struct sc4336_mode supported_modes[] = {
 		.height = 1440,
 		.max_fps = {
 			.numerator = 10000,
-			.denominator = 300000,
+			.denominator = 250000,
 		},
 		.exp_def = 0x0080,
 		.hts_def = 0x0578 * 2,
-		.vts_def = 0x05dc,
+		.vts_def = 0x0708,
 		.bus_fmt = MEDIA_BUS_FMT_SBGGR10_1X10,
 		.reg_list = sc4336_linear_10_2560x1440_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	}
 };
 
@@ -522,7 +524,7 @@ sc4336_find_best_fit(struct v4l2_subdev_format *fmt)
 }
 
 static int sc4336_set_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_pad_config *cfg,
+			   struct v4l2_subdev_state *sd_state,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct sc4336 *sc4336 = to_sc4336(sd);
@@ -538,7 +540,7 @@ static int sc4336_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&sc4336->mutex);
 		return -ENOTTY;
@@ -552,6 +554,7 @@ static int sc4336_set_fmt(struct v4l2_subdev *sd,
 		__v4l2_ctrl_modify_range(sc4336->vblank, vblank_def,
 					 SC4336_VTS_MAX - mode->height,
 					 1, vblank_def);
+		sc4336->cur_fps = mode->max_fps;
 	}
 
 	mutex_unlock(&sc4336->mutex);
@@ -560,7 +563,7 @@ static int sc4336_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int sc4336_get_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_pad_config *cfg,
+			   struct v4l2_subdev_state *sd_state,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct sc4336 *sc4336 = to_sc4336(sd);
@@ -569,7 +572,7 @@ static int sc4336_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&sc4336->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&sc4336->mutex);
 		return -ENOTTY;
@@ -591,7 +594,7 @@ static int sc4336_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int sc4336_enum_mbus_code(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct sc4336 *sc4336 = to_sc4336(sd);
@@ -604,7 +607,7 @@ static int sc4336_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int sc4336_enum_frame_sizes(struct v4l2_subdev *sd,
-				    struct v4l2_subdev_pad_config *cfg,
+				    struct v4l2_subdev_state *sd_state,
 				    struct v4l2_subdev_frame_size_enum *fse)
 {
 	if (fse->index >= ARRAY_SIZE(supported_modes))
@@ -644,29 +647,20 @@ static int sc4336_g_frame_interval(struct v4l2_subdev *sd,
 	struct sc4336 *sc4336 = to_sc4336(sd);
 	const struct sc4336_mode *mode = sc4336->cur_mode;
 
-	mutex_lock(&sc4336->mutex);
-	fi->interval = mode->max_fps;
-	mutex_unlock(&sc4336->mutex);
+	if (sc4336->streaming)
+		fi->interval = sc4336->cur_fps;
+	else
+		fi->interval = mode->max_fps;
 
 	return 0;
 }
 
 static int sc4336_g_mbus_config(struct v4l2_subdev *sd,
+				unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
-	struct sc4336 *sc4336 = to_sc4336(sd);
-	const struct sc4336_mode *mode = sc4336->cur_mode;
-	u32 val = 1 << (SC4336_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-
-	if (mode->hdr_mode != NO_HDR)
-		val |= V4L2_MBUS_CSI2_CHANNEL_1;
-	if (mode->hdr_mode == HDR_X3)
-		val |= V4L2_MBUS_CSI2_CHANNEL_2;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = SC4336_LANES;
 
 	return 0;
 }
@@ -831,15 +825,16 @@ static long sc4336_compat_ioctl32(struct v4l2_subdev *sd,
 static int __sc4336_start_stream(struct sc4336 *sc4336)
 {
 	int ret;
+	if (!sc4336->is_thunderboot) {
+		ret = sc4336_write_array(sc4336->client, sc4336->cur_mode->reg_list);
+		if (ret)
+			return ret;
 
-	ret = sc4336_write_array(sc4336->client, sc4336->cur_mode->reg_list);
-	if (ret)
-		return ret;
-
-	/* In case these controls are set before streaming */
-	ret = __v4l2_ctrl_handler_setup(&sc4336->ctrl_handler);
-	if (ret)
-		return ret;
+		/* In case these controls are set before streaming */
+		ret = __v4l2_ctrl_handler_setup(&sc4336->ctrl_handler);
+		if (ret)
+			return ret;
+	}
 
 	return sc4336_write_reg(sc4336->client, SC4336_REG_CTRL_MODE,
 				 SC4336_REG_VALUE_08BIT, SC4336_MODE_STREAMING);
@@ -847,10 +842,15 @@ static int __sc4336_start_stream(struct sc4336 *sc4336)
 
 static int __sc4336_stop_stream(struct sc4336 *sc4336)
 {
+	if (sc4336->is_thunderboot) {
+		sc4336->is_first_streamoff = true;
+		pm_runtime_put(&sc4336->client->dev);
+	}
 	return sc4336_write_reg(sc4336->client, SC4336_REG_CTRL_MODE,
 				 SC4336_REG_VALUE_08BIT, SC4336_MODE_SW_STANDBY);
 }
 
+static int __sc4336_power_on(struct sc4336 *sc4336);
 static int sc4336_s_stream(struct v4l2_subdev *sd, int on)
 {
 	struct sc4336 *sc4336 = to_sc4336(sd);
@@ -863,6 +863,11 @@ static int sc4336_s_stream(struct v4l2_subdev *sd, int on)
 		goto unlock_and_return;
 
 	if (on) {
+		if (sc4336->is_thunderboot && rkisp_tb_get_state() == RKISP_TB_NG) {
+			sc4336->is_thunderboot = false;
+			__sc4336_power_on(sc4336);
+		}
+
 		ret = pm_runtime_get_sync(&client->dev);
 		if (ret < 0) {
 			pm_runtime_put_noidle(&client->dev);
@@ -907,11 +912,13 @@ static int sc4336_s_power(struct v4l2_subdev *sd, int on)
 			goto unlock_and_return;
 		}
 
-		ret = sc4336_write_array(sc4336->client, sc4336_global_regs);
-		if (ret) {
-			v4l2_err(sd, "could not set init registers\n");
-			pm_runtime_put_noidle(&client->dev);
-			goto unlock_and_return;
+		if (!sc4336->is_thunderboot) {
+			ret = sc4336_write_array(sc4336->client, sc4336_global_regs);
+			if (ret) {
+				v4l2_err(sd, "could not set init registers\n");
+				pm_runtime_put_noidle(&client->dev);
+				goto unlock_and_return;
+			}
 		}
 
 		sc4336->power_on = true;
@@ -954,6 +961,12 @@ static int __sc4336_power_on(struct sc4336 *sc4336)
 		dev_err(dev, "Failed to enable xvclk\n");
 		return ret;
 	}
+
+	cam_sw_regulator_bulk_init(sc4336->cam_sw_inf, SC4336_NUM_SUPPLIES, sc4336->supplies);
+
+	if (sc4336->is_thunderboot)
+		return 0;
+
 	if (!IS_ERR(sc4336->reset_gpio))
 		gpiod_set_value_cansleep(sc4336->reset_gpio, 0);
 
@@ -992,9 +1005,18 @@ static void __sc4336_power_off(struct sc4336 *sc4336)
 	int ret;
 	struct device *dev = &sc4336->client->dev;
 
+	clk_disable_unprepare(sc4336->xvclk);
+	if (sc4336->is_thunderboot) {
+		if (sc4336->is_first_streamoff) {
+			sc4336->is_thunderboot = false;
+			sc4336->is_first_streamoff = false;
+		} else {
+			return;
+		}
+	}
+
 	if (!IS_ERR(sc4336->pwdn_gpio))
 		gpiod_set_value_cansleep(sc4336->pwdn_gpio, 0);
-	clk_disable_unprepare(sc4336->xvclk);
 	if (!IS_ERR(sc4336->reset_gpio))
 		gpiod_set_value_cansleep(sc4336->reset_gpio, 0);
 	if (!IS_ERR_OR_NULL(sc4336->pins_sleep)) {
@@ -1006,7 +1028,43 @@ static void __sc4336_power_off(struct sc4336 *sc4336)
 	regulator_bulk_disable(SC4336_NUM_SUPPLIES, sc4336->supplies);
 }
 
-static int sc4336_runtime_resume(struct device *dev)
+#if IS_REACHABLE(CONFIG_VIDEO_CAM_SLEEP_WAKEUP)
+static int __maybe_unused sc4336_resume(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct sc4336 *sc4336 = to_sc4336(sd);
+
+	cam_sw_prepare_wakeup(sc4336->cam_sw_inf, dev);
+
+	usleep_range(4000, 5000);
+	cam_sw_write_array(sc4336->cam_sw_inf);
+
+	if (__v4l2_ctrl_handler_setup(&sc4336->ctrl_handler))
+		dev_err(dev, "__v4l2_ctrl_handler_setup fail!");
+
+	return 0;
+}
+
+static int __maybe_unused sc4336_suspend(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct sc4336 *sc4336 = to_sc4336(sd);
+
+	cam_sw_write_array_cb_init(sc4336->cam_sw_inf, client,
+				(void *)sc4336->cur_mode->reg_list,
+				(sensor_write_array)sc4336_write_array);
+	cam_sw_prepare_sleep(sc4336->cam_sw_inf);
+
+	return 0;
+}
+#else
+#define sc4336_resume NULL
+#define sc4336_suspend NULL
+#endif
+
+static int __maybe_unused sc4336_runtime_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
@@ -1015,7 +1073,7 @@ static int sc4336_runtime_resume(struct device *dev)
 	return __sc4336_power_on(sc4336);
 }
 
-static int sc4336_runtime_suspend(struct device *dev)
+static int __maybe_unused sc4336_runtime_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
@@ -1031,7 +1089,7 @@ static int sc4336_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct sc4336 *sc4336 = to_sc4336(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct sc4336_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&sc4336->mutex);
@@ -1049,7 +1107,7 @@ static int sc4336_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int sc4336_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	if (fie->index >= ARRAY_SIZE(supported_modes))
@@ -1066,6 +1124,7 @@ static int sc4336_enum_frame_interval(struct v4l2_subdev *sd,
 static const struct dev_pm_ops sc4336_pm_ops = {
 	SET_RUNTIME_PM_OPS(sc4336_runtime_suspend,
 			   sc4336_runtime_resume, NULL)
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(sc4336_suspend, sc4336_resume)
 };
 
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
@@ -1085,7 +1144,6 @@ static const struct v4l2_subdev_core_ops sc4336_core_ops = {
 static const struct v4l2_subdev_video_ops sc4336_video_ops = {
 	.s_stream = sc4336_s_stream,
 	.g_frame_interval = sc4336_g_frame_interval,
-	.g_mbus_config = sc4336_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops sc4336_pad_ops = {
@@ -1094,6 +1152,7 @@ static const struct v4l2_subdev_pad_ops sc4336_pad_ops = {
 	.enum_frame_interval = sc4336_enum_frame_interval,
 	.get_fmt = sc4336_get_fmt,
 	.set_fmt = sc4336_set_fmt,
+	.get_mbus_config = sc4336_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops sc4336_subdev_ops = {
@@ -1101,6 +1160,14 @@ static const struct v4l2_subdev_ops sc4336_subdev_ops = {
 	.video	= &sc4336_video_ops,
 	.pad	= &sc4336_pad_ops,
 };
+
+static void sc4336_modify_fps_info(struct sc4336 *sc4336)
+{
+	const struct sc4336_mode *mode = sc4336->cur_mode;
+
+	sc4336->cur_fps.denominator = mode->max_fps.denominator * mode->vts_def /
+				      sc4336->cur_vts;
+}
 
 static int sc4336_set_ctrl(struct v4l2_ctrl *ctrl)
 {
@@ -1164,6 +1231,7 @@ static int sc4336_set_ctrl(struct v4l2_ctrl *ctrl)
 					 (ctrl->val + sc4336->cur_mode->height)
 					 & 0xff);
 		sc4336->cur_vts = ctrl->val + sc4336->cur_mode->height;
+		sc4336_modify_fps_info(sc4336);
 		break;
 	case V4L2_CID_TEST_PATTERN:
 		ret = sc4336_enable_test_pattern(sc4336, ctrl->val);
@@ -1231,6 +1299,7 @@ static int sc4336_initialize_controls(struct sc4336 *sc4336)
 					    V4L2_CID_VBLANK, vblank_def,
 					    SC4336_VTS_MAX - mode->height,
 					    1, vblank_def);
+	sc4336->cur_fps = mode->max_fps;
 	exposure_max = mode->vts_def - 8;
 	sc4336->exposure = v4l2_ctrl_new_std(handler, &sc4336_ctrl_ops,
 					      V4L2_CID_EXPOSURE, SC4336_EXPOSURE_MIN,
@@ -1272,6 +1341,11 @@ static int sc4336_check_sensor_id(struct sc4336 *sc4336,
 	struct device *dev = &sc4336->client->dev;
 	u32 id = 0;
 	int ret;
+
+	if (sc4336->is_thunderboot) {
+		dev_info(dev, "Enable thunderboot mode, skip sensor id check\n");
+		return 0;
+	}
 
 	ret = sc4336_read_reg(client, SC4336_REG_CHIP_ID,
 			       SC4336_REG_VALUE_16BIT, &id);
@@ -1329,6 +1403,7 @@ static int sc4336_probe(struct i2c_client *client,
 		return -EINVAL;
 	}
 
+	sc4336->is_thunderboot = IS_ENABLED(CONFIG_VIDEO_ROCKCHIP_THUNDER_BOOT_ISP);
 	sc4336->client = client;
 	sc4336->cur_mode = &supported_modes[0];
 
@@ -1338,14 +1413,23 @@ static int sc4336_probe(struct i2c_client *client,
 		return -EINVAL;
 	}
 
-	sc4336->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(sc4336->reset_gpio))
-		dev_warn(dev, "Failed to get reset-gpios\n");
+	if (sc4336->is_thunderboot) {
+		sc4336->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_ASIS);
+		if (IS_ERR(sc4336->reset_gpio))
+			dev_warn(dev, "Failed to get reset-gpios\n");
 
-	sc4336->pwdn_gpio = devm_gpiod_get(dev, "pwdn", GPIOD_OUT_LOW);
-	if (IS_ERR(sc4336->pwdn_gpio))
-		dev_warn(dev, "Failed to get pwdn-gpios\n");
+		sc4336->pwdn_gpio = devm_gpiod_get(dev, "pwdn", GPIOD_ASIS);
+		if (IS_ERR(sc4336->pwdn_gpio))
+			dev_warn(dev, "Failed to get pwdn-gpios\n");
+	} else {
+		sc4336->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
+		if (IS_ERR(sc4336->reset_gpio))
+			dev_warn(dev, "Failed to get reset-gpios\n");
 
+		sc4336->pwdn_gpio = devm_gpiod_get(dev, "pwdn", GPIOD_OUT_LOW);
+		if (IS_ERR(sc4336->pwdn_gpio))
+			dev_warn(dev, "Failed to get pwdn-gpios\n");
+	}
 	sc4336->pinctrl = devm_pinctrl_get(dev);
 	if (!IS_ERR(sc4336->pinctrl)) {
 		sc4336->pins_default =
@@ -1398,6 +1482,14 @@ static int sc4336_probe(struct i2c_client *client,
 		goto err_power_off;
 #endif
 
+	if (!sc4336->cam_sw_inf) {
+		sc4336->cam_sw_inf = cam_sw_init();
+		cam_sw_clk_init(sc4336->cam_sw_inf, sc4336->xvclk, SC4336_XVCLK_FREQ);
+		cam_sw_reset_pin_init(sc4336->cam_sw_inf, sc4336->reset_gpio, 0);
+		if (!IS_ERR(sc4336->pwdn_gpio))
+			cam_sw_pwdn_pin_init(sc4336->cam_sw_inf, sc4336->pwdn_gpio, 0);
+	}
+
 	memset(facing, 0, sizeof(facing));
 	if (strcmp(sc4336->module_facing, "back") == 0)
 		facing[0] = 'b';
@@ -1407,7 +1499,7 @@ static int sc4336_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 sc4336->module_index, facing,
 		 SC4336_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1415,7 +1507,10 @@ static int sc4336_probe(struct i2c_client *client,
 
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
-	pm_runtime_idle(dev);
+	if (sc4336->is_thunderboot)
+		pm_runtime_get_sync(dev);
+	else
+		pm_runtime_idle(dev);
 
 	return 0;
 
@@ -1433,7 +1528,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int sc4336_remove(struct i2c_client *client)
+static void sc4336_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct sc4336 *sc4336 = to_sc4336(sd);
@@ -1445,12 +1540,12 @@ static int sc4336_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(&sc4336->ctrl_handler);
 	mutex_destroy(&sc4336->mutex);
 
+	cam_sw_deinit(sc4336->cam_sw_inf);
+
 	pm_runtime_disable(&client->dev);
 	if (!pm_runtime_status_suspended(&client->dev))
 		__sc4336_power_off(sc4336);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)
@@ -1487,7 +1582,11 @@ static void __exit sensor_mod_exit(void)
 	i2c_del_driver(&sc4336_i2c_driver);
 }
 
+#if defined(CONFIG_VIDEO_ROCKCHIP_THUNDER_BOOT_ISP)
+subsys_initcall(sensor_mod_init);
+#else
 device_initcall_sync(sensor_mod_init);
+#endif
 module_exit(sensor_mod_exit);
 
 MODULE_DESCRIPTION("smartsens sc4336 sensor driver");

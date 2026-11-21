@@ -87,7 +87,8 @@
 	non-removable;
 	mmc-hs200-1_8v;
 	rockchip,default-sample-phase = <90>;
-	supports-emmc;
+	no-sdio;
+	no-sd;
 	/delete-property/ pinctrl-names;
 	/delete-property/ pinctrl-0;
 	status = "okay";
@@ -124,9 +125,9 @@
 		pinctrl-names = "default", "pmic-sleep",
 			"pmic-power-off", "pmic-reset";
 		pinctrl-0 = <&pmic_int>;
-		pinctrl-1 = <&soc_slppin_slp>, <&rk817_slppin_slp>;
-		pinctrl-2 = <&soc_slppin_gpio>, <&rk817_slppin_pwrdn>;
-		pinctrl-3 = <&soc_slppin_rst>, <&rk817_slppin_rst>;
+		pinctrl-1 = <&soc_slppin_slp>;
+		pinctrl-2 = <&soc_slppin_gpio>;
+		pinctrl-3 = <&soc_slppin_rst>;
 		rockchip,system-power-controller;
 		wakeup-source;
 		#clock-cells = <1>;
@@ -146,35 +147,6 @@
 
 		pwrkey {
 			status = "okay";
-		};
-
-		pinctrl_rk8xx: pinctrl_rk8xx {
-			gpio-controller;
-			#gpio-cells = <2>;
-
-			/omit-if-no-ref/
-			rk817_slppin_null: rk817_slppin_null {
-				pins = "gpio_slp";
-				function = "pin_fun0";
-			};
-
-			/omit-if-no-ref/
-			rk817_slppin_slp: rk817_slppin_slp {
-				pins = "gpio_slp";
-				function = "pin_fun1";
-			};
-
-			/omit-if-no-ref/
-			rk817_slppin_pwrdn: rk817_slppin_pwrdn {
-				pins = "gpio_slp";
-				function = "pin_fun2";
-			};
-
-			/omit-if-no-ref/
-			rk817_slppin_rst: rk817_slppin_rst {
-				pins = "gpio_slp";
-				function = "pin_fun3";
-			};
 		};
 
 		regulators {
@@ -397,7 +369,7 @@
 &i2s0_8ch {
 	status = "okay";
 	#sound-dai-cells = <0>;
-	rockchip,clk-trcm = <1>;
+	rockchip,trcm-sync-tx-only;
 	rockchip,i2s-rx-route = <3 1 2 0>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2s0m0_sclk_tx
@@ -457,7 +429,8 @@
 	cap-sd-highspeed;
 	card-detect-delay = <200>;
 	rockchip,default-sample-phase = <90>;
-	supports-sd;
+	no-sdio;
+	no-mmc;
 	sd-uhs-sdr12;
 	sd-uhs-sdr25;
 	sd-uhs-sdr104;

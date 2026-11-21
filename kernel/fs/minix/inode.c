@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/minix/inode.c
  *
@@ -62,21 +63,15 @@ static struct kmem_cache * minix_inode_cachep;
 static struct inode *minix_alloc_inode(struct super_block *sb)
 {
 	struct minix_inode_info *ei;
-	ei = kmem_cache_alloc(minix_inode_cachep, GFP_KERNEL);
+	ei = alloc_inode_sb(sb, minix_inode_cachep, GFP_KERNEL);
 	if (!ei)
 		return NULL;
 	return &ei->vfs_inode;
 }
 
-static void minix_i_callback(struct rcu_head *head)
+static void minix_free_in_core_inode(struct inode *inode)
 {
-	struct inode *inode = container_of(head, struct inode, i_rcu);
 	kmem_cache_free(minix_inode_cachep, minix_i(inode));
-}
-
-static void minix_destroy_inode(struct inode *inode)
-{
-	call_rcu(&inode->i_rcu, minix_i_callback);
 }
 
 static void init_once(void *foo)
@@ -110,7 +105,7 @@ static void destroy_inodecache(void)
 
 static const struct super_operations minix_sops = {
 	.alloc_inode	= minix_alloc_inode,
-	.destroy_inode	= minix_destroy_inode,
+	.free_inode	= minix_free_in_core_inode,
 	.write_inode	= minix_write_inode,
 	.evict_inode	= minix_evict_inode,
 	.put_super	= minix_put_super,
@@ -158,9 +153,37 @@ static int minix_remount (struct super_block * sb, int * flags, char * data)
 static bool minix_check_superblock(struct super_block *sb)
 {
 	struct minix_sb_info *sbi = minix_sb(sb);
+	unsigned long block;
 
-	if (sbi->s_imap_blocks == 0 || sbi->s_zmap_blocks == 0)
+	if (sbi->s_log_zone_size != 0) {
+		printk("minix-fs error: zone size must equal block size. "
+		       "s_log_zone_size > 0 is not supported.\n");
 		return false;
+	}
+
+	if (sbi->s_ninodes < 1 || sbi->s_firstdatazone <= 4 ||
+	    sbi->s_firstdatazone >= sbi->s_nzones)
+		return false;
+
+	/* Apparently minix can create filesystems that allocate more blocks for
+	 * the bitmaps than needed.  We simply ignore that, but verify it didn't
+	 * create one with not enough blocks and bail out if so.
+	 */
+	block = minix_blocks_needed(sbi->s_ninodes, sb->s_blocksize);
+	if (sbi->s_imap_blocks < block) {
+		printk("MINIX-fs: file system does not have enough "
+		       "imap blocks allocated. Refusing to mount.\n");
+		return false;
+	}
+
+	block = minix_blocks_needed(
+			(sbi->s_nzones - sbi->s_firstdatazone + 1),
+			sb->s_blocksize);
+	if (sbi->s_zmap_blocks < block) {
+		printk("MINIX-fs: file system does not have enough "
+		       "zmap blocks allocated. Refusing to mount.\n");
+		return false;
+	}
 
 	/*
 	 * s_max_size must not exceed the block mapping limitation.  This check
@@ -280,28 +303,10 @@ static int minix_fill_super(struct super_block *s, void *data, int silent)
 	minix_set_bit(0,sbi->s_imap[0]->b_data);
 	minix_set_bit(0,sbi->s_zmap[0]->b_data);
 
-	/* Apparently minix can create filesystems that allocate more blocks for
-	 * the bitmaps than needed.  We simply ignore that, but verify it didn't
-	 * create one with not enough blocks and bail out if so.
-	 */
-	block = minix_blocks_needed(sbi->s_ninodes, s->s_blocksize);
-	if (sbi->s_imap_blocks < block) {
-		printk("MINIX-fs: file system does not have enough "
-				"imap blocks allocated.  Refusing to mount.\n");
-		goto out_no_bitmap;
-	}
-
-	block = minix_blocks_needed(
-			(sbi->s_nzones - sbi->s_firstdatazone + 1),
-			s->s_blocksize);
-	if (sbi->s_zmap_blocks < block) {
-		printk("MINIX-fs: file system does not have enough "
-				"zmap blocks allocated.  Refusing to mount.\n");
-		goto out_no_bitmap;
-	}
-
 	/* set up enough so that it can read an inode */
 	s->s_op = &minix_sops;
+	s->s_time_min = 0;
+	s->s_time_max = U32_MAX;
 	root_inode = minix_iget(s, MINIX_ROOT_INO);
 	if (IS_ERR(root_inode)) {
 		ret = PTR_ERR(root_inode);
@@ -386,8 +391,7 @@ static int minix_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_files = sbi->s_ninodes;
 	buf->f_ffree = minix_count_free_inodes(sb);
 	buf->f_namelen = sbi->s_namelen;
-	buf->f_fsid.val[0] = (u32)id;
-	buf->f_fsid.val[1] = (u32)(id >> 32);
+	buf->f_fsid = u64_to_fsid(id);
 
 	return 0;
 }
@@ -406,9 +410,9 @@ static int minix_writepage(struct page *page, struct writeback_control *wbc)
 	return block_write_full_page(page, minix_get_block, wbc);
 }
 
-static int minix_readpage(struct file *file, struct page *page)
+static int minix_read_folio(struct file *file, struct folio *folio)
 {
-	return block_read_full_page(page,minix_get_block);
+	return block_read_full_folio(folio, minix_get_block);
 }
 
 int minix_prepare_chunk(struct page *page, loff_t pos, unsigned len)
@@ -427,13 +431,12 @@ static void minix_write_failed(struct address_space *mapping, loff_t to)
 }
 
 static int minix_write_begin(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned flags,
+			loff_t pos, unsigned len,
 			struct page **pagep, void **fsdata)
 {
 	int ret;
 
-	ret = block_write_begin(mapping, pos, len, flags, pagep,
-				minix_get_block);
+	ret = block_write_begin(mapping, pos, len, pagep, minix_get_block);
 	if (unlikely(ret))
 		minix_write_failed(mapping, pos + len);
 
@@ -446,11 +449,14 @@ static sector_t minix_bmap(struct address_space *mapping, sector_t block)
 }
 
 static const struct address_space_operations minix_aops = {
-	.readpage = minix_readpage,
+	.dirty_folio	= block_dirty_folio,
+	.invalidate_folio = block_invalidate_folio,
+	.read_folio = minix_read_folio,
 	.writepage = minix_writepage,
 	.write_begin = minix_write_begin,
 	.write_end = generic_write_end,
-	.bmap = minix_bmap
+	.bmap = minix_bmap,
+	.direct_IO = noop_direct_IO
 };
 
 static const struct inode_operations minix_symlink_inode_operations = {
@@ -472,8 +478,14 @@ void minix_set_inode(struct inode *inode, dev_t rdev)
 		inode->i_op = &minix_symlink_inode_operations;
 		inode_nohighmem(inode);
 		inode->i_mapping->a_ops = &minix_aops;
-	} else
+	} else if (S_ISCHR(inode->i_mode) || S_ISBLK(inode->i_mode) ||
+		   S_ISFIFO(inode->i_mode) || S_ISSOCK(inode->i_mode)) {
 		init_special_inode(inode, inode->i_mode, rdev);
+	} else {
+		printk(KERN_DEBUG "MINIX-fs: Invalid file type 0%04o for inode %lu.\n",
+		       inode->i_mode, inode->i_ino);
+		make_bad_inode(inode);
+	}
 }
 
 /*
@@ -656,13 +668,13 @@ static int minix_write_inode(struct inode *inode, struct writeback_control *wbc)
 	return err;
 }
 
-int minix_getattr(const struct path *path, struct kstat *stat,
-		  u32 request_mask, unsigned int flags)
+int minix_getattr(struct user_namespace *mnt_userns, const struct path *path,
+		  struct kstat *stat, u32 request_mask, unsigned int flags)
 {
 	struct super_block *sb = path->dentry->d_sb;
 	struct inode *inode = d_inode(path->dentry);
 
-	generic_fillattr(inode, stat);
+	generic_fillattr(&init_user_ns, inode, stat);
 	if (INODE_VERSION(inode) == MINIX_V1)
 		stat->blocks = (BLOCK_SIZE / 512) * V1_minix_blocks(stat->size, sb);
 	else

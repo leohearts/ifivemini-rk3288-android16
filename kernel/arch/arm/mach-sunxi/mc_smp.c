@@ -89,6 +89,7 @@ static bool sunxi_core_is_cortex_a15(unsigned int core, unsigned int cluster)
 {
 	struct device_node *node;
 	int cpu = cluster * SUNXI_CPUS_PER_CLUSTER + core;
+	bool is_compatible;
 
 	node = of_cpu_device_node_get(cpu);
 
@@ -107,7 +108,9 @@ static bool sunxi_core_is_cortex_a15(unsigned int core, unsigned int cluster)
 		return false;
 	}
 
-	return of_device_is_compatible(node, "arm,cortex-a15");
+	is_compatible = of_device_is_compatible(node, "arm,cortex-a15");
+	of_node_put(node);
+	return is_compatible;
 }
 
 static int sunxi_cpu_power_switch_set(unsigned int cpu, unsigned int cluster,
@@ -801,15 +804,15 @@ static int __init sunxi_mc_smp_init(void)
 	for (i = 0; i < ARRAY_SIZE(sunxi_mc_smp_data); i++) {
 		ret = of_property_match_string(node, "enable-method",
 					       sunxi_mc_smp_data[i].enable_method);
-		if (!ret)
+		if (ret >= 0)
 			break;
 	}
 
-	is_a83t = sunxi_mc_smp_data[i].is_a83t;
-
 	of_node_put(node);
-	if (ret)
+	if (ret < 0)
 		return -ENODEV;
+
+	is_a83t = sunxi_mc_smp_data[i].is_a83t;
 
 	if (!sunxi_mc_smp_cpu_table_init())
 		return -EINVAL;

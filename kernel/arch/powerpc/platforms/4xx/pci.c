@@ -22,6 +22,7 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
 
@@ -56,7 +57,7 @@ static inline int ppc440spe_revA(void)
 static void fixup_ppc4xx_pci_bridge(struct pci_dev *dev)
 {
 	struct pci_controller *hose;
-	int i;
+	struct resource *r;
 
 	if (dev->devfn != 0 || dev->bus->self != NULL)
 		return;
@@ -78,9 +79,9 @@ static void fixup_ppc4xx_pci_bridge(struct pci_dev *dev)
 	/* Hide the PCI host BARs from the kernel as their content doesn't
 	 * fit well in the resource management
 	 */
-	for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
-		dev->resource[i].start = dev->resource[i].end = 0;
-		dev->resource[i].flags = 0;
+	pci_dev_for_each_resource(dev, r) {
+		r->start = r->end = 0;
+		r->flags = 0;
 	}
 
 	printk(KERN_INFO "PCI: Hiding 4xx host bridge resources %s\n",
@@ -1273,7 +1274,7 @@ static int __init ppc405ex_pciex_core_init(struct device_node *np)
 	return 2;
 }
 
-static void ppc405ex_pcie_phy_reset(struct ppc4xx_pciex_port *port)
+static void __init ppc405ex_pcie_phy_reset(struct ppc4xx_pciex_port *port)
 {
 	/* Assert the PE0_PHY reset */
 	mtdcri(SDR0, port->sdr_base + PESDRn_RCSSET, 0x01010000);
@@ -1397,7 +1398,6 @@ static void __init ppc_476fpe_pciex_check_link(struct ppc4xx_pciex_port *port)
 		printk(KERN_WARNING "PCIE%d: Link up failed\n", port->index);
 
 	iounmap(mbase);
-	return;
 }
 
 static struct ppc4xx_pciex_hwops ppc_476fpe_pcie_hwops __initdata =
@@ -2079,7 +2079,6 @@ static void __init ppc4xx_probe_pciex_bridge(struct device_node *np)
 	const u32 *pval;
 	int portno;
 	unsigned int dcrs;
-	const char *val;
 
 	/* First, proceed to core initialization as we assume there's
 	 * only one PCIe core in the system
@@ -2125,10 +2124,9 @@ static void __init ppc4xx_probe_pciex_bridge(struct device_node *np)
 	 * Resulting from this setup this PCIe port will be configured
 	 * as root-complex or as endpoint.
 	 */
-	val = of_get_property(port->node, "device_type", NULL);
-	if (!strcmp(val, "pci-endpoint")) {
+	if (of_node_is_type(port->node, "pci-endpoint")) {
 		port->endpoint = 1;
-	} else if (!strcmp(val, "pci")) {
+	} else if (of_node_is_type(port->node, "pci")) {
 		port->endpoint = 0;
 	} else {
 		printk(KERN_ERR "PCIE: missing or incorrect device_type for %pOF\n",

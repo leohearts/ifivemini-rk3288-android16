@@ -2,7 +2,7 @@
 /*
  * kernel/drivers/input/sensors/lsensor/ls_em3071x.c
  *
- * Copyright (C) 2020 Rockchip Co.,Ltd.
+ * Copyright (C) 2020 Rockchip Electronics Co., Ltd.
  * Author: Wang Jie <dave.wang@rock-chips.com>
  */
 
@@ -227,7 +227,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return result;
 }
 
-struct sensor_operate light_em3071x_ops = {
+static struct sensor_operate light_em3071x_ops = {
 	.name		= "ls_em3071x",
 	.type		= SENSOR_TYPE_LIGHT,
 	.id_i2c		= LIGHT_ID_EM3071X,
@@ -253,9 +253,9 @@ static int light_em3071x_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &light_em3071x_ops);
 }
 
-static int light_em3071x_remove(struct i2c_client *client)
+static void light_em3071x_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &light_em3071x_ops);
+	sensor_unregister_device(client, NULL, &light_em3071x_ops);
 }
 
 static const struct i2c_device_id light_em3071x_id[] = {
@@ -265,7 +265,7 @@ static const struct i2c_device_id light_em3071x_id[] = {
 
 static struct i2c_driver light_em3071x_driver = {
 	.probe = light_em3071x_probe,
-	.remove = light_em3071x_remove,
+	.remove = (void *)light_em3071x_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = light_em3071x_id,
 	.driver = {

@@ -57,7 +57,7 @@ struct pip_app_resp_head {
 	 * The value of data_status can be the first byte of data or
 	 * the command status or the unsupported command code depending on the
 	 * requested command code.
-	*/
+	 */
 	u8 data_status;
 } __packed;
 
@@ -680,7 +680,7 @@ static int cyapa_gen6_operational_check(struct cyapa *cyapa)
 		}
 
 		cyapa->state = CYAPA_STATE_GEN6_APP;
-		/* fall through */
+		fallthrough;
 
 	case CYAPA_STATE_GEN6_APP:
 		/*

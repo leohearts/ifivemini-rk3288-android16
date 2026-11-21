@@ -38,7 +38,9 @@
 #include <linux/clk.h>
 #include <linux/media.h>
 #include <linux/mutex.h>
+#include <linux/rk-video-format.h>
 #include <linux/slab.h>
+#include <linux/soc/rockchip/rk_sdmmc.h>
 #include <media/media-device.h>
 #include <media/media-entity.h>
 #include <media/v4l2-ctrls.h>
@@ -47,23 +49,17 @@
 #include <media/videobuf2-dma-contig.h>
 #include <media/videobuf2-v4l2.h>
 
+#include "isp_ispp.h"
+
 #define RKISP_DEFAULT_WIDTH		800
 #define RKISP_DEFAULT_HEIGHT		600
-
-#define RKISP_MAX_STREAM		6
-#define RKISP_STREAM_MP			0
-#define RKISP_STREAM_SP			1
-#define RKISP_STREAM_DMATX0		2
-#define RKISP_STREAM_DMATX1		3
-#define RKISP_STREAM_DMATX2		4
-#define RKISP_STREAM_DMATX3		5
 
 #define RKISP_PLANE_Y			0
 #define RKISP_PLANE_CB			1
 #define RKISP_PLANE_CR			2
 
 #define RKISP_EMDDATA_FIFO_MAX		4
-#define RKISP_DMATX_CHECK              0xA5A5A5A5
+#define RKISP_DATA_CHECK		0xA5A5A5A5
 
 #define RKISP_MOTION_DECT_TS_SIZE	16
 
@@ -78,6 +74,12 @@ enum rkisp_isp_ver {
 	ISP_V13 = 0x30,
 	ISP_V20 = 0x40,
 	ISP_V21 = 0x50,
+	ISP_V30 = 0x60,
+	ISP_V32 = 0x70,
+	ISP_V32_L = 0x80,
+	ISP_V33 = 0x90,
+	ISP_V39 = 0xa0,
+	ISP_V35 = 0xb0,
 };
 
 enum rkisp_sd_type {
@@ -103,6 +105,8 @@ enum rkisp_fmt_pix_type {
 	FMT_FBCGAIN,
 	FMT_EBD,
 	FMT_SPD,
+	FMT_FBC,
+	FMT_TILE,
 	FMT_MAX
 };
 
@@ -116,14 +120,16 @@ enum rkisp_fmt_raw_pat_type {
 struct rkisp_buffer {
 	struct vb2_v4l2_buffer vb;
 	struct list_head queue;
+	void *vaddr[VIDEO_MAX_PLANES];
+	u32 buff_addr[VIDEO_MAX_PLANES];
 	int dev_id;
-	union {
-		u32 buff_addr[VIDEO_MAX_PLANES];
-		void *vaddr[VIDEO_MAX_PLANES];
-	};
+	int index;
+	void *other;
 };
 
 struct rkisp_dummy_buffer {
+	struct vb2_buffer vb;
+	struct vb2_queue vb2_queue;
 	struct list_head queue;
 	struct dma_buf *dbuf;
 	dma_addr_t dma_addr;
@@ -131,7 +137,9 @@ struct rkisp_dummy_buffer {
 	void *mem_priv;
 	void *vaddr;
 	u32 size;
+	u32 stride;
 	int dma_fd;
+	int index;
 	bool is_need_vaddr;
 	bool is_need_dbuf;
 	bool is_need_dmafd;
@@ -139,7 +147,11 @@ struct rkisp_dummy_buffer {
 
 extern int rkisp_debug;
 extern bool rkisp_monitor;
+extern bool rkisp_irq_dbg;
+extern bool rkisp_buf_dbg;
 extern u64 rkisp_debug_reg;
+extern unsigned int rkisp_vicap_buf[DEV_MAX];
+extern unsigned int rkisp_hdr_wrap_line[DEV_MAX];
 extern struct platform_driver rkisp_plat_drv;
 
 static inline
@@ -167,11 +179,28 @@ static inline struct vb2_queue *to_vb2_queue(struct file *file)
 
 void rkisp_write(struct rkisp_device *dev, u32 reg, u32 val, bool is_direct);
 u32 rkisp_read(struct rkisp_device *dev, u32 reg, bool is_direct);
-u32 rkisp_read_reg_cache(struct rkisp_device *dev, u32 reg);
 void rkisp_set_bits(struct rkisp_device *dev, u32 reg, u32 mask, u32 val, bool is_direct);
 void rkisp_clear_bits(struct rkisp_device *dev, u32 reg, u32 mask, bool is_direct);
+
+void rkisp_write_reg_cache(struct rkisp_device *dev, u32 reg, u32 val);
+u32 rkisp_read_reg_cache(struct rkisp_device *dev, u32 reg);
+void rkisp_set_reg_cache_bits(struct rkisp_device *dev, u32 reg, u32 mask, u32 val);
+void rkisp_clear_reg_cache_bits(struct rkisp_device *dev, u32 reg, u32 mask);
+
+/* for unite mode, config for diff isp reg */
+void rkisp_idx_write(struct rkisp_device *dev, u32 reg, u32 val, int idx, bool is_direct);
+u32 rkisp_idx_read(struct rkisp_device *dev, u32 reg, int idx, bool is_direct);
+void rkisp_idx_set_bits(struct rkisp_device *dev, u32 reg, u32 mask, u32 val, int idx, bool is_direct);
+void rkisp_idx_clear_bits(struct rkisp_device *dev, u32 reg, u32 mask, int idx, bool is_direct);
+
+void rkisp_idx_write_reg_cache(struct rkisp_device *dev, u32 reg, u32 val, int idx);
+u32 rkisp_idx_read_reg_cache(struct rkisp_device *dev, u32 reg, int idx);
+void rkisp_idx_set_reg_cache_bits(struct rkisp_device *dev, u32 reg, u32 mask, u32 val, int idx);
+void rkisp_idx_clear_reg_cache_bits(struct rkisp_device *dev, u32 reg, u32 mask, int idx);
+
 void rkisp_update_regs(struct rkisp_device *dev, u32 start, u32 end);
 
+int rkisp_buf_get_fd(struct rkisp_device *dev, struct rkisp_dummy_buffer *buf, bool try_fd);
 int rkisp_alloc_buffer(struct rkisp_device *dev, struct rkisp_dummy_buffer *buf);
 void rkisp_free_buffer(struct rkisp_device *dev, struct rkisp_dummy_buffer *buf);
 void rkisp_prepare_buffer(struct rkisp_device *dev, struct rkisp_dummy_buffer *buf);
@@ -182,4 +211,5 @@ int rkisp_alloc_common_dummy_buf(struct rkisp_device *dev);
 void rkisp_free_common_dummy_buf(struct rkisp_device *dev);
 
 void rkisp_set_clk_rate(struct clk *clk, unsigned long rate);
+u64 rkisp_time_get_ns(struct rkisp_device *dev);
 #endif /* _RKISP_COMMON_H */

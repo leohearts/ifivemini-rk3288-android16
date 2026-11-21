@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/**
+/*
  * Bus for USB Type-C Alternate Modes
  *
  * Copyright (C) 2018 Intel Corporation
@@ -24,7 +24,7 @@ typec_altmode_set_mux(struct altmode *alt, unsigned long conf, void *data)
 	state.mode = conf;
 	state.data = data;
 
-	return alt->mux->set(alt->mux, &state);
+	return typec_mux_set(alt->mux, &state);
 }
 
 static int typec_altmode_set_state(struct typec_altmode *adev,
@@ -134,7 +134,7 @@ int typec_altmode_exit(struct typec_altmode *adev)
 	if (!adev || !adev->active)
 		return 0;
 
-	if (!pdev->ops || !pdev->ops->enter)
+	if (!pdev->ops || !pdev->ops->exit)
 		return -EOPNOTSUPP;
 
 	/* Moving to USB Safe State */
@@ -154,12 +154,20 @@ EXPORT_SYMBOL_GPL(typec_altmode_exit);
  *
  * Notifies the partner of @adev about Attention command.
  */
-void typec_altmode_attention(struct typec_altmode *adev, u32 vdo)
+int typec_altmode_attention(struct typec_altmode *adev, u32 vdo)
 {
-	struct typec_altmode *pdev = &to_altmode(adev)->partner->adev;
+	struct altmode *partner = to_altmode(adev)->partner;
+	struct typec_altmode *pdev;
+
+	if (!partner)
+		return -ENODEV;
+
+	pdev = &partner->adev;
 
 	if (pdev->ops && pdev->ops->attention)
 		pdev->ops->attention(pdev, vdo);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(typec_altmode_attention);
 
@@ -382,7 +390,7 @@ static int typec_probe(struct device *dev)
 	return ret;
 }
 
-static int typec_remove(struct device *dev)
+static void typec_remove(struct device *dev)
 {
 	struct typec_altmode_driver *drv = to_altmode_driver(dev->driver);
 	struct typec_altmode *adev = to_typec_altmode(dev);
@@ -400,8 +408,6 @@ static int typec_remove(struct device *dev)
 
 	adev->desc = NULL;
 	adev->ops = NULL;
-
-	return 0;
 }
 
 struct bus_type typec_bus = {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AppArmor security module
  *
@@ -5,11 +6,6 @@
  *
  * Copyright (C) 1998-2008 Novell/SUSE
  * Copyright 2009-2010 Canonical Ltd.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
  */
 
 #include <linux/audit.h>
@@ -186,6 +182,11 @@ void __aa_transition_rlimits(struct aa_label *old_l, struct aa_label *new_l)
 					     new->rlimits.limits[j].rlim_max);
 			/* soft limit should not exceed hard limit */
 			rlim->rlim_cur = min(rlim->rlim_cur, rlim->rlim_max);
+			if (j == RLIMIT_CPU &&
+			    rlim->rlim_cur != RLIM_INFINITY &&
+			    IS_ENABLED(CONFIG_POSIX_TIMERS))
+				(void) update_rlimit_cpu(current->group_leader,
+							 rlim->rlim_cur);
 		}
 	}
 }

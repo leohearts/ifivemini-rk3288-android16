@@ -7,9 +7,10 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include "compress.h"
-#include "util.h"
 #include "debug.h"
+#include <string.h>
 #include <unistd.h>
+#include <internal/lib.h>
 
 #define BUFSIZE 8192
 
@@ -114,7 +115,7 @@ bool lzma_is_compressed(const char *input)
 	ssize_t rc;
 
 	if (fd < 0)
-		return -1;
+		return false;
 
 	rc = read(fd, buf, sizeof(buf));
 	close(fd);

@@ -32,6 +32,7 @@
 #include "tp_suspend.h"
 
 #include "gslx680_pad.h"
+#include "gsl_point_id.h"
 #include <linux/wakelock.h>
 //#define GSL_DEBUG
 #define REPORT_DATA_ANDROID_4_0
@@ -44,8 +45,8 @@
 #define GSLX680_I2C_NAME 	"gslX680-pad"
 #define GSLX680_I2C_ADDR 	0x40
 
-int g_wake_pin=0;
-int g_irq_pin=0;
+static int g_wake_pin;
+static int g_irq_pin;
 
 #define GSL_DATA_REG		0x80
 #define GSL_STATUS_REG		0xe0
@@ -141,6 +142,7 @@ static u16 y_new = 0;
 static struct gsl_touch_chip_info gsl_chip_info[] = {
    {GSL680,GSLX680_FW,ARRAY_SIZE(GSLX680_FW),gsl_config_data_id,ARRAY_SIZE(gsl_config_data_id)},
    {GSL3676,GSL3675B_FW_HK,ARRAY_SIZE(GSL3675B_FW_HK),gsl3678_config_data_id,ARRAY_SIZE(gsl3678_config_data_id)},
+   {GSL1686,GSL1686_FW,ARRAY_SIZE(GSL1686_FW),gsl1686_config_data_id,ARRAY_SIZE(gsl1686_config_data_id)},
 };
 
 
@@ -459,7 +461,7 @@ static int gsl_config_read_proc(struct seq_file *m,void *v)
     return 0;
 }
 
-ssize_t gsl_config_write_proc(struct file *file, const char *buffer, size_t count, loff_t *data)
+static ssize_t gsl_config_write_proc(struct file *file, const char *buffer, size_t count, loff_t *data)
 {
     u8 buf[8] = {0};
     char temp_buf[CONFIG_LEN];
@@ -471,7 +473,7 @@ ssize_t gsl_config_write_proc(struct file *file, const char *buffer, size_t coun
     print_info("[tp-gsl][%s] \n",__func__);
     if(count > 512)
     {
-        pr_err("size not match [%d:%ld]\n", CONFIG_LEN, count);
+        pr_err("size not match [%d:%zu]\n", CONFIG_LEN, count);
         return -EFAULT;
     }
     path_buf=kzalloc(count,GFP_KERNEL);
@@ -540,12 +542,11 @@ static int gsl_server_list_open(struct inode *inode,struct file *file)
 {
     return single_open(file,gsl_config_read_proc,NULL);
 }
-static const struct file_operations gsl_seq_fops = {
-    .open = gsl_server_list_open,
-    .read = seq_read,
-    .release = single_release,
-    .write = gsl_config_write_proc,
-    .owner = THIS_MODULE,
+static const struct proc_ops gsl_seq_fops = {
+    .proc_open = gsl_server_list_open,
+    .proc_read = seq_read,
+    .proc_release = single_release,
+    .proc_write = gsl_config_write_proc,
 };
 #endif
 
@@ -833,13 +834,13 @@ static int gslX680_ts_init(struct i2c_client *client, struct gsl_ts *ts)
         ts->dd->touch_index = 0;
     }
 
-    ts->touch_data = kzalloc(ts->dd->data_size, GFP_KERNEL);
+    ts->touch_data = devm_kzalloc(&client->dev, ts->dd->data_size, GFP_KERNEL);
     if (!ts->touch_data) {
         pr_err("%s: Unable to allocate memory\n", __func__);
         return -ENOMEM;
     }
 
-    input_device = input_allocate_device();
+    input_device = devm_input_allocate_device(&client->dev);
     if (!input_device) {
         rc = -ENOMEM;
         goto error_alloc_dev;
@@ -878,6 +879,7 @@ static int gslX680_ts_init(struct i2c_client *client, struct gsl_ts *ts)
     ts->wq = create_singlethread_workqueue("kworkqueue_ts");
     if (!ts->wq) {
         dev_err(&client->dev, "Could not create workqueue\n");
+        rc = -ENOMEM;
         goto error_wq_create;
     }
     flush_workqueue(ts->wq);
@@ -890,9 +892,7 @@ static int gslX680_ts_init(struct i2c_client *client, struct gsl_ts *ts)
 error_unreg_device:
     destroy_workqueue(ts->wq);
 error_wq_create:
-    input_free_device(input_device);
 error_alloc_dev:
-    kfree(ts->touch_data);
     return rc;
 }
 
@@ -1016,7 +1016,7 @@ static int  gsl_ts_probe(struct i2c_client *client,
         return -ENODEV;
     }
 
-    ts = kzalloc(sizeof(*ts), GFP_KERNEL);
+    ts = devm_kzalloc(&client->dev, sizeof(*ts), GFP_KERNEL);
     if (!ts)
         return -ENOMEM;
 
@@ -1043,15 +1043,15 @@ static int  gsl_ts_probe(struct i2c_client *client,
     ts->wake_pin=of_get_named_gpio_flags(np, "reset-gpio", 0, &wake_flags);
 
     ret = of_property_read_u32(np, "chip_id", &gsl_chip_id);
-    if(ret)
+    if (ret)
        gsl_chip_id = GSL680;
 
-       dev_info(&ts->client->dev, "[tp-gsl] gsl_chip_id =[%d] \n",gsl_chip_id);
-       for(i=0; i<ARRAY_SIZE(gsl_chip_info); i++) {
-           if (gsl_chip_info[i].chip_id == gsl_chip_id) {
-               ts->gsl_chip_info =  &gsl_chip_info[i];
-               break;
-           }
+    dev_info(&ts->client->dev, "[tp-gsl] gsl_chip_id =[%d] \n",gsl_chip_id);
+    for (i=0; i<ARRAY_SIZE(gsl_chip_info); i++) {
+        if (gsl_chip_info[i].chip_id == gsl_chip_id) {
+            ts->gsl_chip_info =  &gsl_chip_info[i];
+            break;
+        }
     }
 
     if (gpio_is_valid(ts->wake_pin)) {
@@ -1122,28 +1122,19 @@ static int  gsl_ts_probe(struct i2c_client *client,
 
     //exit_set_irq_mode:
 error_req_irq_fail:
-    free_irq(ts->irq, ts);
 
 error_mutex_destroy:
-    input_free_device(ts->input);
-    kfree(ts);
     return rc;
 }
 
-static int gsl_ts_remove(struct i2c_client *client)
+static void gsl_ts_remove(struct i2c_client *client)
 {
     struct gsl_ts *ts = i2c_get_clientdata(client);
 
+    tp_unregister_fb(&ts->tp);
     device_init_wakeup(&client->dev, 0);
     cancel_work_sync(&ts->work);
-    free_irq(ts->irq, ts);
     destroy_workqueue(ts->wq);
-    input_unregister_device(ts->input);
-
-    kfree(ts->touch_data);
-    kfree(ts);
-
-    return 0;
 }
 
 static struct of_device_id gsl_ts_ids[] = {

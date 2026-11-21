@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2020 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2020 Rockchip Electronics Co., Ltd.
  *
  * Author: Zorro Liu <zorro.liu@rock-chips.com>
  */
@@ -37,6 +37,7 @@ struct ebc_tcon {
 	void (*frame_addr_set)(struct ebc_tcon *tcon, u32 frame_addr);
 	int (*lut_data_set)(struct ebc_tcon *tcon, unsigned int *lut_data, int frame_count, int lut_32);
 	void (*frame_start)(struct ebc_tcon *tcon, int frame_total);
+
 	void (*dsp_end_callback)(void);
 };
 

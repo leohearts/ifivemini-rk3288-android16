@@ -20,4 +20,8 @@ case $SRCARCH in
 	sparc)          BCJ=--sparc ;;
 esac
 
-exec xz --check=crc32 $BCJ --lzma2=$LZMA2OPTS,dict=32MiB
+if grep -q "^CONFIG_THUMB2_KERNEL=y" include/config/auto.conf; then
+	BCJ=--armthumb
+fi
+
+exec $XZ --check=crc32 $BCJ --lzma2=$LZMA2OPTS,dict=32MiB

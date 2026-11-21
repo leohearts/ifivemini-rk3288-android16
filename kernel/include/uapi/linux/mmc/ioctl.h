@@ -6,7 +6,10 @@
 #include <linux/major.h>
 
 struct mmc_ioc_cmd {
-	/* Implies direction of data.  true = write, false = read */
+	/*
+	 * Direction of data: nonzero = write, zero = read.
+	 * Bit 31 selects 'Reliable Write' for RPMB.
+	 */
 	int write_flag;
 
 	/* Application-specific command.  true = precede with CMD55 */
@@ -55,7 +58,7 @@ struct mmc_ioc_cmd {
  */
 struct mmc_ioc_multi_cmd {
 	__u64 num_of_cmds;
-	struct mmc_ioc_cmd cmds[0];
+	struct mmc_ioc_cmd cmds[];
 };
 
 #define MMC_IOC_CMD _IOWR(MMC_BLOCK_MAJOR, 0, struct mmc_ioc_cmd)

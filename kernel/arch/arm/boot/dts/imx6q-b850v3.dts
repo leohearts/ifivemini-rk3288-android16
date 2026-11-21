@@ -198,6 +198,27 @@
 	};
 };
 
+&pca9539 {
+	gpio-line-names = "AMB_P_INT1#", "AMB_P_INT2#", "BT_EN", "WLAN_EN",
+			  "REMOTE_ON_PML#", "SM_D_ACT", "DP1_RST#", "DP2_RST#",
+			  "", "", "", "",
+			  "", "", "", "";
+
+	P10-hog {
+		gpio-hog;
+		gpios = <8 0>;
+		output-low;
+		line-name = "PCA9539-P10";
+	};
+
+	P11-hog {
+		gpio-hog;
+		gpios = <9 0>;
+		output-low;
+		line-name = "PCA9539-P11";
+	};
+};
+
 &pci_root {
 	/* PLX Technology, Inc. PEX 8605 PCI Express 4-port Gen2 Switch */
 	bridge@1,0 {

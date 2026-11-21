@@ -446,7 +446,7 @@ gc5025_find_best_fit(struct v4l2_subdev_format *fmt)
 }
 
 static int gc5025_set_fmt(struct v4l2_subdev *sd,
-	struct v4l2_subdev_pad_config *cfg,
+	struct v4l2_subdev_state *sd_state,
 	struct v4l2_subdev_format *fmt)
 {
 	struct gc5025 *gc5025 = to_gc5025(sd);
@@ -462,7 +462,7 @@ static int gc5025_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&gc5025->mutex);
 		return -ENOTTY;
@@ -484,7 +484,7 @@ static int gc5025_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int gc5025_get_fmt(struct v4l2_subdev *sd,
-	struct v4l2_subdev_pad_config *cfg,
+	struct v4l2_subdev_state *sd_state,
 	struct v4l2_subdev_format *fmt)
 {
 	struct gc5025 *gc5025 = to_gc5025(sd);
@@ -493,7 +493,7 @@ static int gc5025_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&gc5025->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&gc5025->mutex);
 		return -ENOTTY;
@@ -510,7 +510,7 @@ static int gc5025_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int gc5025_enum_mbus_code(struct v4l2_subdev *sd,
-	struct v4l2_subdev_pad_config *cfg,
+	struct v4l2_subdev_state *sd_state,
 	struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index != 0)
@@ -521,7 +521,7 @@ static int gc5025_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int gc5025_enum_frame_sizes(struct v4l2_subdev *sd,
-				    struct v4l2_subdev_pad_config *cfg,
+				    struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	if (fse->index >= ARRAY_SIZE(supported_modes))
@@ -544,9 +544,7 @@ static int gc5025_g_frame_interval(struct v4l2_subdev *sd,
 	struct gc5025 *gc5025 = to_gc5025(sd);
 	const struct gc5025_mode *mode = gc5025->cur_mode;
 
-	mutex_lock(&gc5025->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&gc5025->mutex);
 
 	return 0;
 }
@@ -915,14 +913,14 @@ static void gc5025_get_otp(struct gc5025_otp_info *otp,
 			if (gc5025_module_info[i].id == otp->module_id)
 				break;
 		}
-		strlcpy(inf->fac.module, gc5025_module_info[i].name,
+		strscpy(inf->fac.module, gc5025_module_info[i].name,
 			sizeof(inf->fac.module));
 
 		for (i = 0; i < ARRAY_SIZE(gc5025_lens_info) - 1; i++) {
 			if (gc5025_lens_info[i].id == otp->lens_id)
 				break;
 		}
-		strlcpy(inf->fac.lens, gc5025_lens_info[i].name,
+		strscpy(inf->fac.lens, gc5025_lens_info[i].name,
 			sizeof(inf->fac.lens));
 	}
 	/* awb */
@@ -945,13 +943,13 @@ static void gc5025_get_module_inf(struct gc5025 *gc5025,
 {
 	struct gc5025_otp_info *otp = gc5025->otp;
 
-	strlcpy(inf->base.sensor,
+	strscpy(inf->base.sensor,
 		GC5025_NAME,
 		sizeof(inf->base.sensor));
-	strlcpy(inf->base.module,
+	strscpy(inf->base.module,
 		gc5025->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens,
+	strscpy(inf->base.lens,
 		gc5025->len_name,
 		sizeof(inf->base.lens));
 	if (otp)
@@ -1478,7 +1476,7 @@ static int gc5025_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct gc5025 *gc5025 = to_gc5025(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-		v4l2_subdev_get_try_format(sd, fh->pad, 0);
+		v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct gc5025_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&gc5025->mutex);
@@ -1496,38 +1494,30 @@ static int gc5025_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int gc5025_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	if (fie->index >= ARRAY_SIZE(supported_modes))
 		return -EINVAL;
 
-	if (fie->code != MEDIA_BUS_FMT_SRGGB10_1X10)
-		return -EINVAL;
-
+	fie->code = MEDIA_BUS_FMT_SRGGB10_1X10;
 	fie->width = supported_modes[fie->index].width;
 	fie->height = supported_modes[fie->index].height;
 	fie->interval = supported_modes[fie->index].max_fps;
 	return 0;
 }
 
-static int gc5025_g_mbus_config(struct v4l2_subdev *sd,
+static int gc5025_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				 struct v4l2_mbus_config *config)
 {
-	u32 val = 0;
-
-	val = 1 << (GC5025_LANES - 1) |
-	V4L2_MBUS_CSI2_CHANNEL_0 |
-	V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = GC5025_LANES;
 
 	return 0;
 }
 
 static int gc5025_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
 
@@ -1563,7 +1553,6 @@ static const struct v4l2_subdev_core_ops gc5025_core_ops = {
 static const struct v4l2_subdev_video_ops gc5025_video_ops = {
 	.s_stream = gc5025_s_stream,
 	.g_frame_interval = gc5025_g_frame_interval,
-	.g_mbus_config = gc5025_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops gc5025_pad_ops = {
@@ -1573,6 +1562,7 @@ static const struct v4l2_subdev_pad_ops gc5025_pad_ops = {
 	.get_fmt = gc5025_get_fmt,
 	.set_fmt = gc5025_set_fmt,
 	.get_selection = gc5025_get_selection,
+	.get_mbus_config = gc5025_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops gc5025_subdev_ops = {
@@ -1924,7 +1914,7 @@ static int gc5025_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 gc5025->module_index, facing,
 		 GC5025_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1950,7 +1940,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int gc5025_remove(struct i2c_client *client)
+static void gc5025_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct gc5025 *gc5025 = to_gc5025(sd);
@@ -1966,8 +1956,6 @@ static int gc5025_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__gc5025_power_off(gc5025);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

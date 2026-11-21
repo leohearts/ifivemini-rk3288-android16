@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Acer WMI Laptop Extras
  *
@@ -6,20 +7,6 @@
  *  Based on acer_acpi:
  *    Copyright (C) 2005-2007	E.M. Smith
  *    Copyright (C) 2007-2008	Carlos Corbacho <cathectic@gmail.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -43,7 +30,6 @@
 #include <linux/input/sparse-keymap.h>
 #include <acpi/video.h>
 
-ACPI_MODULE_NAME(KBUILD_MODNAME);
 MODULE_AUTHOR("Carlos Corbacho");
 MODULE_DESCRIPTION("Acer Laptop WMI Extras Driver");
 MODULE_LICENSE("GPL");
@@ -74,6 +60,11 @@ MODULE_LICENSE("GPL");
 #define ACER_WMID_GET_THREEG_METHODID		10
 #define ACER_WMID_SET_THREEG_METHODID		11
 
+#define ACER_WMID_SET_GAMING_LED_METHODID 2
+#define ACER_WMID_GET_GAMING_LED_METHODID 4
+#define ACER_WMID_SET_GAMING_FAN_BEHAVIOR 14
+#define ACER_WMID_SET_GAMING_MISC_SETTING_METHODID 22
+
 /*
  * Acer ACPI method GUIDs
  */
@@ -82,6 +73,7 @@ MODULE_LICENSE("GPL");
 #define WMID_GUID1		"6AF4F258-B401-42FD-BE91-3D4AC2D7C0D3"
 #define WMID_GUID2		"95764E09-FB56-4E83-B31A-37761F60994A"
 #define WMID_GUID3		"61EF69EA-865C-4BC3-A502-A0DEBA0CB531"
+#define WMID_GUID4		"7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56"
 
 /*
  * Acer ACPI event GUIDs
@@ -94,7 +86,10 @@ MODULE_ALIAS("wmi:676AA15E-6A47-4D9F-A2CC-1E6D18D14026");
 
 enum acer_wmi_event_ids {
 	WMID_HOTKEY_EVENT = 0x1,
+	WMID_BACKLIGHT_EVENT = 0x4,
 	WMID_ACCEL_OR_KBD_DOCK_EVENT = 0x5,
+	WMID_GAMING_TURBO_KEY_EVENT = 0x7,
+	WMID_AC_EVENT = 0x8,
 };
 
 static const struct key_entry acer_wmi_keymap[] __initconst = {
@@ -106,6 +101,7 @@ static const struct key_entry acer_wmi_keymap[] __initconst = {
 	{KE_KEY, 0x22, {KEY_PROG2} },    /* Arcade */
 	{KE_KEY, 0x23, {KEY_PROG3} },    /* P_Key */
 	{KE_KEY, 0x24, {KEY_PROG4} },    /* Social networking_Key */
+	{KE_KEY, 0x27, {KEY_HELP} },
 	{KE_KEY, 0x29, {KEY_PROG3} },    /* P_Key for TM8372 */
 	{KE_IGNORE, 0x41, {KEY_MUTE} },
 	{KE_IGNORE, 0x42, {KEY_PREVIOUSSONG} },
@@ -119,7 +115,13 @@ static const struct key_entry acer_wmi_keymap[] __initconst = {
 	{KE_IGNORE, 0x48, {KEY_VOLUMEUP} },
 	{KE_IGNORE, 0x49, {KEY_VOLUMEDOWN} },
 	{KE_IGNORE, 0x4a, {KEY_VOLUMEDOWN} },
-	{KE_IGNORE, 0x61, {KEY_SWITCHVIDEOMODE} },
+	/*
+	 * 0x61 is KEY_SWITCHVIDEOMODE. Usually this is a duplicate input event
+	 * with the "Video Bus" input device events. But sometimes it is not
+	 * a dup. Map it to KEY_UNKNOWN instead of using KE_IGNORE so that
+	 * udev/hwdb can override it on systems where it is not a dup.
+	 */
+	{KE_KEY, 0x61, {KEY_UNKNOWN} },
 	{KE_IGNORE, 0x62, {KEY_BRIGHTNESSUP} },
 	{KE_IGNORE, 0x63, {KEY_BRIGHTNESSDOWN} },
 	{KE_KEY, 0x64, {KEY_SWITCHVIDEOMODE} },	/* Display Switch */
@@ -145,7 +147,7 @@ struct event_return_value {
 	u16 reserved1;
 	u8 kbd_dock_state;
 	u8 reserved2;
-} __attribute__((packed));
+} __packed;
 
 /*
  * GUID3 Get Device Status device flags
@@ -179,33 +181,33 @@ struct func_input_params {
 	u8 app_status;          /* Acer Device Status. LM, ePM, RF Button... */
 	u8 app_mask;		/* Bit mask to app_status */
 	u8 reserved;
-} __attribute__((packed));
+} __packed;
 
 struct func_return_value {
 	u8 error_code;          /* Error Code */
 	u8 ec_return_value;     /* EC Return Value */
 	u16 reserved;
-} __attribute__((packed));
+} __packed;
 
 struct wmid3_gds_set_input_param {     /* Set Device Status input parameter */
 	u8 function_num;        /* Function Number */
 	u8 hotkey_number;       /* Hotkey Number */
 	u16 devices;            /* Set Device */
 	u8 volume_value;        /* Volume Value */
-} __attribute__((packed));
+} __packed;
 
 struct wmid3_gds_get_input_param {     /* Get Device Status input parameter */
 	u8 function_num;	/* Function Number */
 	u8 hotkey_number;	/* Hotkey Number */
 	u16 devices;		/* Get Device */
-} __attribute__((packed));
+} __packed;
 
 struct wmid3_gds_return_value {	/* Get Device Status return value*/
 	u8 error_code;		/* Error Code */
 	u8 ec_return_value;	/* EC Return Value */
 	u16 devices;		/* Current Device Status */
 	u32 reserved;
-} __attribute__((packed));
+} __packed;
 
 struct hotkey_function_type_aa {
 	u8 type;
@@ -217,7 +219,7 @@ struct hotkey_function_type_aa {
 	u16 display_func_bitmap;
 	u16 others_func_bitmap;
 	u8 commun_fn_key_number;
-} __attribute__((packed));
+} __packed;
 
 /*
  * Interface capability flags
@@ -229,6 +231,9 @@ struct hotkey_function_type_aa {
 #define ACER_CAP_THREEG			BIT(4)
 #define ACER_CAP_SET_FUNCTION_MODE	BIT(5)
 #define ACER_CAP_KBD_DOCK		BIT(6)
+#define ACER_CAP_TURBO_OC     BIT(7)
+#define ACER_CAP_TURBO_LED     BIT(8)
+#define ACER_CAP_TURBO_FAN     BIT(9)
 
 /*
  * Interface type flags
@@ -278,7 +283,6 @@ struct acer_data {
 
 struct acer_debug {
 	struct dentry *root;
-	struct dentry *devices;
 	u32 wmid_devices;
 };
 
@@ -316,20 +320,24 @@ struct quirk_entry {
 	u8 mailled;
 	s8 brightness;
 	u8 bluetooth;
+	u8 turbo;
+	u8 cpu_fans;
+	u8 gpu_fans;
 };
 
 static struct quirk_entry *quirks;
 
 static void __init set_quirks(void)
 {
-	if (!interface)
-		return;
-
 	if (quirks->mailled)
 		interface->capability |= ACER_CAP_MAILLED;
 
 	if (quirks->brightness)
 		interface->capability |= ACER_CAP_BRIGHTNESS;
+
+	if (quirks->turbo)
+		interface->capability |= ACER_CAP_TURBO_OC | ACER_CAP_TURBO_LED
+					 | ACER_CAP_TURBO_FAN;
 }
 
 static int __init dmi_matched(const struct dmi_system_id *dmi)
@@ -356,6 +364,12 @@ static struct quirk_entry quirk_acer_aspire_1520 = {
 
 static struct quirk_entry quirk_acer_travelmate_2490 = {
 	.mailled = 1,
+};
+
+static struct quirk_entry quirk_acer_predator_ph315_53 = {
+	.turbo = 1,
+	.cpu_fans = 1,
+	.gpu_fans = 1,
 };
 
 /* This AMW0 laptop has no bluetooth */
@@ -526,6 +540,15 @@ static const struct dmi_system_id acer_quirks[] __initconst = {
 		.driver_data = &quirk_acer_travelmate_2490,
 	},
 	{
+		.callback = dmi_matched,
+		.ident = "Acer Predator PH315-53",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Predator PH315-53"),
+		},
+		.driver_data = &quirk_acer_predator_ph315_53,
+	},
+	{
 		.callback = set_force_caps,
 		.ident = "Acer Aspire Switch 10E SW3-016",
 		.matches = {
@@ -540,6 +563,15 @@ static const struct dmi_system_id acer_quirks[] __initconst = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire SW5-012"),
+		},
+		.driver_data = (void *)ACER_CAP_KBD_DOCK,
+	},
+	{
+		.callback = set_force_caps,
+		.ident = "Acer Aspire Switch V 10 SW5-017",
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Acer"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "SW5-017"),
 		},
 		.driver_data = (void *)ACER_CAP_KBD_DOCK,
 	},
@@ -629,69 +661,6 @@ static const struct dmi_system_id non_acer_quirks[] __initconst = {
 	{}
 };
 
-static int __init
-video_set_backlight_video_vendor(const struct dmi_system_id *d)
-{
-	interface->capability &= ~ACER_CAP_BRIGHTNESS;
-	pr_info("Brightness must be controlled by generic video driver\n");
-	return 0;
-}
-
-static const struct dmi_system_id video_vendor_dmi_table[] __initconst = {
-	{
-		.callback = video_set_backlight_video_vendor,
-		.ident = "Acer TravelMate 4750",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 4750"),
-		},
-	},
-	{
-		.callback = video_set_backlight_video_vendor,
-		.ident = "Acer Extensa 5235",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Extensa 5235"),
-		},
-	},
-	{
-		.callback = video_set_backlight_video_vendor,
-		.ident = "Acer TravelMate 5760",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 5760"),
-		},
-	},
-	{
-		.callback = video_set_backlight_video_vendor,
-		.ident = "Acer Aspire 5750",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 5750"),
-		},
-	},
-	{
-		.callback = video_set_backlight_video_vendor,
-		.ident = "Acer Aspire 5741",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 5741"),
-		},
-	},
-	{
-		/*
-		 * Note no video_set_backlight_video_vendor, we must use the
-		 * acer interface, as there is no native backlight interface.
-		 */
-		.ident = "Acer KAV80",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "KAV80"),
-		},
-	},
-	{}
-};
-
 /* Find which quirks are needed for a particular vendor/ model pair */
 static void __init find_quirks(void)
 {
@@ -704,8 +673,6 @@ static void __init find_quirks(void)
 
 	if (quirks == NULL)
 		quirks = &quirk_unknown;
-
-	set_quirks();
 }
 
 /*
@@ -848,7 +815,6 @@ static acpi_status AMW0_set_u32(u32 value, u32 cap)
 		switch (quirks->brightness) {
 		default:
 			return ec_write(0x83, value);
-			break;
 		}
 	default:
 		return AE_ERROR;
@@ -1057,6 +1023,7 @@ static acpi_status WMID_get_u32(u32 *value, u32 cap)
 			*value = tmp & 0x1;
 			return 0;
 		}
+		fallthrough;
 	default:
 		return AE_ERROR;
 	}
@@ -1365,6 +1332,114 @@ static struct wmi_interface wmid_v2_interface = {
 };
 
 /*
+ * WMID Gaming interface
+ */
+
+static acpi_status
+WMI_gaming_execute_u64(u32 method_id, u64 in, u64 *out)
+{
+	struct acpi_buffer input = { (acpi_size) sizeof(u64), (void *)(&in) };
+	struct acpi_buffer result = { ACPI_ALLOCATE_BUFFER, NULL };
+	union acpi_object *obj;
+	u32 tmp = 0;
+	acpi_status status;
+
+	status = wmi_evaluate_method(WMID_GUID4, 0, method_id, &input, &result);
+
+	if (ACPI_FAILURE(status))
+		return status;
+	obj = (union acpi_object *) result.pointer;
+
+	if (obj) {
+		if (obj->type == ACPI_TYPE_BUFFER) {
+			if (obj->buffer.length == sizeof(u32))
+				tmp = *((u32 *) obj->buffer.pointer);
+			else if (obj->buffer.length == sizeof(u64))
+				tmp = *((u64 *) obj->buffer.pointer);
+		} else if (obj->type == ACPI_TYPE_INTEGER) {
+			tmp = (u64) obj->integer.value;
+		}
+	}
+
+	if (out)
+		*out = tmp;
+
+	kfree(result.pointer);
+
+	return status;
+}
+
+static acpi_status WMID_gaming_set_u64(u64 value, u32 cap)
+{
+	u32 method_id = 0;
+
+	if (!(interface->capability & cap))
+		return AE_BAD_PARAMETER;
+
+	switch (cap) {
+	case ACER_CAP_TURBO_LED:
+		method_id = ACER_WMID_SET_GAMING_LED_METHODID;
+		break;
+	case ACER_CAP_TURBO_FAN:
+		method_id = ACER_WMID_SET_GAMING_FAN_BEHAVIOR;
+		break;
+	case ACER_CAP_TURBO_OC:
+		method_id = ACER_WMID_SET_GAMING_MISC_SETTING_METHODID;
+		break;
+	default:
+		return AE_BAD_PARAMETER;
+	}
+
+	return WMI_gaming_execute_u64(method_id, value, NULL);
+}
+
+static acpi_status WMID_gaming_get_u64(u64 *value, u32 cap)
+{
+	acpi_status status;
+	u64 result;
+	u64 input;
+	u32 method_id;
+
+	if (!(interface->capability & cap))
+		return AE_BAD_PARAMETER;
+
+	switch (cap) {
+	case ACER_CAP_TURBO_LED:
+		method_id = ACER_WMID_GET_GAMING_LED_METHODID;
+		input = 0x1;
+		break;
+	default:
+		return AE_BAD_PARAMETER;
+	}
+	status = WMI_gaming_execute_u64(method_id, input, &result);
+	if (ACPI_SUCCESS(status))
+		*value = (u64) result;
+
+	return status;
+}
+
+static void WMID_gaming_set_fan_mode(u8 fan_mode)
+{
+	/* fan_mode = 1 is used for auto, fan_mode = 2 used for turbo*/
+	u64 gpu_fan_config1 = 0, gpu_fan_config2 = 0;
+	int i;
+
+	if (quirks->cpu_fans > 0)
+		gpu_fan_config2 |= 1;
+	for (i = 0; i < (quirks->cpu_fans + quirks->gpu_fans); ++i)
+		gpu_fan_config2 |= 1 << (i + 1);
+	for (i = 0; i < quirks->gpu_fans; ++i)
+		gpu_fan_config2 |= 1 << (i + 3);
+	if (quirks->cpu_fans > 0)
+		gpu_fan_config1 |= fan_mode;
+	for (i = 0; i < (quirks->cpu_fans + quirks->gpu_fans); ++i)
+		gpu_fan_config1 |= fan_mode << (2 * i + 2);
+	for (i = 0; i < quirks->gpu_fans; ++i)
+		gpu_fan_config1 |= fan_mode << (2 * i + 6);
+	WMID_gaming_set_u64(gpu_fan_config2 | gpu_fan_config1 << 16, ACER_CAP_TURBO_FAN);
+}
+
+/*
  * Generic Device (interface-independent)
  */
 
@@ -1381,6 +1456,7 @@ static acpi_status get_u32(u32 *value, u32 cap)
 			status = AMW0_get_u32(value, cap);
 			break;
 		}
+		fallthrough;
 	case ACER_WMID:
 		status = WMID_get_u32(value, cap);
 		break;
@@ -1423,6 +1499,7 @@ static acpi_status set_u32(u32 value, u32 cap)
 
 				return AMW0_set_u32(value, cap);
 			}
+			fallthrough;
 		case ACER_WMID:
 			return WMID_set_u32(value, cap);
 		case ACER_WMID_v2:
@@ -1432,6 +1509,7 @@ static acpi_status set_u32(u32 value, u32 cap)
 				return wmid_v2_set_u32(value, cap);
 			else if (wmi_has_guid(WMID_GUID2))
 				return WMID_set_u32(value, cap);
+			fallthrough;
 		default:
 			return AE_BAD_PARAMETER;
 		}
@@ -1492,12 +1570,7 @@ static int read_brightness(struct backlight_device *bd)
 
 static int update_bl_status(struct backlight_device *bd)
 {
-	int intensity = bd->props.brightness;
-
-	if (bd->props.power != FB_BLANK_UNBLANK)
-		intensity = 0;
-	if (bd->props.fb_blank != FB_BLANK_UNBLANK)
-		intensity = 0;
+	int intensity = backlight_get_brightness(bd);
 
 	set_u32(intensity, ACER_CAP_BRIGHTNESS);
 
@@ -1593,6 +1666,41 @@ static int acer_gsensor_event(void)
 }
 
 /*
+ *  Predator series turbo button
+ */
+static int acer_toggle_turbo(void)
+{
+	u64 turbo_led_state;
+
+	/* Get current state from turbo button */
+	if (ACPI_FAILURE(WMID_gaming_get_u64(&turbo_led_state, ACER_CAP_TURBO_LED)))
+		return -1;
+
+	if (turbo_led_state) {
+		/* Turn off turbo led */
+		WMID_gaming_set_u64(0x1, ACER_CAP_TURBO_LED);
+
+		/* Set FAN mode to auto */
+		WMID_gaming_set_fan_mode(0x1);
+
+		/* Set OC to normal */
+		WMID_gaming_set_u64(0x5, ACER_CAP_TURBO_OC);
+		WMID_gaming_set_u64(0x7, ACER_CAP_TURBO_OC);
+	} else {
+		/* Turn on turbo led */
+		WMID_gaming_set_u64(0x10001, ACER_CAP_TURBO_LED);
+
+		/* Set FAN mode to turbo */
+		WMID_gaming_set_fan_mode(0x2);
+
+		/* Set OC to turbo mode */
+		WMID_gaming_set_u64(0x205, ACER_CAP_TURBO_OC);
+		WMID_gaming_set_u64(0x207, ACER_CAP_TURBO_OC);
+	}
+	return turbo_led_state;
+}
+
+/*
  * Switch series keyboard dock status
  */
 static int acer_kbd_dock_state_to_sw_tablet_mode(u8 kbd_dock_state)
@@ -1621,7 +1729,8 @@ static void acer_kbd_dock_get_initial_state(void)
 
 	status = wmi_evaluate_method(WMID_GUID3, 0, 0x2, &input_buf, &output_buf);
 	if (ACPI_FAILURE(status)) {
-		ACPI_EXCEPTION((AE_INFO, status, "Error getting keyboard-dock initial status"));
+		pr_err("Error getting keyboard-dock initial status: %s\n",
+		       acpi_format_exception(status));
 		return;
 	}
 
@@ -1884,9 +1993,19 @@ static void acer_wmi_notify(u32 value, void *context)
 			sparse_keymap_report_event(acer_wmi_input_dev, scancode, 1, true);
 		}
 		break;
+	case WMID_BACKLIGHT_EVENT:
+		/* Already handled by acpi-video */
+		break;
 	case WMID_ACCEL_OR_KBD_DOCK_EVENT:
 		acer_gsensor_event();
 		acer_kbd_dock_event(&return_value);
+		break;
+	case WMID_GAMING_TURBO_KEY_EVENT:
+		if (return_value.key_num == 0x4)
+			acer_toggle_turbo();
+		break;
+	case WMID_AC_EVENT:
+		/* We ignore AC events here */
 		break;
 	default:
 		pr_warn("Unknown function number - %d - %d\n",
@@ -1997,52 +2116,17 @@ static int __init acer_wmi_enable_rf_button(void)
 	return status;
 }
 
-#define ACER_WMID_ACCEL_HID	"BST0001"
-
-static acpi_status __init acer_wmi_get_handle_cb(acpi_handle ah, u32 level,
-						void *ctx, void **retval)
-{
-	struct acpi_device *dev;
-
-	if (!strcmp(ctx, "SENR")) {
-		if (acpi_bus_get_device(ah, &dev))
-			return AE_OK;
-		if (strcmp(ACER_WMID_ACCEL_HID, acpi_device_hid(dev)))
-			return AE_OK;
-	} else
-		return AE_OK;
-
-	*(acpi_handle *)retval = ah;
-
-	return AE_CTRL_TERMINATE;
-}
-
-static int __init acer_wmi_get_handle(const char *name, const char *prop,
-					acpi_handle *ah)
-{
-	acpi_status status;
-	acpi_handle handle;
-
-	BUG_ON(!name || !ah);
-
-	handle = NULL;
-	status = acpi_get_devices(prop, acer_wmi_get_handle_cb,
-					(void *)name, &handle);
-	if (ACPI_SUCCESS(status) && handle) {
-		*ah = handle;
-		return 0;
-	} else {
-		return -ENODEV;
-	}
-}
-
 static int __init acer_wmi_accel_setup(void)
 {
+	struct acpi_device *adev;
 	int err;
 
-	err = acer_wmi_get_handle("SENR", ACER_WMID_ACCEL_HID, &gsensor_handle);
-	if (err)
-		return err;
+	adev = acpi_dev_get_first_match_dev("BST0001", NULL, -1);
+	if (!adev)
+		return -ENODEV;
+
+	gsensor_handle = acpi_device_handle(adev);
+	acpi_dev_put(adev);
 
 	acer_wmi_accel_dev = input_allocate_device();
 	if (!acer_wmi_accel_dev)
@@ -2266,29 +2350,15 @@ static struct platform_device *acer_platform_device;
 
 static void remove_debugfs(void)
 {
-	debugfs_remove(interface->debug.devices);
-	debugfs_remove(interface->debug.root);
+	debugfs_remove_recursive(interface->debug.root);
 }
 
-static int __init create_debugfs(void)
+static void __init create_debugfs(void)
 {
 	interface->debug.root = debugfs_create_dir("acer-wmi", NULL);
-	if (!interface->debug.root) {
-		pr_err("Failed to create debugfs directory");
-		return -ENOMEM;
-	}
 
-	interface->debug.devices = debugfs_create_u32("devices", S_IRUGO,
-					interface->debug.root,
-					&interface->debug.wmid_devices);
-	if (!interface->debug.devices)
-		goto error_debugfs;
-
-	return 0;
-
-error_debugfs:
-	remove_debugfs();
-	return -ENOMEM;
+	debugfs_create_u32("devices", S_IRUGO, interface->debug.root,
+			   &interface->debug.wmid_devices);
 }
 
 static int __init acer_wmi_init(void)
@@ -2368,9 +2438,6 @@ static int __init acer_wmi_init(void)
 
 	set_quirks();
 
-	if (dmi_check_system(video_vendor_dmi_table))
-		acpi_video_set_dmi_backlight_type(acpi_backlight_vendor);
-
 	if (acpi_video_get_backlight_type() != acpi_backlight_vendor)
 		interface->capability &= ~ACER_CAP_BRIGHTNESS;
 
@@ -2413,7 +2480,7 @@ static int __init acer_wmi_init(void)
 		goto error_platform_register;
 	}
 
-	acer_platform_device = platform_device_alloc("acer-wmi", -1);
+	acer_platform_device = platform_device_alloc("acer-wmi", PLATFORM_DEVID_NONE);
 	if (!acer_platform_device) {
 		err = -ENOMEM;
 		goto error_device_alloc;
@@ -2425,9 +2492,7 @@ static int __init acer_wmi_init(void)
 
 	if (wmi_has_guid(WMID_GUID2)) {
 		interface->debug.wmid_devices = get_wmid_devices();
-		err = create_debugfs();
-		if (err)
-			goto error_create_debugfs;
+		create_debugfs();
 	}
 
 	/* Override any initial settings with values from the commandline */
@@ -2435,8 +2500,6 @@ static int __init acer_wmi_init(void)
 
 	return 0;
 
-error_create_debugfs:
-	platform_device_del(acer_platform_device);
 error_device_add:
 	platform_device_put(acer_platform_device);
 error_device_alloc:

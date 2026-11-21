@@ -51,7 +51,6 @@
 #define OV8858_XVCLK_FREQ		24000000
 
 #define CHIP_ID				0x008858
-#define CHIP_ID_ALT			0x00885a
 #define OV8858_REG_CHIP_ID		0x300a
 
 #define OV8858_REG_CTRL_MODE		0x0100
@@ -2017,7 +2016,7 @@ ov8858_find_best_fit(struct ov8858 *ov8858,
 }
 
 static int ov8858_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov8858 *ov8858 = to_ov8858(sd);
@@ -2033,7 +2032,7 @@ static int ov8858_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&ov8858->mutex);
 		return -ENOTTY;
@@ -2055,7 +2054,7 @@ static int ov8858_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov8858_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov8858 *ov8858 = to_ov8858(sd);
@@ -2064,7 +2063,7 @@ static int ov8858_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&ov8858->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&ov8858->mutex);
 		return -ENOTTY;
@@ -2081,7 +2080,7 @@ static int ov8858_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov8858_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index != 0)
@@ -2092,7 +2091,7 @@ static int ov8858_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov8858_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct ov8858 *ov8858 = to_ov8858(sd);
@@ -2132,9 +2131,7 @@ static int ov8858_g_frame_interval(struct v4l2_subdev *sd,
 	struct ov8858 *ov8858 = to_ov8858(sd);
 	const struct ov8858_mode *mode = ov8858->cur_mode;
 
-	mutex_lock(&ov8858->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&ov8858->mutex);
 
 	return 0;
 }
@@ -2156,14 +2153,14 @@ static void ov8858_get_r1a_otp(struct ov8858_otp_info_r1a *otp_r1a,
 			if (ov8858_module_info[i].id == otp_r1a->module_id)
 				break;
 		}
-		strlcpy(inf->fac.module, ov8858_module_info[i].name,
+		strscpy(inf->fac.module, ov8858_module_info[i].name,
 			sizeof(inf->fac.module));
 
 		for (i = 0; i < ARRAY_SIZE(ov8858_lens_info) - 1; i++) {
 			if (ov8858_lens_info[i].id == otp_r1a->lens_id)
 				break;
 		}
-		strlcpy(inf->fac.lens, ov8858_lens_info[i].name,
+		strscpy(inf->fac.lens, ov8858_lens_info[i].name,
 			sizeof(inf->fac.lens));
 	}
 
@@ -2238,14 +2235,14 @@ static void ov8858_get_r2a_otp(struct ov8858_otp_info_r2a *otp_r2a,
 			if (ov8858_module_info[i].id == otp_r2a->module_id)
 				break;
 		}
-		strlcpy(inf->fac.module, ov8858_module_info[i].name,
+		strscpy(inf->fac.module, ov8858_module_info[i].name,
 			sizeof(inf->fac.module));
 
 		for (i = 0; i < ARRAY_SIZE(ov8858_lens_info) - 1; i++) {
 			if (ov8858_lens_info[i].id == otp_r2a->lens_id)
 				break;
 		}
-		strlcpy(inf->fac.lens, ov8858_lens_info[i].name,
+		strscpy(inf->fac.lens, ov8858_lens_info[i].name,
 			sizeof(inf->fac.lens));
 
 		rg = otp_r2a->rg_ratio;
@@ -2297,9 +2294,9 @@ static void ov8858_get_module_inf(struct ov8858 *ov8858,
 	struct ov8858_otp_info_r1a *otp_r1a = ov8858->otp_r1a;
 	struct ov8858_otp_info_r2a *otp_r2a = ov8858->otp_r2a;
 
-	strlcpy(inf->base.sensor, OV8858_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, ov8858->module_name, sizeof(inf->base.module));
-	strlcpy(inf->base.lens, ov8858->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.sensor, OV8858_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, ov8858->module_name, sizeof(inf->base.module));
+	strscpy(inf->base.lens, ov8858->len_name, sizeof(inf->base.lens));
 
 	if (ov8858->is_r2a) {
 		if (otp_r2a)
@@ -2308,15 +2305,6 @@ static void ov8858_get_module_inf(struct ov8858 *ov8858,
 		if (otp_r1a)
 			ov8858_get_r1a_otp(otp_r1a, inf);
 	}
-}
-
-static void ov8858_get_module_inf_hal(struct ov8858 *ov8858,
-				      struct rkmodule_inf_hal *inf)
-{
-	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, OV8858_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, ov8858->module_name, sizeof(inf->base.module));
-	strlcpy(inf->base.lens, ov8858->len_name, sizeof(inf->base.lens));
 }
 
 static void ov8858_set_awb_cfg(struct ov8858 *ov8858,
@@ -2344,9 +2332,6 @@ static long ov8858_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	switch (cmd) {
 	case RKMODULE_GET_MODULE_INFO:
 		ov8858_get_module_inf(ov8858, (struct rkmodule_inf *)arg);
-		break;
-	case RKMODULE_GET_MODULE_INFO_HAL:
-		ov8858_get_module_inf_hal(ov8858, (struct rkmodule_inf_hal *)arg);
 		break;
 	case RKMODULE_AWB_CFG:
 		ov8858_set_awb_cfg(ov8858, (struct rkmodule_awb_cfg *)arg);
@@ -2816,7 +2801,7 @@ static void __ov8858_power_off(struct ov8858 *ov8858)
 	regulator_bulk_disable(OV8858_NUM_SUPPLIES, ov8858->supplies);
 }
 
-static int ov8858_runtime_resume(struct device *dev)
+static int __maybe_unused ov8858_runtime_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
@@ -2825,7 +2810,7 @@ static int ov8858_runtime_resume(struct device *dev)
 	return __ov8858_power_on(ov8858);
 }
 
-static int ov8858_runtime_suspend(struct device *dev)
+static int __maybe_unused ov8858_runtime_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
@@ -2841,7 +2826,7 @@ static int ov8858_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ov8858 *ov8858 = to_ov8858(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct ov8858_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&ov8858->mutex);
@@ -2859,7 +2844,7 @@ static int ov8858_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int ov8858_enum_frame_interval(struct v4l2_subdev *sd,
-				      struct v4l2_subdev_pad_config *cfg,
+				      struct v4l2_subdev_state *sd_state,
 				      struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct ov8858 *ov8858 = to_ov8858(sd);
@@ -2867,16 +2852,14 @@ static int ov8858_enum_frame_interval(struct v4l2_subdev *sd,
 	if (fie->index >= ov8858->cfg_num)
 		return -EINVAL;
 
-	if (fie->code != OV8858_MEDIA_BUS_FMT)
-		return -EINVAL;
-
+	fie->code = OV8858_MEDIA_BUS_FMT;
 	fie->width = supported_modes[fie->index].width;
 	fie->height = supported_modes[fie->index].height;
 	fie->interval = supported_modes[fie->index].max_fps;
 	return 0;
 }
 
-static int ov8858_g_mbus_config(struct v4l2_subdev *sd,
+static int ov8858_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
 	struct ov8858  *sensor = to_ov8858 (sd);
@@ -2884,16 +2867,9 @@ static int ov8858_g_mbus_config(struct v4l2_subdev *sd,
 
 	dev_info(dev, "%s(%d) enter!\n", __func__, __LINE__);
 
-	if (2 == sensor->lane_num) {
-		config->type = V4L2_MBUS_CSI2;
-		config->flags = V4L2_MBUS_CSI2_2_LANE |
-				V4L2_MBUS_CSI2_CHANNEL_0 |
-				V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	} else if (4 == sensor->lane_num) {
-		config->type = V4L2_MBUS_CSI2;
-		config->flags = V4L2_MBUS_CSI2_4_LANE |
-				V4L2_MBUS_CSI2_CHANNEL_0 |
-				V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
+	if (2 == sensor->lane_num || 4 == sensor->lane_num) {
+		config->type = V4L2_MBUS_CSI2_DPHY;
+		config->bus.mipi_csi2.num_data_lanes = sensor->lane_num;
 	} else {
 		dev_err(&sensor->client->dev,
 			"unsupported lane_num(%d)\n", sensor->lane_num);
@@ -2923,7 +2899,6 @@ static const struct v4l2_subdev_core_ops ov8858_core_ops = {
 static const struct v4l2_subdev_video_ops ov8858_video_ops = {
 	.s_stream = ov8858_s_stream,
 	.g_frame_interval = ov8858_g_frame_interval,
-	.g_mbus_config = ov8858_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops ov8858_pad_ops = {
@@ -2932,6 +2907,7 @@ static const struct v4l2_subdev_pad_ops ov8858_pad_ops = {
 	.enum_frame_interval = ov8858_enum_frame_interval,
 	.get_fmt = ov8858_get_fmt,
 	.set_fmt = ov8858_set_fmt,
+	.get_mbus_config = ov8858_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops ov8858_subdev_ops = {
@@ -3358,21 +3334,14 @@ static int ov8858_check_sensor_id(struct ov8858 *ov8858,
 {
 	struct device *dev = &ov8858->client->dev;
 	u32 id = 0;
-	bool alt_id;
 	int ret;
 
 	ret = ov8858_read_reg(client, OV8858_REG_CHIP_ID,
 			       OV8858_REG_VALUE_24BIT, &id);
-	/*
-	 * Chip id 0x00885a (CHIP_ID_ALT) is what this board's module reports
-	 * on 0x300a..0x300c; it is driven with the R2A tables regardless of
-	 * the revision register.
-	 */
-	if (id != CHIP_ID && id != CHIP_ID_ALT) {
+	if (id != CHIP_ID) {
 		dev_err(dev, "Unexpected sensor id(%06x), ret(%d)\n", id, ret);
 		return -ENODEV;
 	}
-	alt_id = (id == CHIP_ID_ALT);
 
 	ret = ov8858_read_reg(client, OV8858_CHIP_REVISION_REG,
 			       OV8858_REG_VALUE_08BIT, &id);
@@ -3380,10 +3349,9 @@ static int ov8858_check_sensor_id(struct ov8858 *ov8858,
 		dev_err(dev, "Read chip revision register error\n");
 		return -ENODEV;
 	}
-	dev_info(dev, "Detected OV%06x sensor, REVISION 0x%x\n",
-		 alt_id ? CHIP_ID_ALT : CHIP_ID, id);
+	dev_info(dev, "Detected OV%06x sensor, REVISION 0x%x\n", CHIP_ID, id);
 
-	if (id == OV8858_R2A || alt_id) {
+	if (id == OV8858_R2A) {
 		if (4 == ov8858->lane_num) {
 			ov8858_global_regs = ov8858_global_regs_r2a_4lane;
 			ov8858->cur_mode = &supported_modes_r2a_4lane[0];
@@ -3588,7 +3556,7 @@ static int ov8858_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 ov8858->module_index, facing,
 		 OV8858_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -3614,7 +3582,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int ov8858_remove(struct i2c_client *client)
+static void ov8858_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov8858 *ov8858 = to_ov8858(sd);
@@ -3634,8 +3602,6 @@ static int ov8858_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__ov8858_power_off(ov8858);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

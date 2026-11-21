@@ -1,6 +1,6 @@
 /* drivers/input/sensors/access/kxtik.c
  *
- * Copyright (C) 2012-2015 ROCKCHIP.
+ * Copyright (C) 2012-2015 Rockchip Electronics Co., Ltd.
  * Author: luowei <lw@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -103,7 +103,7 @@ static int sensor_report_value(struct i2c_client *client)
 }
 
 
-struct sensor_operate hall_och165t_ops = {
+static struct sensor_operate hall_och165t_ops = {
 	.name				= "och165t",
 	.type				= SENSOR_TYPE_HALL,	//sensor type and it should be correct
 	.id_i2c				= HALL_ID_OCH165T,	//i2c id number
@@ -129,9 +129,9 @@ static int hall_och165t_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &hall_och165t_ops);
 }
 
-static int hall_och165t_remove(struct i2c_client *client)
+static void hall_och165t_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &hall_och165t_ops);
+	sensor_unregister_device(client, NULL, &hall_och165t_ops);
 }
 
 static const struct i2c_device_id hall_och165t_id[] = {
@@ -141,7 +141,7 @@ static const struct i2c_device_id hall_och165t_id[] = {
 
 static struct i2c_driver hall_och165t_driver = {
 	.probe = hall_och165t_probe,
-	.remove = hall_och165t_remove,
+	.remove = (void *)hall_och165t_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = hall_och165t_id,
 	.driver = {

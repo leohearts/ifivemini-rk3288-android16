@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) Rockchip Electronics Co.Ltd
+ * Copyright (C) Rockchip Electronics Co., Ltd.
  * Author: Felix Zeng <felix.zeng@rock-chips.com>
  */
 
@@ -30,7 +30,6 @@ struct rknpu_job {
 	struct rknpu_device *rknpu_dev;
 	struct list_head head[RKNPU_MAX_CORES];
 	struct work_struct cleanup_work;
-	bool in_queue[RKNPU_MAX_CORES];
 	bool irq_entry[RKNPU_MAX_CORES];
 	unsigned int flags;
 	int ret;
@@ -43,9 +42,13 @@ struct rknpu_job {
 	struct dma_fence *fence;
 	ktime_t timestamp;
 	uint32_t use_core_num;
-	uint32_t run_count;
-	uint32_t interrupt_count;
+	atomic_t run_count;
+	atomic_t interrupt_count;
+	ktime_t hw_commit_time;
 	ktime_t hw_recoder_time;
+	ktime_t hw_elapse_time;
+	atomic_t submit_count[RKNPU_MAX_CORES];
+	int iommu_domain_id;
 };
 
 irqreturn_t rknpu_core0_irq_handler(int irq, void *data);

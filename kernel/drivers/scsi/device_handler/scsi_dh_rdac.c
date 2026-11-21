@@ -536,7 +536,7 @@ static void send_mode_select(struct work_struct *work)
 	unsigned char cdb[MAX_COMMAND_SIZE];
 	struct scsi_sense_hdr sshdr;
 	unsigned int data_size;
-	u64 req_flags = REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
+	blk_opf_t req_flags = REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
 		REQ_FAILFAST_DRIVER;
 
 	spin_lock(&ctlr->ms_lock);
@@ -644,21 +644,20 @@ done:
 	return 0;
 }
 
-static int rdac_prep_fn(struct scsi_device *sdev, struct request *req)
+static blk_status_t rdac_prep_fn(struct scsi_device *sdev, struct request *req)
 {
 	struct rdac_dh_data *h = sdev->handler_data;
-	int ret = BLKPREP_OK;
 
 	if (h->state != RDAC_STATE_ACTIVE) {
-		ret = BLKPREP_KILL;
 		req->rq_flags |= RQF_QUIET;
+		return BLK_STS_IOERR;
 	}
-	return ret;
 
+	return BLK_STS_OK;
 }
 
-static int rdac_check_sense(struct scsi_device *sdev,
-				struct scsi_sense_hdr *sense_hdr)
+static enum scsi_disposition rdac_check_sense(struct scsi_device *sdev,
+					      struct scsi_sense_hdr *sense_hdr)
 {
 	struct rdac_dh_data *h = sdev->handler_data;
 

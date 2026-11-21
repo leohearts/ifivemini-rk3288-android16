@@ -1,14 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * IOMMU API for Rockchip
+ *
+ * Module Authors:	Simon Xue <xxm@rock-chips.com>
+ *			Daniel Kurtz <djkurtz@chromium.org>
  */
 
 #include <linux/clk.h>
 #include <linux/compiler.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/dma-iommu.h>
 #include <linux/dma-mapping.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
@@ -18,14 +19,16 @@
 #include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/of.h>
-#include <linux/of_iommu.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <soc/rockchip/rockchip_iommu.h>
+
+#include "dma-iommu.h"
 
 /** MMU register offsets */
 #define RK_MMU_DTE_ADDR		0x00	/* Directory table address */
@@ -38,6 +41,9 @@
 #define RK_MMU_INT_MASK		0x1C	/* IRQ enable */
 #define RK_MMU_INT_STATUS	0x20	/* IRQ status after masking */
 #define RK_MMU_AUTO_GATING	0x24
+
+/* v3 registers */
+#define RK_MMU_PAGE_FAULT	0x44	/* Pagefault register */
 
 #define DTE_ADDR_DUMMY		0xCAFEBABE
 
@@ -66,6 +72,8 @@
 /* RK_MMU_INT_* register fields */
 #define RK_MMU_IRQ_PAGE_FAULT    0x01  /* page fault */
 #define RK_MMU_IRQ_BUS_ERROR     0x02  /* bus read error */
+#define RK_MMU_IRQ_PF_FAKE_MST0  0x10000 /* page fault fake mode */
+
 #define RK_MMU_IRQ_MASK          (RK_MMU_IRQ_PAGE_FAULT | RK_MMU_IRQ_BUS_ERROR)
 
 #define NUM_DT_ENTRIES 1024
@@ -76,6 +84,9 @@
 
 #define DISABLE_FETCH_DTE_TIME_LIMIT BIT(31)
 
+#define RK_MMU_PAGEFAULT_FAKE_MODE_EN	BIT(24)
+#define RK_MMU_PAGEFAULT_MST0_DONE	BIT(0)
+
 #define CMD_RETRY_COUNT 10
 
  /*
@@ -84,59 +95,48 @@
   */
 #define RK_IOMMU_PGSIZE_BITMAP 0x007ff000
 
-#define DT_LO_MASK 0xfffff000
-#define DT_HI_MASK GENMASK_ULL(39, 32)
-#define DT_SHIFT   28
-
-#define DTE_BASE_HI_MASK GENMASK(11, 4)
-
-#define PAGE_DESC_LO_MASK   0xfffff000
-#define PAGE_DESC_HI1_LOWER 32
-#define PAGE_DESC_HI1_UPPER 35
-#define PAGE_DESC_HI2_LOWER 36
-#define PAGE_DESC_HI2_UPPER 39
-#define PAGE_DESC_HI_MASK1  GENMASK_ULL(PAGE_DESC_HI1_UPPER, PAGE_DESC_HI1_LOWER)
-#define PAGE_DESC_HI_MASK2  GENMASK_ULL(PAGE_DESC_HI2_UPPER, PAGE_DESC_HI2_LOWER)
-
-#define DTE_HI1_LOWER 8
-#define DTE_HI1_UPPER 11
-#define DTE_HI2_LOWER 4
-#define DTE_HI2_UPPER 7
-#define DTE_HI_MASK1  GENMASK(DTE_HI1_UPPER, DTE_HI1_LOWER)
-#define DTE_HI_MASK2  GENMASK(DTE_HI2_UPPER, DTE_HI2_LOWER)
-
-#define PAGE_DESC_HI_SHIFT1 (PAGE_DESC_HI1_LOWER - DTE_HI1_LOWER)
-#define PAGE_DESC_HI_SHIFT2 (PAGE_DESC_HI2_LOWER - DTE_HI2_LOWER)
-
 struct rk_iommu_domain {
 	struct list_head iommus;
 	u32 *dt; /* page directory table */
 	dma_addr_t dt_dma;
 	spinlock_t iommus_lock; /* lock for iommus list */
 	spinlock_t dt_lock; /* lock for modifying page directory table */
+	bool shootdown_entire;
+	struct third_iommu_ops_wrap *opt_ops;
+	struct device *iommu_dev;
 
 	struct iommu_domain domain;
 };
 
-struct rockchip_iommu_data {
-	u32 version;
+struct rk_iommu_ops {
+	phys_addr_t (*pt_address)(u32 dte);
+	u32 (*mk_dtentries)(dma_addr_t pt_dma);
+	u32 (*mk_ptentries)(phys_addr_t page, int prot);
+	u64 dma_bit_mask;
 };
 
 struct rk_iommu {
 	struct device *dev;
 	void __iomem **bases;
 	int num_mmu;
+	int num_irq;
 	struct clk_bulk_data *clocks;
 	int num_clocks;
 	bool reset_disabled;
-	bool skip_read;      /* rk3126/rk3128 can't read vop iommu registers */
+	bool skip_read; /* rk3126/rk3128 can't read vop iommu registers */
 	bool dlr_disable; /* avoid access iommu when runtime ops called */
 	bool cmd_retry;
+	bool master_handle_irq;
+	bool first_reset_disabled;
 	struct iommu_device iommu;
 	struct list_head node; /* entry in rk_iommu_domain.iommus */
 	struct iommu_domain *domain; /* domain to which iommu is attached */
 	struct iommu_group *group;
-	u32 version;
+	bool shootdown_entire;
+	struct third_iommu_ops_wrap *opt_ops;
+	bool iommu_enabled;
+	bool need_res_map;
+	bool pf_fake_mode_en;
 };
 
 struct rk_iommudata {
@@ -146,6 +146,10 @@ struct rk_iommudata {
 };
 
 static struct device *dma_dev;
+static const struct rk_iommu_ops *rk_ops;
+static struct rk_iommu *rk_iommu_from_dev(struct device *dev);
+static char reserve_range[PAGE_SIZE] __aligned(PAGE_SIZE);
+static phys_addr_t res_page;
 
 static inline void rk_table_flush(struct rk_iommu_domain *dom, dma_addr_t dma,
 				  unsigned int count)
@@ -204,6 +208,11 @@ static struct rk_iommu_domain *to_rk_domain(struct iommu_domain *dom)
 #define RK_DTE_PT_ADDRESS_MASK    0xfffff000
 #define RK_DTE_PT_VALID           BIT(0)
 
+static inline phys_addr_t rk_dte_pt_address(u32 dte)
+{
+	return (phys_addr_t)dte & RK_DTE_PT_ADDRESS_MASK;
+}
+
 /*
  * In v2:
  * 31:12 - PT address bit 31:0
@@ -212,20 +221,21 @@ static struct rk_iommu_domain *to_rk_domain(struct iommu_domain *dom)
  *  3: 1 - Reserved
  *     0 - 1 if PT @ PT address is valid
  */
-#define RK_DTE_PT_ADDRESS_MASK_V2 0xfffffff0
-
-static inline phys_addr_t rk_dte_pt_address(u32 dte)
-{
-	return (phys_addr_t)dte & RK_DTE_PT_ADDRESS_MASK;
-}
+#define RK_DTE_PT_ADDRESS_MASK_V2 GENMASK_ULL(31, 4)
+#define DTE_HI_MASK1	GENMASK(11, 8)
+#define DTE_HI_MASK2	GENMASK(7, 4)
+#define DTE_HI_SHIFT1	24 /* shift bit 8 to bit 32 */
+#define DTE_HI_SHIFT2	32 /* shift bit 4 to bit 36 */
+#define PAGE_DESC_HI_MASK1	GENMASK_ULL(35, 32)
+#define PAGE_DESC_HI_MASK2	GENMASK_ULL(39, 36)
 
 static inline phys_addr_t rk_dte_pt_address_v2(u32 dte)
 {
 	u64 dte_v2 = dte;
 
-	dte_v2 = ((dte_v2 & DTE_HI_MASK2) << PAGE_DESC_HI_SHIFT2) |
-		 ((dte_v2 & DTE_HI_MASK1) << PAGE_DESC_HI_SHIFT1) |
-		 (dte_v2 & PAGE_DESC_LO_MASK);
+	dte_v2 = ((dte_v2 & DTE_HI_MASK2) << DTE_HI_SHIFT2) |
+		 ((dte_v2 & DTE_HI_MASK1) << DTE_HI_SHIFT1) |
+		 (dte_v2 & RK_DTE_PT_ADDRESS_MASK);
 
 	return (phys_addr_t)dte_v2;
 }
@@ -242,9 +252,9 @@ static inline u32 rk_mk_dte(dma_addr_t pt_dma)
 
 static inline u32 rk_mk_dte_v2(dma_addr_t pt_dma)
 {
-	pt_dma = (pt_dma & PAGE_DESC_LO_MASK) |
-		 ((pt_dma & PAGE_DESC_HI_MASK1) >> PAGE_DESC_HI_SHIFT1) |
-		 (pt_dma & PAGE_DESC_HI_MASK2) >> PAGE_DESC_HI_SHIFT2;
+	pt_dma = (pt_dma & RK_DTE_PT_ADDRESS_MASK) |
+		 ((pt_dma & PAGE_DESC_HI_MASK1) >> DTE_HI_SHIFT1) |
+		 (pt_dma & PAGE_DESC_HI_MASK2) >> DTE_HI_SHIFT2;
 
 	return (pt_dma & RK_DTE_PT_ADDRESS_MASK_V2) | RK_DTE_PT_VALID;
 }
@@ -275,69 +285,58 @@ static inline u32 rk_mk_dte_v2(dma_addr_t pt_dma)
 #define RK_PTE_PAGE_READABLE      BIT(1)
 #define RK_PTE_PAGE_VALID         BIT(0)
 
-/*
- * In v2:
- * 31:12 - Page address bit 31:0
- *  11:9 - Page address bit 34:32
- *   8:4 - Page address bit 39:35
- *     3 - Security
- *     2 - Readable
- *     1 - Writable
- *     0 - 1 if Page @ Page address is valid
- */
-#define RK_PTE_PAGE_ADDRESS_MASK_V2  0xfffffff0
-#define RK_PTE_PAGE_FLAGS_MASK_V2    0x0000000e
-#define RK_PTE_PAGE_READABLE_V2      BIT(2)
-#define RK_PTE_PAGE_WRITABLE_V2      BIT(1)
-
-static inline phys_addr_t rk_pte_page_address(u32 pte)
-{
-	return (phys_addr_t)pte & RK_PTE_PAGE_ADDRESS_MASK;
-}
-
-static inline phys_addr_t rk_pte_page_address_v2(u32 pte)
-{
-	u64 pte_v2 = pte;
-
-	pte_v2 = ((pte_v2 & DTE_HI_MASK2) << PAGE_DESC_HI_SHIFT2) |
-		 ((pte_v2 & DTE_HI_MASK1) << PAGE_DESC_HI_SHIFT1) |
-		 (pte_v2 & PAGE_DESC_LO_MASK);
-
-	return (phys_addr_t)pte_v2;
-}
-
 static inline bool rk_pte_is_page_valid(u32 pte)
 {
 	return pte & RK_PTE_PAGE_VALID;
+}
+
+#define RK_PTE_PAGE_REPRESENT	BIT(3)
+
+static inline bool rk_pte_is_page_represent(u32 pte)
+{
+	return pte & RK_PTE_PAGE_REPRESENT;
 }
 
 /* TODO: set cache flags per prot IOMMU_CACHE */
 static u32 rk_mk_pte(phys_addr_t page, int prot)
 {
 	u32 flags = 0;
-
 	flags |= (prot & IOMMU_READ) ? RK_PTE_PAGE_READABLE : 0;
 	flags |= (prot & IOMMU_WRITE) ? RK_PTE_PAGE_WRITABLE : 0;
+	flags |= (prot & IOMMU_PRIV) ? RK_PTE_PAGE_REPRESENT : 0;
 	page &= RK_PTE_PAGE_ADDRESS_MASK;
 	return page | flags | RK_PTE_PAGE_VALID;
 }
 
+/*
+ * In v2:
+ * 31:12 - Page address bit 31:0
+ * 11: 8 - Page address bit 35:32
+ *  7: 4 - Page address bit 39:36
+ *     3 - Security
+ *     2 - Writable
+ *     1 - Readable
+ *     0 - 1 if Page @ Page address is valid
+ */
 static u32 rk_mk_pte_v2(phys_addr_t page, int prot)
 {
 	u32 flags = 0;
 
-	flags |= (prot & IOMMU_READ) ? RK_PTE_PAGE_READABLE_V2 : 0;
-	flags |= (prot & IOMMU_WRITE) ? RK_PTE_PAGE_WRITABLE_V2 : 0;
-	page = (page & PAGE_DESC_LO_MASK) |
-	       ((page & PAGE_DESC_HI_MASK1) >> PAGE_DESC_HI_SHIFT1) |
-	       (page & PAGE_DESC_HI_MASK2) >> PAGE_DESC_HI_SHIFT2;
-	page &= RK_PTE_PAGE_ADDRESS_MASK_V2;
-	return page | flags | RK_PTE_PAGE_VALID;
+	/* If BIT(3) set, don't break iommu_map if BIT(0) set.
+	 * Means we can reupdate a page that already presented. We can use
+	 * this bit to reupdate a pre-mapped 4G range.
+	 */
+	flags |= (prot & IOMMU_PRIV) ? RK_PTE_PAGE_REPRESENT : 0;
+
+	flags |= (prot & IOMMU_READ) ? RK_PTE_PAGE_READABLE : 0;
+	flags |= (prot & IOMMU_WRITE) ? RK_PTE_PAGE_WRITABLE : 0;
+
+	return rk_mk_dte_v2(page) | flags;
 }
 
 static u32 rk_mk_pte_invalid(u32 pte)
 {
-	return pte & ~RK_PTE_PAGE_VALID;
+	return pte & ~(RK_PTE_PAGE_VALID | RK_PTE_PAGE_REPRESENT);
 }
 
 /*
@@ -578,14 +577,19 @@ read_wa:
 	return ret;
 }
 
+static u32 rk_iommu_read_dte_addr(void __iomem *base)
+{
+	return rk_iommu_read(base, RK_MMU_DTE_ADDR);
+}
+
 static int rk_iommu_force_reset(struct rk_iommu *iommu)
 {
 	int ret, i;
 	u32 dte_addr;
 	bool val;
-	u32 address_mask;
+	u32 dte_address_mask;
 
-	if (iommu->reset_disabled)
+	if (iommu->reset_disabled || iommu->first_reset_disabled)
 		return 0;
 
 	if (iommu->skip_read)
@@ -593,21 +597,20 @@ static int rk_iommu_force_reset(struct rk_iommu *iommu)
 
 	/*
 	 * Check if register DTE_ADDR is working by writing DTE_ADDR_DUMMY
-	 * and verifying that upper 5 nybbles are read back.
+	 * and verifying that upper 5 (v1) or 7 (v2) nybbles are read back.
 	 */
 
 	/*
 	 * In v2: upper 7 nybbles are read back.
 	 */
 	for (i = 0; i < iommu->num_mmu; i++) {
-		rk_iommu_write(iommu->bases[i], RK_MMU_DTE_ADDR, DTE_ADDR_DUMMY);
+		dte_address_mask = rk_ops->pt_address(DTE_ADDR_DUMMY);
+		rk_iommu_write(iommu->bases[i], RK_MMU_DTE_ADDR, dte_address_mask);
 
-		if (iommu->version >= 0x2)
-			address_mask = RK_DTE_PT_ADDRESS_MASK_V2;
-		else
-			address_mask = RK_DTE_PT_ADDRESS_MASK;
-		dte_addr = rk_iommu_read(iommu->bases[i], RK_MMU_DTE_ADDR);
-		if (dte_addr != (DTE_ADDR_DUMMY & address_mask)) {
+		ret = readx_poll_timeout(rk_iommu_read_dte_addr, iommu->bases[i], dte_addr,
+					 dte_addr == dte_address_mask,
+					 RK_MMU_POLL_PERIOD_US, RK_MMU_POLL_TIMEOUT_US);
+		if (ret) {
 			dev_err(iommu->dev, "Error during raw reset. MMU_DTE_ADDR is not functioning\n");
 			return -EFAULT;
 		}
@@ -619,8 +622,8 @@ read_wa:
 		return 0;
 
 	ret = readx_poll_timeout(rk_iommu_is_reset_done, iommu, val,
-				 val, RK_MMU_FORCE_RESET_TIMEOUT_US,
-				 RK_MMU_POLL_TIMEOUT_US);
+				 val, RK_MMU_POLL_TIMEOUT_US,
+				 RK_MMU_FORCE_RESET_TIMEOUT_US);
 	if (ret) {
 		dev_err(iommu->dev, "FORCE_RESET command timed out\n");
 		return ret;
@@ -648,11 +651,7 @@ static void log_iova(struct rk_iommu *iommu, int index, dma_addr_t iova)
 	page_offset = rk_iova_page_offset(iova);
 
 	mmu_dte_addr = rk_iommu_read(base, RK_MMU_DTE_ADDR);
-	mmu_dte_addr_phys = (phys_addr_t)mmu_dte_addr;
-	if (iommu->version >= 0x2) {
-		mmu_dte_addr_phys = (mmu_dte_addr_phys & DT_LO_MASK) |
-				    ((mmu_dte_addr_phys & DTE_BASE_HI_MASK) << DT_SHIFT);
-	}
+	mmu_dte_addr_phys = rk_ops->pt_address(mmu_dte_addr);
 
 	dte_addr_phys = mmu_dte_addr_phys + (4 * dte_index);
 	dte_addr = phys_to_virt(dte_addr_phys);
@@ -661,47 +660,34 @@ static void log_iova(struct rk_iommu *iommu, int index, dma_addr_t iova)
 	if (!rk_dte_is_pt_valid(dte))
 		goto print_it;
 
-	if (iommu->version >= 0x2)
-		pte_addr_phys = rk_dte_pt_address_v2(dte) + (pte_index * 4);
-	else
-		pte_addr_phys = rk_dte_pt_address(dte) + (pte_index * 4);
+	pte_addr_phys = rk_ops->pt_address(dte) + (pte_index * 4);
 	pte_addr = phys_to_virt(pte_addr_phys);
 	pte = *pte_addr;
 
 	if (!rk_pte_is_page_valid(pte))
 		goto print_it;
 
-	if (iommu->version >= 0x2)
-		page_addr_phys = rk_pte_page_address_v2(pte) + page_offset;
-	else
-		page_addr_phys = rk_pte_page_address(pte) + page_offset;
+	page_addr_phys = rk_ops->pt_address(pte) + page_offset;
 	page_flags = pte & RK_PTE_PAGE_FLAGS_MASK;
 
 print_it:
-	dev_err(iommu->dev, "iova = %pad: dte_index: %#03x pte_index: %#03x page_offset: %#03x\n",
+	dev_err_ratelimited(iommu->dev, "iova = %pad: dte_index: %#03x pte_index: %#03x page_offset: %#03x\n",
 		&iova, dte_index, pte_index, page_offset);
-	dev_err(iommu->dev, "mmu_dte_addr: %pa dte@%pa: %#08x valid: %u pte@%pa: %#08x valid: %u page@%pa flags: %#03x\n",
+	dev_err_ratelimited(iommu->dev, "mmu_dte_addr: %pa dte@%pa: %#08x valid: %u pte@%pa: %#08x valid: %u page@%pa flags: %#03x\n",
 		&mmu_dte_addr_phys, &dte_addr_phys, dte,
 		rk_dte_is_pt_valid(dte), &pte_addr_phys, pte,
 		rk_pte_is_page_valid(pte), &page_addr_phys, page_flags);
 }
 
-static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
+static int rk_pagefault_done(struct rk_iommu *iommu)
 {
-	struct rk_iommu *iommu = dev_id;
 	u32 status;
 	u32 int_status;
-	u32 int_mask;
 	dma_addr_t iova;
+	int i;
+	u32 int_mask;
 	irqreturn_t ret = IRQ_NONE;
-	int i, err;
-
-	err = pm_runtime_get_if_in_use(iommu->dev);
-	if (WARN_ON_ONCE(err <= 0))
-		return ret;
-
-	if (WARN_ON(clk_bulk_enable(iommu->num_clocks, iommu->clocks)))
-		goto out;
+	u32 val;
 
 	for (i = 0; i < iommu->num_mmu; i++) {
 		int_status = rk_iommu_read(iommu->bases[i], RK_MMU_INT_STATUS);
@@ -711,29 +697,34 @@ static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
 		ret = IRQ_HANDLED;
 		iova = rk_iommu_read(iommu->bases[i], RK_MMU_PAGE_FAULT_ADDR);
 
-		if (int_status & RK_MMU_IRQ_PAGE_FAULT) {
+		if ((int_status & RK_MMU_IRQ_PAGE_FAULT) ||
+		    (iommu->pf_fake_mode_en && (int_status & RK_MMU_IRQ_PF_FAKE_MST0))) {
 			int flags;
 
 			status = rk_iommu_read(iommu->bases[i], RK_MMU_STATUS);
 			flags = (status & RK_MMU_STATUS_PAGE_FAULT_IS_WRITE) ?
 					IOMMU_FAULT_WRITE : IOMMU_FAULT_READ;
 
-			dev_err(iommu->dev, "Page fault at %pad of type %s\n",
+			dev_err_ratelimited(iommu->dev, "Page fault at %pad of type %s\n",
 				&iova,
 				(flags == IOMMU_FAULT_WRITE) ? "write" : "read");
 
 			log_iova(iommu, i, iova);
 
-			/*
-			 * Report page fault to any installed handlers.
-			 * Ignore the return code, though, since we always zap cache
-			 * and clear the page fault anyway.
-			 */
-			if (iommu->domain)
-				report_iommu_fault(iommu->domain, iommu->dev, iova,
-						   status);
-			else
-				dev_err(iommu->dev, "Page fault while iommu not attached to domain?\n");
+			if (!iommu->master_handle_irq) {
+				/*
+				 * Report page fault to any installed handlers.
+				 * Ignore the return code, though, since we always zap cache
+				 * and clear the page fault anyway.
+				 */
+				if (iommu->domain) {
+					if (!iommu->pf_fake_mode_en)
+						report_iommu_fault(iommu->domain, iommu->dev, iova,
+								   status);
+				} else {
+					dev_err(iommu->dev, "Page fault while iommu not attached to domain?\n");
+				}
+			}
 
 			rk_iommu_base_command(iommu->bases[i], RK_MMU_CMD_ZAP_CACHE);
 
@@ -750,11 +741,58 @@ static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
 		if (int_status & RK_MMU_IRQ_BUS_ERROR)
 			dev_err(iommu->dev, "BUS_ERROR occurred at %pad\n", &iova);
 
-		if (int_status & ~RK_MMU_IRQ_MASK)
+		if (iommu->pf_fake_mode_en && (int_status & RK_MMU_IRQ_PF_FAKE_MST0)) {
+			val = rk_iommu_read(iommu->bases[i], RK_MMU_PAGE_FAULT);
+			val |= RK_MMU_PAGEFAULT_MST0_DONE;
+			rk_iommu_write(iommu->bases[i], RK_MMU_PAGE_FAULT, val);
+			dev_err_ratelimited(iommu->dev, "PF_FAKE_MST0 occurred at %pad\n", &iova);
+		}
+
+		if ((int_status & ~RK_MMU_IRQ_MASK) && (!iommu->pf_fake_mode_en))
 			dev_err(iommu->dev, "unexpected int_status: %#08x\n",
 				int_status);
 
 		rk_iommu_write(iommu->bases[i], RK_MMU_INT_CLEAR, int_status);
+	}
+
+	return ret;
+}
+
+int rockchip_pagefault_done(struct device *master_dev)
+{
+	struct rk_iommu *iommu = rk_iommu_from_dev(master_dev);
+
+	return rk_pagefault_done(iommu);
+}
+EXPORT_SYMBOL_GPL(rockchip_pagefault_done);
+
+void __iomem *rockchip_get_iommu_base(struct device *master_dev, int idx)
+{
+	struct rk_iommu *iommu = rk_iommu_from_dev(master_dev);
+
+	return iommu->bases[idx];
+}
+EXPORT_SYMBOL_GPL(rockchip_get_iommu_base);
+
+static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
+{
+	struct rk_iommu *iommu = dev_id;
+	irqreturn_t ret = IRQ_NONE;
+	int err;
+
+	err = pm_runtime_get_if_in_use(iommu->dev);
+	if (WARN_ON_ONCE(err <= 0))
+		return ret;
+
+	if (WARN_ON(clk_bulk_enable(iommu->num_clocks, iommu->clocks)))
+		goto out;
+
+	/* Master must call rockchip_pagefault_done to handle pagefault */
+	if (iommu->master_handle_irq) {
+		if (iommu->domain)
+			ret = report_iommu_fault(iommu->domain, iommu->dev, -1, 0x0);
+	} else {
+		ret = rk_pagefault_done(iommu);
 	}
 
 	clk_bulk_disable(iommu->num_clocks, iommu->clocks);
@@ -773,33 +811,9 @@ static phys_addr_t rk_iommu_iova_to_phys(struct iommu_domain *domain,
 	u32 dte, pte;
 	u32 *page_table;
 
-	spin_lock_irqsave(&rk_domain->dt_lock, flags);
-
-	dte = rk_domain->dt[rk_iova_dte_index(iova)];
-	if (!rk_dte_is_pt_valid(dte))
-		goto out;
-
-	pt_phys = rk_dte_pt_address(dte);
-	page_table = (u32 *)phys_to_virt(pt_phys);
-	pte = page_table[rk_iova_pte_index(iova)];
-	if (!rk_pte_is_page_valid(pte))
-		goto out;
-
-	phys = rk_pte_page_address(pte) + rk_iova_page_offset(iova);
-out:
-	spin_unlock_irqrestore(&rk_domain->dt_lock, flags);
-
-	return phys;
-}
-
-static phys_addr_t rk_iommu_iova_to_phys_v2(struct iommu_domain *domain,
-					 dma_addr_t iova)
-{
-	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
-	unsigned long flags;
-	phys_addr_t pt_phys, phys = 0;
-	u32 dte, pte;
-	u32 *page_table;
+	if (rk_domain->opt_ops && rk_domain->opt_ops->iova_to_phys)
+		return rk_domain->opt_ops->iova_to_phys(domain, iova,
+							rk_domain->iommu_dev);
 
 	spin_lock_irqsave(&rk_domain->dt_lock, flags);
 
@@ -807,13 +821,13 @@ static phys_addr_t rk_iommu_iova_to_phys_v2(struct iommu_domain *domain,
 	if (!rk_dte_is_pt_valid(dte))
 		goto out;
 
-	pt_phys = rk_dte_pt_address_v2(dte);
+	pt_phys = rk_ops->pt_address(dte);
 	page_table = (u32 *)phys_to_virt(pt_phys);
 	pte = page_table[rk_iova_pte_index(iova)];
 	if (!rk_pte_is_page_valid(pte))
 		goto out;
 
-	phys = rk_pte_page_address_v2(pte) + rk_iova_page_offset(iova);
+	phys = rk_ops->pt_address(pte) + rk_iova_page_offset(iova);
 out:
 	spin_unlock_irqrestore(&rk_domain->dt_lock, flags);
 
@@ -825,6 +839,10 @@ static void rk_iommu_zap_iova(struct rk_iommu_domain *rk_domain,
 {
 	struct list_head *pos;
 	unsigned long flags;
+
+	/* Do not zap tlb cache line if shootdown_entire set */
+	if (rk_domain->shootdown_entire)
+		return;
 
 	/* shootdown these iova from all iommus using this domain */
 	spin_lock_irqsave(&rk_domain->iommus_lock, flags);
@@ -885,61 +903,23 @@ static u32 *rk_dte_get_page_table(struct rk_iommu_domain *rk_domain,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	dte = rk_mk_dte(pt_dma);
+	dte = rk_ops->mk_dtentries(pt_dma);
 	*dte_addr = dte;
 
-	rk_table_flush(rk_domain, pt_dma, NUM_PT_ENTRIES);
 	rk_table_flush(rk_domain,
 		       rk_domain->dt_dma + dte_index * sizeof(u32), 1);
 done:
-	pt_phys = rk_dte_pt_address(dte);
-	return (u32 *)phys_to_virt(pt_phys);
-}
-
-static u32 *rk_dte_get_page_table_v2(struct rk_iommu_domain *rk_domain,
-				  dma_addr_t iova)
-{
-	u32 *page_table, *dte_addr;
-	u32 dte_index, dte;
-	phys_addr_t pt_phys;
-	dma_addr_t pt_dma;
-
-	assert_spin_locked(&rk_domain->dt_lock);
-
-	dte_index = rk_iova_dte_index(iova);
-	dte_addr = &rk_domain->dt[dte_index];
-	dte = *dte_addr;
-	if (rk_dte_is_pt_valid(dte))
-		goto done;
-
-	page_table = (u32 *)get_zeroed_page(GFP_ATOMIC | GFP_DMA32);
-	if (!page_table)
-		return ERR_PTR(-ENOMEM);
-
-	pt_dma = dma_map_single(dma_dev, page_table, SPAGE_SIZE, DMA_TO_DEVICE);
-	if (dma_mapping_error(dma_dev, pt_dma)) {
-		dev_err(dma_dev, "DMA mapping error while allocating page table\n");
-		free_page((unsigned long)page_table);
-		return ERR_PTR(-ENOMEM);
-	}
-
-	dte = rk_mk_dte_v2(pt_dma);
-	*dte_addr = dte;
-
-	rk_table_flush(rk_domain, pt_dma, NUM_PT_ENTRIES);
-	rk_table_flush(rk_domain,
-		       rk_domain->dt_dma + dte_index * sizeof(u32), 1);
-done:
-	pt_phys = rk_dte_pt_address_v2(dte);
+	pt_phys = rk_ops->pt_address(dte);
 	return (u32 *)phys_to_virt(pt_phys);
 }
 
 static size_t rk_iommu_unmap_iova(struct rk_iommu_domain *rk_domain,
 				  u32 *pte_addr, dma_addr_t pte_dma,
-				  size_t size)
+				  size_t size, struct rk_iommu *iommu)
 {
 	unsigned int pte_count;
 	unsigned int pte_total = size / SPAGE_SIZE;
+	int prot = IOMMU_READ | IOMMU_WRITE | IOMMU_PRIV;
 
 	assert_spin_locked(&rk_domain->dt_lock);
 
@@ -948,12 +928,33 @@ static size_t rk_iommu_unmap_iova(struct rk_iommu_domain *rk_domain,
 		if (!rk_pte_is_page_valid(pte))
 			break;
 
-		pte_addr[pte_count] = rk_mk_pte_invalid(pte);
+		if (iommu && iommu->need_res_map)
+			pte_addr[pte_count] = rk_ops->mk_ptentries(res_page,
+								   prot);
+		else
+			pte_addr[pte_count] = rk_mk_pte_invalid(pte);
 	}
 
 	rk_table_flush(rk_domain, pte_dma, pte_count);
 
 	return pte_count * SPAGE_SIZE;
+}
+
+static struct rk_iommu *rk_iommu_get(struct rk_iommu_domain *rk_domain)
+{
+	unsigned long flags;
+	struct list_head *pos;
+	struct rk_iommu *iommu = NULL;
+
+	spin_lock_irqsave(&rk_domain->iommus_lock, flags);
+	list_for_each(pos, &rk_domain->iommus) {
+		iommu = list_entry(pos, struct rk_iommu, node);
+		if (iommu->need_res_map)
+			break;
+	}
+	spin_unlock_irqrestore(&rk_domain->iommus_lock, flags);
+
+	return iommu;
 }
 
 static int rk_iommu_map_iova(struct rk_iommu_domain *rk_domain, u32 *pte_addr,
@@ -969,12 +970,16 @@ static int rk_iommu_map_iova(struct rk_iommu_domain *rk_domain, u32 *pte_addr,
 	for (pte_count = 0; pte_count < pte_total; pte_count++) {
 		u32 pte = pte_addr[pte_count];
 
-		if (rk_pte_is_page_valid(pte))
+		if (rk_pte_is_page_valid(pte) && !rk_pte_is_page_represent(pte))
 			goto unwind;
 
-		pte_addr[pte_count] = rk_mk_pte(paddr, prot);
+		if (prot & IOMMU_PRIV) {
+			pte_addr[pte_count] = rk_ops->mk_ptentries(res_page, prot);
+		} else {
+			pte_addr[pte_count] = rk_ops->mk_ptentries(paddr, prot);
 
-		paddr += SPAGE_SIZE;
+			paddr += SPAGE_SIZE;
+		}
 	}
 
 	rk_table_flush(rk_domain, pte_dma, pte_total);
@@ -985,67 +990,16 @@ static int rk_iommu_map_iova(struct rk_iommu_domain *rk_domain, u32 *pte_addr,
 	 * We only zap the first and last iova, since only they could have
 	 * dte or pte shared with an existing mapping.
 	 */
-
-	/* Do not zap tlb cache line if IOMMU_TLB_SHOT_ENTIRE set */
-	if (!(prot & IOMMU_TLB_SHOT_ENTIRE))
-		rk_iommu_zap_iova_first_last(rk_domain, iova, size);
+	rk_iommu_zap_iova_first_last(rk_domain, iova, size);
 
 	return 0;
 unwind:
 	/* Unmap the range of iovas that we just mapped */
 	rk_iommu_unmap_iova(rk_domain, pte_addr, pte_dma,
-			    pte_count * SPAGE_SIZE);
+			    pte_count * SPAGE_SIZE, NULL);
 
 	iova += pte_count * SPAGE_SIZE;
-	page_phys = rk_pte_page_address(pte_addr[pte_count]);
-	pr_err("iova: %pad already mapped to %pa cannot remap to phys: %pa prot: %#x\n",
-	       &iova, &page_phys, &paddr, prot);
-
-	return -EADDRINUSE;
-}
-
-static int rk_iommu_map_iova_v2(struct rk_iommu_domain *rk_domain, u32 *pte_addr,
-			     dma_addr_t pte_dma, dma_addr_t iova,
-			     phys_addr_t paddr, size_t size, int prot)
-{
-	unsigned int pte_count;
-	unsigned int pte_total = size / SPAGE_SIZE;
-	phys_addr_t page_phys;
-
-	assert_spin_locked(&rk_domain->dt_lock);
-
-	for (pte_count = 0; pte_count < pte_total; pte_count++) {
-		u32 pte = pte_addr[pte_count];
-
-		if (rk_pte_is_page_valid(pte))
-			goto unwind;
-
-		pte_addr[pte_count] = rk_mk_pte_v2(paddr, prot);
-
-		paddr += SPAGE_SIZE;
-	}
-
-	rk_table_flush(rk_domain, pte_dma, pte_total);
-
-	/*
-	 * Zap the first and last iova to evict from iotlb any previously
-	 * mapped cachelines holding stale values for its dte and pte.
-	 * We only zap the first and last iova, since only they could have
-	 * dte or pte shared with an existing mapping.
-	 */
-
-	/* Do not zap tlb cache line if IOMMU_TLB_SHOT_ENTIRE set */
-	if (!(prot & IOMMU_TLB_SHOT_ENTIRE))
-		rk_iommu_zap_iova_first_last(rk_domain, iova, size);
-
-	return 0;
-unwind:
-	/* Unmap the range of iovas that we just mapped */
-	rk_iommu_unmap_iova(rk_domain, pte_addr, pte_dma,
-			    pte_count * SPAGE_SIZE);
-
-	iova += pte_count * SPAGE_SIZE;
-	page_phys = rk_pte_page_address_v2(pte_addr[pte_count]);
+	page_phys = rk_ops->pt_address(pte_addr[pte_count]);
 	pr_err("iova: %pad already mapped to %pa cannot remap to phys: %pa prot: %#x\n",
 	       &iova, &page_phys, &paddr, prot);
 
@@ -1053,7 +1007,7 @@ unwind:
 }
 
 static int rk_iommu_map(struct iommu_domain *domain, unsigned long _iova,
-			phys_addr_t paddr, size_t size, int prot)
+			phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
 {
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	unsigned long flags;
@@ -1061,6 +1015,10 @@ static int rk_iommu_map(struct iommu_domain *domain, unsigned long _iova,
 	u32 *page_table, *pte_addr;
 	u32 dte, pte_index;
 	int ret;
+
+	if (rk_domain->opt_ops && rk_domain->opt_ops->map)
+		return rk_domain->opt_ops->map(domain, _iova, paddr, size, prot,
+					       gfp, rk_domain->iommu_dev);
 
 	spin_lock_irqsave(&rk_domain->dt_lock, flags);
 
@@ -1080,7 +1038,7 @@ static int rk_iommu_map(struct iommu_domain *domain, unsigned long _iova,
 	dte = rk_domain->dt[rk_iova_dte_index(iova)];
 	pte_index = rk_iova_pte_index(iova);
 	pte_addr = &page_table[pte_index];
-	pte_dma = rk_dte_pt_address(dte) + pte_index * sizeof(u32);
+	pte_dma = rk_ops->pt_address(dte) + pte_index * sizeof(u32);
 	ret = rk_iommu_map_iova(rk_domain, pte_addr, pte_dma, iova,
 				paddr, size, prot);
 
@@ -1089,45 +1047,8 @@ static int rk_iommu_map(struct iommu_domain *domain, unsigned long _iova,
 	return ret;
 }
 
-static int rk_iommu_map_v2(struct iommu_domain *domain, unsigned long _iova,
-			phys_addr_t paddr, size_t size, int prot)
-{
-	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
-	unsigned long flags;
-	dma_addr_t pte_dma, iova = (dma_addr_t)_iova;
-	u32 *page_table, *pte_addr;
-	u32 dte, pte_index;
-	int ret;
-
-	spin_lock_irqsave(&rk_domain->dt_lock, flags);
-
-	/*
-	 * pgsize_bitmap specifies iova sizes that fit in one page table
-	 * (1024 4-KiB pages = 4 MiB).
-	 * So, size will always be 4096 <= size <= 4194304.
-	 * Since iommu_map() guarantees that both iova and size will be
-	 * aligned, we will always only be mapping from a single dte here.
-	 */
-	page_table = rk_dte_get_page_table_v2(rk_domain, iova);
-	if (IS_ERR(page_table)) {
-		spin_unlock_irqrestore(&rk_domain->dt_lock, flags);
-		return PTR_ERR(page_table);
-	}
-
-	dte = rk_domain->dt[rk_iova_dte_index(iova)];
-	pte_index = rk_iova_pte_index(iova);
-	pte_addr = &page_table[pte_index];
-	pte_dma = rk_dte_pt_address_v2(dte) + pte_index * sizeof(u32);
-	ret = rk_iommu_map_iova_v2(rk_domain, pte_addr, pte_dma, iova,
-				paddr, size, prot);
-
-	spin_unlock_irqrestore(&rk_domain->dt_lock, flags);
-
-	return ret;
-}
-
 static size_t rk_iommu_unmap(struct iommu_domain *domain, unsigned long _iova,
-			     size_t size)
+			     size_t size, struct iommu_iotlb_gather *gather)
 {
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	unsigned long flags;
@@ -1136,6 +1057,11 @@ static size_t rk_iommu_unmap(struct iommu_domain *domain, unsigned long _iova,
 	u32 dte;
 	u32 *pte_addr;
 	size_t unmap_size;
+	struct rk_iommu *iommu = rk_iommu_get(rk_domain);
+
+	if (rk_domain->opt_ops && rk_domain->opt_ops->unmap)
+		return rk_domain->opt_ops->unmap(domain, _iova, size, gather,
+						 rk_domain->iommu_dev);
 
 	spin_lock_irqsave(&rk_domain->dt_lock, flags);
 
@@ -1153,50 +1079,11 @@ static size_t rk_iommu_unmap(struct iommu_domain *domain, unsigned long _iova,
 		return 0;
 	}
 
-	pt_phys = rk_dte_pt_address(dte);
+	pt_phys = rk_ops->pt_address(dte);
 	pte_addr = (u32 *)phys_to_virt(pt_phys) + rk_iova_pte_index(iova);
 	pte_dma = pt_phys + rk_iova_pte_index(iova) * sizeof(u32);
-	unmap_size = rk_iommu_unmap_iova(rk_domain, pte_addr, pte_dma, size);
-
-	spin_unlock_irqrestore(&rk_domain->dt_lock, flags);
-
-	/* Shootdown iotlb entries for iova range that was just unmapped */
-	rk_iommu_zap_iova(rk_domain, iova, unmap_size);
-
-	return unmap_size;
-}
-
-static size_t rk_iommu_unmap_v2(struct iommu_domain *domain, unsigned long _iova,
-			     size_t size)
-{
-	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
-	unsigned long flags;
-	dma_addr_t pte_dma, iova = (dma_addr_t)_iova;
-	phys_addr_t pt_phys;
-	u32 dte;
-	u32 *pte_addr;
-	size_t unmap_size;
-
-	spin_lock_irqsave(&rk_domain->dt_lock, flags);
-
-	/*
-	 * pgsize_bitmap specifies iova sizes that fit in one page table
-	 * (1024 4-KiB pages = 4 MiB).
-	 * So, size will always be 4096 <= size <= 4194304.
-	 * Since iommu_unmap() guarantees that both iova and size will be
-	 * aligned, we will always only be unmapping from a single dte here.
-	 */
-	dte = rk_domain->dt[rk_iova_dte_index(iova)];
-	/* Just return 0 if iova is unmapped */
-	if (!rk_dte_is_pt_valid(dte)) {
-		spin_unlock_irqrestore(&rk_domain->dt_lock, flags);
-		return 0;
-	}
-
-	pt_phys = rk_dte_pt_address_v2(dte);
-	pte_addr = (u32 *)phys_to_virt(pt_phys) + rk_iova_pte_index(iova);
-	pte_dma = pt_phys + rk_iova_pte_index(iova) * sizeof(u32);
-	unmap_size = rk_iommu_unmap_iova(rk_domain, pte_addr, pte_dma, size);
+	unmap_size = rk_iommu_unmap_iova(rk_domain, pte_addr, pte_dma, size,
+					 iommu);
 
 	spin_unlock_irqrestore(&rk_domain->dt_lock, flags);
 
@@ -1212,6 +1099,10 @@ static void rk_iommu_flush_tlb_all(struct iommu_domain *domain)
 	struct list_head *pos;
 	unsigned long flags;
 	int i;
+
+	if (rk_domain->opt_ops && rk_domain->opt_ops->flush_iotlb_all)
+		return rk_domain->opt_ops->flush_iotlb_all(domain,
+							   rk_domain->iommu_dev);
 
 	spin_lock_irqsave(&rk_domain->iommus_lock, flags);
 	list_for_each(pos, &rk_domain->iommus) {
@@ -1237,7 +1128,7 @@ static void rk_iommu_flush_tlb_all(struct iommu_domain *domain)
 
 static struct rk_iommu *rk_iommu_from_dev(struct device *dev)
 {
-	struct rk_iommudata *data = dev->archdata.iommu;
+	struct rk_iommudata *data = dev_iommu_priv_get(dev);
 
 	return data ? data->iommu : NULL;
 }
@@ -1257,15 +1148,24 @@ static void rk_iommu_disable(struct rk_iommu *iommu)
 	}
 	rk_iommu_disable_stall(iommu);
 	clk_bulk_disable(iommu->num_clocks, iommu->clocks);
+
+	iommu->iommu_enabled = false;
 }
 
 int rockchip_iommu_disable(struct device *dev)
 {
 	struct rk_iommu *iommu;
+	struct rk_iommu_domain *rk_domain;
 
 	iommu = rk_iommu_from_dev(dev);
 	if (!iommu)
 		return -ENODEV;
+
+	if (iommu->domain) {
+		rk_domain = to_rk_domain(iommu->domain);
+		if (rk_domain->opt_ops && rk_domain->opt_ops->disable)
+			return rk_domain->opt_ops->disable(rk_domain->iommu_dev);
+	}
 
 	rk_iommu_disable(iommu);
 
@@ -1279,8 +1179,12 @@ static int rk_iommu_enable(struct rk_iommu *iommu)
 	struct iommu_domain *domain = iommu->domain;
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	int ret, i;
-	u32 dt_v2;
 	u32 auto_gate;
+	u32 page_fault;
+	u32 irq_mask = RK_MMU_IRQ_MASK;
+
+	if (iommu->pf_fake_mode_en)
+		irq_mask |= RK_MMU_IRQ_PF_FAKE_MST0;
 
 	ret = clk_bulk_enable(iommu->num_clocks, iommu->clocks);
 	if (ret)
@@ -1295,21 +1199,21 @@ static int rk_iommu_enable(struct rk_iommu *iommu)
 		goto out_disable_stall;
 
 	for (i = 0; i < iommu->num_mmu; i++) {
-		if (iommu->version >= 0x2) {
-			dt_v2 = (rk_domain->dt_dma & DT_LO_MASK) |
-				((rk_domain->dt_dma & DT_HI_MASK) >> DT_SHIFT);
-			rk_iommu_write(iommu->bases[i], RK_MMU_DTE_ADDR, dt_v2);
-		} else {
-			rk_iommu_write(iommu->bases[i], RK_MMU_DTE_ADDR,
-				       rk_domain->dt_dma);
-		}
+		rk_iommu_write(iommu->bases[i], RK_MMU_DTE_ADDR,
+			       rk_ops->mk_dtentries(rk_domain->dt_dma));
 		rk_iommu_base_command(iommu->bases[i], RK_MMU_CMD_ZAP_CACHE);
-		rk_iommu_write(iommu->bases[i], RK_MMU_INT_MASK, RK_MMU_IRQ_MASK);
+		rk_iommu_write(iommu->bases[i], RK_MMU_INT_MASK, irq_mask);
 
 		/* Workaround for iommu blocked, BIT(31) default to 1 */
 		auto_gate = rk_iommu_read(iommu->bases[i], RK_MMU_AUTO_GATING);
 		auto_gate |= DISABLE_FETCH_DTE_TIME_LIMIT;
 		rk_iommu_write(iommu->bases[i], RK_MMU_AUTO_GATING, auto_gate);
+
+		if (iommu->pf_fake_mode_en) {
+			page_fault = rk_iommu_read(iommu->bases[i], RK_MMU_PAGE_FAULT);
+			page_fault |= RK_MMU_PAGEFAULT_FAKE_MODE_EN;
+			rk_iommu_write(iommu->bases[i], RK_MMU_PAGE_FAULT, page_fault);
+		}
 	}
 
 	ret = rk_iommu_enable_paging(iommu);
@@ -1318,16 +1222,29 @@ out_disable_stall:
 	rk_iommu_disable_stall(iommu);
 out_disable_clocks:
 	clk_bulk_disable(iommu->num_clocks, iommu->clocks);
+
+	if (!ret) {
+		iommu->iommu_enabled = true;
+		iommu->first_reset_disabled = false;
+	}
+
 	return ret;
 }
 
 int rockchip_iommu_enable(struct device *dev)
 {
 	struct rk_iommu *iommu;
+	struct rk_iommu_domain *rk_domain;
 
 	iommu = rk_iommu_from_dev(dev);
 	if (!iommu)
 		return -ENODEV;
+
+	if (iommu->domain) {
+		rk_domain = to_rk_domain(iommu->domain);
+		if (rk_domain->opt_ops && rk_domain->opt_ops->enable)
+			return rk_domain->opt_ops->enable(rk_domain->iommu_dev);
+	}
 
 	return rk_iommu_enable(iommu);
 }
@@ -1341,9 +1258,31 @@ bool rockchip_iommu_is_enabled(struct device *dev)
 	if (!iommu)
 		return false;
 
-	return rk_iommu_is_paging_enabled(iommu);
+	return iommu->iommu_enabled;
 }
 EXPORT_SYMBOL(rockchip_iommu_is_enabled);
+
+int rockchip_iommu_force_reset(struct device *dev)
+{
+	struct rk_iommu *iommu;
+	int ret;
+
+	iommu = rk_iommu_from_dev(dev);
+	if (!iommu)
+		return -ENODEV;
+
+	ret = rk_iommu_enable_stall(iommu);
+	if (ret)
+		return ret;
+
+	ret = rk_iommu_force_reset(iommu);
+
+	rk_iommu_disable_stall(iommu);
+
+	return ret;
+
+}
+EXPORT_SYMBOL(rockchip_iommu_force_reset);
 
 static void rk_iommu_detach_device(struct iommu_domain *domain,
 				   struct device *dev)
@@ -1358,10 +1297,18 @@ static void rk_iommu_detach_device(struct iommu_domain *domain,
 	if (!iommu)
 		return;
 
+	if (rk_domain->opt_ops && rk_domain->opt_ops->detach_dev) {
+		iommu->domain = NULL;
+		spin_lock_irqsave(&rk_domain->iommus_lock, flags);
+		list_del_init(&iommu->node);
+		spin_unlock_irqrestore(&rk_domain->iommus_lock, flags);
+		return rk_domain->opt_ops->detach_dev(domain,
+						      rk_domain->iommu_dev);
+	}
+
 	dev_dbg(dev, "Detaching from iommu domain\n");
 
-	/* iommu already detached */
-	if (iommu->domain != domain)
+	if (!iommu->domain)
 		return;
 
 	iommu->domain = NULL;
@@ -1394,11 +1341,21 @@ static int rk_iommu_attach_device(struct iommu_domain *domain,
 	if (!iommu)
 		return 0;
 
-	dev_dbg(dev, "Attaching to iommu domain\n");
+	if (iommu->opt_ops) {
+		rk_domain->opt_ops = iommu->opt_ops;
+		rk_domain->iommu_dev = iommu->dev;
+	}
 
-	/* iommu already attached */
-	if (iommu->domain == domain)
-		return 0;
+	if (rk_domain->opt_ops && rk_domain->opt_ops->attach_dev) {
+		iommu->domain = domain;
+		spin_lock_irqsave(&rk_domain->iommus_lock, flags);
+		list_add_tail(&iommu->node, &rk_domain->iommus);
+		spin_unlock_irqrestore(&rk_domain->iommus_lock, flags);
+		return rk_domain->opt_ops->attach_dev(domain,
+						      rk_domain->iommu_dev);
+	}
+
+	dev_dbg(dev, "Attaching to iommu domain\n");
 
 	if (iommu->domain)
 		rk_iommu_detach_device(iommu->domain, dev);
@@ -1413,6 +1370,7 @@ static int rk_iommu_attach_device(struct iommu_domain *domain,
 	list_add_tail(&iommu->node, &rk_domain->iommus);
 	spin_unlock_irqrestore(&rk_domain->iommus_lock, flags);
 
+	rk_domain->shootdown_entire = iommu->shootdown_entire;
 	ret = pm_runtime_get_if_in_use(iommu->dev);
 	if (!ret || WARN_ON_ONCE(ret < 0))
 		return 0;
@@ -1440,10 +1398,6 @@ static struct iommu_domain *rk_iommu_domain_alloc(unsigned type)
 	if (!rk_domain)
 		return NULL;
 
-	if (type == IOMMU_DOMAIN_DMA &&
-	    iommu_get_dma_cookie(&rk_domain->domain))
-		goto err_free_domain;
-
 	/*
 	 * rk32xx iommus use a 2 level pagetable.
 	 * Each level1 (dt) and level2 (pt) table has 1024 4-byte entries.
@@ -1451,7 +1405,7 @@ static struct iommu_domain *rk_iommu_domain_alloc(unsigned type)
 	 */
 	rk_domain->dt = (u32 *)get_zeroed_page(GFP_KERNEL | GFP_DMA32);
 	if (!rk_domain->dt)
-		goto err_put_cookie;
+		goto err_free_domain;
 
 	rk_domain->dt_dma = dma_map_single(dma_dev, rk_domain->dt,
 					   SPAGE_SIZE, DMA_TO_DEVICE);
@@ -1459,8 +1413,6 @@ static struct iommu_domain *rk_iommu_domain_alloc(unsigned type)
 		dev_err(dma_dev, "DMA map error for DT\n");
 		goto err_free_dt;
 	}
-
-	rk_table_flush(rk_domain, rk_domain->dt_dma, NUM_DT_ENTRIES);
 
 	spin_lock_init(&rk_domain->iommus_lock);
 	spin_lock_init(&rk_domain->dt_lock);
@@ -1474,9 +1426,6 @@ static struct iommu_domain *rk_iommu_domain_alloc(unsigned type)
 
 err_free_dt:
 	free_page((unsigned long)rk_domain->dt);
-err_put_cookie:
-	if (type == IOMMU_DOMAIN_DMA)
-		iommu_put_dma_cookie(&rk_domain->domain);
 err_free_domain:
 	kfree(rk_domain);
 
@@ -1488,12 +1437,15 @@ static void rk_iommu_domain_free(struct iommu_domain *domain)
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	int i;
 
+	if (rk_domain->opt_ops && rk_domain->opt_ops->free)
+		rk_domain->opt_ops->free(domain, rk_domain->iommu_dev);
+
 	WARN_ON(!list_empty(&rk_domain->iommus));
 
 	for (i = 0; i < NUM_DT_ENTRIES; i++) {
 		u32 dte = rk_domain->dt[i];
 		if (rk_dte_is_pt_valid(dte)) {
-			phys_addr_t pt_phys = rk_dte_pt_address(dte);
+			phys_addr_t pt_phys = rk_ops->pt_address(dte);
 			u32 *page_table = phys_to_virt(pt_phys);
 			dma_unmap_single(dma_dev, pt_phys,
 					 SPAGE_SIZE, DMA_TO_DEVICE);
@@ -1505,58 +1457,20 @@ static void rk_iommu_domain_free(struct iommu_domain *domain)
 			 SPAGE_SIZE, DMA_TO_DEVICE);
 	free_page((unsigned long)rk_domain->dt);
 
-	if (domain->type == IOMMU_DOMAIN_DMA)
-		iommu_put_dma_cookie(&rk_domain->domain);
 	kfree(rk_domain);
 }
 
-static void rk_iommu_domain_free_v2(struct iommu_domain *domain)
+static struct iommu_device *rk_iommu_probe_device(struct device *dev)
 {
-	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
-	int i;
-
-	WARN_ON(!list_empty(&rk_domain->iommus));
-
-	for (i = 0; i < NUM_DT_ENTRIES; i++) {
-		u32 dte = rk_domain->dt[i];
-
-		if (rk_dte_is_pt_valid(dte)) {
-			phys_addr_t pt_phys = rk_dte_pt_address_v2(dte);
-			u32 *page_table = phys_to_virt(pt_phys);
-
-			dma_unmap_single(dma_dev, pt_phys,
-					 SPAGE_SIZE, DMA_TO_DEVICE);
-			free_page((unsigned long)page_table);
-		}
-	}
-
-	dma_unmap_single(dma_dev, rk_domain->dt_dma,
-			 SPAGE_SIZE, DMA_TO_DEVICE);
-	free_page((unsigned long)rk_domain->dt);
-
-	if (domain->type == IOMMU_DOMAIN_DMA)
-		iommu_put_dma_cookie(&rk_domain->domain);
-	kfree(rk_domain);
-}
-
-static int rk_iommu_add_device(struct device *dev)
-{
-	struct iommu_group *group;
-	struct rk_iommu *iommu;
 	struct rk_iommudata *data;
+	struct rk_iommu *iommu;
 
-	data = dev->archdata.iommu;
+	data = dev_iommu_priv_get(dev);
 	if (!data)
-		return -ENODEV;
+		return ERR_PTR(-ENODEV);
 
 	iommu = rk_iommu_from_dev(dev);
 
-	group = iommu_group_get_for_dev(dev);
-	if (IS_ERR(group))
-		return PTR_ERR(group);
-	iommu_group_put(group);
-
-	iommu_device_link(&iommu->iommu, dev);
 	data->link = device_link_add(dev, iommu->dev,
 				     DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME);
 
@@ -1566,26 +1480,18 @@ static int rk_iommu_add_device(struct device *dev)
 	if (!dev->dma_parms)
 		dev->dma_parms = kzalloc(sizeof(*dev->dma_parms), GFP_KERNEL);
 	if (!dev->dma_parms)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 
 	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
 
-	return 0;
+	return &iommu->iommu;
 }
 
-static void rk_iommu_remove_device(struct device *dev)
+static void rk_iommu_release_device(struct device *dev)
 {
-	struct rk_iommu *iommu;
-	struct rk_iommudata *data = dev->archdata.iommu;
-
-	iommu = rk_iommu_from_dev(dev);
-
-	kfree(dev->dma_parms);
-	dev->dma_parms = NULL;
+	struct rk_iommudata *data = dev_iommu_priv_get(dev);
 
 	device_link_del(data->link);
-	iommu_device_unlink(&iommu->iommu, dev);
-	iommu_group_remove_device(dev);
 }
 
 static struct iommu_group *rk_iommu_device_group(struct device *dev)
@@ -1597,10 +1503,9 @@ static struct iommu_group *rk_iommu_device_group(struct device *dev)
 	return iommu_group_ref_get(iommu->group);
 }
 
-static bool rk_iommu_is_attach_deferred(struct iommu_domain *domain,
-					 struct device *dev)
+static bool rk_iommu_is_attach_deferred(struct device *dev)
 {
-	struct rk_iommudata *data = dev->archdata.iommu;
+	struct rk_iommudata *data = dev_iommu_priv_get(dev);
 
 	return data->defer_attach;
 }
@@ -1622,14 +1527,19 @@ static int rk_iommu_of_xlate(struct device *dev,
 	if (strstr(dev_name(dev), "vop"))
 		data->defer_attach = true;
 
-	dev->archdata.iommu = data;
+	dev_iommu_priv_set(dev, data);
 
 	platform_device_put(iommu_dev);
 
 	return 0;
 }
 
-void rk_iommu_mask_irq(struct device *dev)
+static void rk_iommu_get_resv_regions(struct device *dev, struct list_head *head)
+{
+	iommu_dma_get_resv_regions(dev, head);
+}
+
+void rockchip_iommu_mask_irq(struct device *dev)
 {
 	struct rk_iommu *iommu = rk_iommu_from_dev(dev);
 	int i;
@@ -1640,106 +1550,85 @@ void rk_iommu_mask_irq(struct device *dev)
 	for (i = 0; i < iommu->num_mmu; i++)
 		rk_iommu_write(iommu->bases[i], RK_MMU_INT_MASK, 0);
 }
-EXPORT_SYMBOL(rk_iommu_mask_irq);
+EXPORT_SYMBOL(rockchip_iommu_mask_irq);
 
-void rk_iommu_unmask_irq(struct device *dev)
+void rockchip_iommu_unmask_irq(struct device *dev)
 {
 	struct rk_iommu *iommu = rk_iommu_from_dev(dev);
 	int i;
+	u32 irq_mask = RK_MMU_IRQ_MASK;
 
 	if (!iommu)
 		return;
 
+	if (iommu->pf_fake_mode_en)
+		irq_mask |= RK_MMU_IRQ_PF_FAKE_MST0;
+
 	for (i = 0; i < iommu->num_mmu; i++) {
 		/* Need to zap tlb in case of mapping during pagefault */
 		rk_iommu_base_command(iommu->bases[i], RK_MMU_CMD_ZAP_CACHE);
-		rk_iommu_write(iommu->bases[i], RK_MMU_INT_MASK, RK_MMU_IRQ_MASK);
+		rk_iommu_write(iommu->bases[i], RK_MMU_INT_MASK, irq_mask);
 		/* Leave iommu in pagefault state until mapping finished */
 		rk_iommu_base_command(iommu->bases[i], RK_MMU_CMD_PAGE_FAULT_DONE);
 	}
 }
-EXPORT_SYMBOL(rk_iommu_unmask_irq);
+EXPORT_SYMBOL(rockchip_iommu_unmask_irq);
 
 static const struct iommu_ops rk_iommu_ops = {
 	.domain_alloc = rk_iommu_domain_alloc,
-	.domain_free = rk_iommu_domain_free,
-	.attach_dev = rk_iommu_attach_device,
-	.detach_dev = rk_iommu_detach_device,
-	.map = rk_iommu_map,
-	.map_sg = default_iommu_map_sg,
-	.unmap = rk_iommu_unmap,
-	.flush_iotlb_all = rk_iommu_flush_tlb_all,
-	.add_device = rk_iommu_add_device,
-	.remove_device = rk_iommu_remove_device,
-	.iova_to_phys = rk_iommu_iova_to_phys,
+	.probe_device = rk_iommu_probe_device,
+	.release_device = rk_iommu_release_device,
 	.is_attach_deferred = rk_iommu_is_attach_deferred,
 	.device_group = rk_iommu_device_group,
 	.pgsize_bitmap = RK_IOMMU_PGSIZE_BITMAP,
 	.of_xlate = rk_iommu_of_xlate,
+	.get_resv_regions = rk_iommu_get_resv_regions,
+	.owner = THIS_MODULE,
+	.default_domain_ops = &(const struct iommu_domain_ops) {
+		.attach_dev	= rk_iommu_attach_device,
+		.detach_dev	= rk_iommu_detach_device,
+		.map		= rk_iommu_map,
+		.unmap		= rk_iommu_unmap,
+		.flush_iotlb_all= rk_iommu_flush_tlb_all,
+		.iova_to_phys	= rk_iommu_iova_to_phys,
+		.free		= rk_iommu_domain_free,
+	}
 };
-
-static const struct iommu_ops rk_iommu_ops_v2 = {
-	.domain_alloc = rk_iommu_domain_alloc,
-	.domain_free = rk_iommu_domain_free_v2,
-	.attach_dev = rk_iommu_attach_device,
-	.detach_dev = rk_iommu_detach_device,
-	.map = rk_iommu_map_v2,
-	.unmap = rk_iommu_unmap_v2,
-	.map_sg = default_iommu_map_sg,
-	.flush_iotlb_all = rk_iommu_flush_tlb_all,
-	.add_device = rk_iommu_add_device,
-	.remove_device = rk_iommu_remove_device,
-	.iova_to_phys = rk_iommu_iova_to_phys_v2,
-	.is_attach_deferred = rk_iommu_is_attach_deferred,
-	.device_group = rk_iommu_device_group,
-	.pgsize_bitmap = RK_IOMMU_PGSIZE_BITMAP,
-	.of_xlate = rk_iommu_of_xlate,
-};
-
-static const struct rockchip_iommu_data iommu_data_v1 = {
-	.version = 0x1,
-};
-
-static const struct rockchip_iommu_data iommu_data_v2 = {
-	.version = 0x2,
-};
-
-static const struct of_device_id rk_iommu_dt_ids[] = {
-	{	.compatible = "rockchip,iommu",
-		.data = &iommu_data_v1,
-	}, {
-		.compatible = "rockchip,iommu-v2",
-		.data = &iommu_data_v2,
-	},
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(of, rk_iommu_dt_ids);
 
 static int rk_iommu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct rk_iommu *iommu;
 	struct resource *res;
+	const struct rk_iommu_ops *ops;
 	int num_res = pdev->num_resources;
-	int err, i, irq;
-	const struct of_device_id *match;
-	struct rockchip_iommu_data *data;
+	int err, i;
 
 	iommu = devm_kzalloc(dev, sizeof(*iommu), GFP_KERNEL);
 	if (!iommu)
 		return -ENOMEM;
 
-	match = of_match_device(rk_iommu_dt_ids, dev);
-	if (!match)
-		return -EINVAL;
-
-	data = (struct rockchip_iommu_data *)match->data;
-	iommu->version = data->version;
-	dev_info(dev, "version = %x\n", iommu->version);
-
 	platform_set_drvdata(pdev, iommu);
 	iommu->dev = dev;
 	iommu->num_mmu = 0;
+
+	ops = of_device_get_match_data(dev);
+	if (!rk_ops)
+		rk_ops = ops;
+
+	/*
+	 * That should not happen unless different versions of the
+	 * hardware block are embedded the same SoC
+	 */
+	if (WARN_ON(rk_ops != ops))
+		return -EINVAL;
+
+	if (device_property_match_string(dev, "compatible", "rockchip,iommu-av1d") >= 0) {
+		iommu->opt_ops = av1d_iommu_get_ops();
+		if (iommu->opt_ops)
+			dev_info(dev, "av1d iommu enabled\n");
+		goto alloc_group;
+	}
 
 	iommu->bases = devm_kcalloc(dev, num_res, sizeof(*iommu->bases),
 				    GFP_KERNEL);
@@ -1758,18 +1647,31 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	if (iommu->num_mmu == 0)
 		return PTR_ERR(iommu->bases[0]);
 
+	iommu->num_irq = platform_irq_count(pdev);
+	if (iommu->num_irq < 0)
+		return iommu->num_irq;
+
 	iommu->reset_disabled = device_property_read_bool(dev,
 					"rockchip,disable-mmu-reset");
 	iommu->skip_read = device_property_read_bool(dev,
 					"rockchip,skip-mmu-read");
 	iommu->dlr_disable = device_property_read_bool(dev,
 					"rockchip,disable-device-link-resume");
-
+	iommu->shootdown_entire = device_property_read_bool(dev,
+					"rockchip,shootdown-entire");
+	iommu->master_handle_irq = device_property_read_bool(dev,
+					"rockchip,master-handle-irq");
 	if (of_machine_is_compatible("rockchip,rv1126") ||
 	    of_machine_is_compatible("rockchip,rv1109"))
 		iommu->cmd_retry = device_property_read_bool(dev,
 					"rockchip,enable-cmd-retry");
 
+	iommu->need_res_map = device_property_read_bool(dev,
+					"rockchip,reserve-map");
+	iommu->first_reset_disabled = device_property_read_bool(dev,
+					"rockchip,disable-first-mmu-reset");
+	iommu->pf_fake_mode_en = device_property_read_bool(dev,
+					"rockchip,enable-pagefault-fake-mode");
 	/*
 	 * iommu clocks should be present for all new devices and devicetrees
 	 * but there are older devicetrees without clocks out in the wild.
@@ -1787,6 +1689,7 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
+alloc_group:
 	iommu->group = iommu_group_alloc();
 	if (IS_ERR(iommu->group)) {
 		err = PTR_ERR(iommu->group);
@@ -1797,13 +1700,7 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	if (err)
 		goto err_put_group;
 
-	if (iommu->version >= 0x2)
-		iommu_device_set_ops(&iommu->iommu, &rk_iommu_ops_v2);
-	else
-		iommu_device_set_ops(&iommu->iommu, &rk_iommu_ops);
-	iommu_device_set_fwnode(&iommu->iommu, &dev->of_node->fwnode);
-
-	err = iommu_device_register(&iommu->iommu);
+	err = iommu_device_register(&iommu->iommu, &rk_iommu_ops, dev);
 	if (err)
 		goto err_remove_sysfs;
 
@@ -1815,31 +1712,47 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	if (!dma_dev)
 		dma_dev = &pdev->dev;
 
-	if (iommu->version >= 0x2)
-		bus_set_iommu(&platform_bus_type, &rk_iommu_ops_v2);
-	else
-		bus_set_iommu(&platform_bus_type, &rk_iommu_ops);
+	if (iommu->opt_ops)
+		goto opt_iommu_probe;
 
 	pm_runtime_enable(dev);
 
 	if (iommu->skip_read)
 		goto skip_request_irq;
 
-	i = 0;
-	while ((irq = platform_get_irq(pdev, i++)) != -ENXIO) {
-		if (irq < 0)
-			return irq;
+	for (i = 0; i < iommu->num_irq; i++) {
+		int irq = platform_get_irq(pdev, i);
+
+		if (irq < 0) {
+			err = irq;
+			goto err_pm_disable;
+		}
 
 		err = devm_request_irq(iommu->dev, irq, rk_iommu_irq,
 				       IRQF_SHARED, dev_name(dev), iommu);
-		if (err) {
-			pm_runtime_disable(dev);
-			goto err_remove_sysfs;
-		}
+		if (err)
+			goto err_pm_disable;
 	}
 
 skip_request_irq:
+	if (!res_page && iommu->need_res_map) {
+		res_page = __pa_symbol(reserve_range);
+
+		pr_info("%s,%d, res_page = 0x%pa\n", __func__, __LINE__, &res_page);
+	}
+
+opt_iommu_probe:
+	if (iommu->opt_ops && iommu->opt_ops->probe) {
+		err = iommu->opt_ops->probe(pdev);
+		if (err)
+			goto err_remove_sysfs;
+	}
+
+	dma_set_mask_and_coherent(dev, rk_ops->dma_bit_mask);
+
 	return 0;
+err_pm_disable:
+	pm_runtime_disable(dev);
 err_remove_sysfs:
 	iommu_device_sysfs_remove(&iommu->iommu);
 err_put_group:
@@ -1852,20 +1765,40 @@ err_unprepare_clocks:
 static void rk_iommu_shutdown(struct platform_device *pdev)
 {
 	struct rk_iommu *iommu = platform_get_drvdata(pdev);
-	int i = 0, irq;
+	int i;
+	struct rk_iommu_domain *rk_domain;
 
-	while ((irq = platform_get_irq(pdev, i++)) != -ENXIO)
+	if (iommu->domain) {
+		rk_domain = to_rk_domain(iommu->domain);
+		if (rk_domain->opt_ops && rk_domain->opt_ops->shutdown)
+			return rk_domain->opt_ops->shutdown(pdev);
+	}
+
+	if (iommu->skip_read)
+		goto skip_free_irq;
+
+	for (i = 0; i < iommu->num_irq; i++) {
+		int irq = platform_get_irq(pdev, i);
+
 		devm_free_irq(iommu->dev, irq, iommu);
+	}
 
-	pm_runtime_force_suspend(&pdev->dev);
+skip_free_irq:
+	if (!iommu->dlr_disable)
+		pm_runtime_force_suspend(&pdev->dev);
 }
 
 static int __maybe_unused rk_iommu_suspend(struct device *dev)
 {
 	struct rk_iommu *iommu = dev_get_drvdata(dev);
+	struct rk_iommu_domain *rk_domain;
 
 	if (!iommu->domain)
 		return 0;
+
+	rk_domain = to_rk_domain(iommu->domain);
+	if (rk_domain->opt_ops && rk_domain->opt_ops->suspend)
+		return rk_domain->opt_ops->suspend(dev);
 
 	if (iommu->dlr_disable)
 		return 0;
@@ -1877,9 +1810,14 @@ static int __maybe_unused rk_iommu_suspend(struct device *dev)
 static int __maybe_unused rk_iommu_resume(struct device *dev)
 {
 	struct rk_iommu *iommu = dev_get_drvdata(dev);
+	struct rk_iommu_domain *rk_domain;
 
 	if (!iommu->domain)
 		return 0;
+
+	rk_domain = to_rk_domain(iommu->domain);
+	if (rk_domain->opt_ops && rk_domain->opt_ops->resume)
+		return rk_domain->opt_ops->resume(dev);
 
 	if (iommu->dlr_disable)
 		return 0;
@@ -1889,8 +1827,41 @@ static int __maybe_unused rk_iommu_resume(struct device *dev)
 
 static const struct dev_pm_ops rk_iommu_pm_ops = {
 	SET_RUNTIME_PM_OPS(rk_iommu_suspend, rk_iommu_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	LATE_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				 pm_runtime_force_resume)
+};
+
+static struct rk_iommu_ops iommu_data_ops_v1 = {
+	.pt_address = &rk_dte_pt_address,
+	.mk_dtentries = &rk_mk_dte,
+	.mk_ptentries = &rk_mk_pte,
+	.dma_bit_mask = DMA_BIT_MASK(32),
+};
+
+static struct rk_iommu_ops iommu_data_ops_v2 = {
+	.pt_address = &rk_dte_pt_address_v2,
+	.mk_dtentries = &rk_mk_dte_v2,
+	.mk_ptentries = &rk_mk_pte_v2,
+	.dma_bit_mask = DMA_BIT_MASK(40),
+};
+
+static const struct of_device_id rk_iommu_dt_ids[] = {
+	{	.compatible = "rockchip,iommu",
+		.data = &iommu_data_ops_v1,
+	},
+	{	.compatible = "rockchip,iommu-v2",
+		.data = &iommu_data_ops_v2,
+	},
+	{	.compatible = "rockchip,iommu-v3",
+		.data = &iommu_data_ops_v2,
+	},
+	{	.compatible = "rockchip,rk3568-iommu",
+		.data = &iommu_data_ops_v2,
+	},
+	{	.compatible = "rockchip,iommu-av1d",
+		.data = &iommu_data_ops_v2,
+	},
+	{ /* sentinel */ }
 };
 
 static struct platform_driver rk_iommu_driver = {
@@ -1904,11 +1875,15 @@ static struct platform_driver rk_iommu_driver = {
 	},
 };
 
+#if defined(CONFIG_VIDEO_REVERSE_IMAGE) || defined(CONFIG_ROCKCHIP_THUNDER_BOOT)
 static int __init rk_iommu_init(void)
 {
 	return platform_driver_register(&rk_iommu_driver);
 }
 subsys_initcall(rk_iommu_init);
+#else
+builtin_platform_driver(rk_iommu_driver);
+#endif
 
 MODULE_DESCRIPTION("IOMMU API for Rockchip");
 MODULE_AUTHOR("Simon Xue <xxm@rock-chips.com> and Daniel Kurtz <djkurtz@chromium.org>");

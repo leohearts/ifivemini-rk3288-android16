@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for Digigram miXart soundcards
  *
  * low level interface with interrupt handling and mail box implementation
  *
  * Copyright (c) 2003 by Digigram <alsa@digigram.com>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/interrupt.h>
@@ -35,8 +22,6 @@
 
 #define MSG_DESCRIPTOR_SIZE         0x24
 #define MSG_HEADER_SIZE             (MSG_DESCRIPTOR_SIZE + 4)
-
-#define MSG_DEFAULT_SIZE            512
 
 #define MSG_TYPE_MASK               0x00000003    /* mask for following types */
 #define MSG_TYPE_NOTIFY             0             /* embedded -> driver (only notification, do not get_msg() !) */
@@ -457,6 +442,9 @@ irqreturn_t snd_mixart_threaded_irq(int irq, void *dev_id)
 				struct mixart_timer_notify *notify;
 				notify = (struct mixart_timer_notify *)mixart_msg_data;
 
+				BUILD_BUG_ON(sizeof(notify) > sizeof(mixart_msg_data));
+				if (snd_BUG_ON(notify->stream_count > ARRAY_SIZE(notify->streams)))
+					break;
 				for(i=0; i<notify->stream_count; i++) {
 
 					u32 buffer_id = notify->streams[i].buffer_id;
@@ -539,7 +527,7 @@ irqreturn_t snd_mixart_threaded_irq(int irq, void *dev_id)
 				dev_err(&mgr->pci->dev,
 					"canceled notification %x !\n", msg);
 			}
-			/* fall through */
+			fallthrough;
 		case MSG_TYPE_ANSWER:
 			/* answer or notification to a message we are waiting for*/
 			mutex_lock(&mgr->msg_lock);

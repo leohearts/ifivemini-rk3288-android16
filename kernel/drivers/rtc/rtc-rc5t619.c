@@ -11,7 +11,6 @@
 #include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/init.h>
-#include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/mfd/rn5t618.h>
 #include <linux/platform_device.h>
@@ -265,10 +264,7 @@ static int rc5t619_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	alrm->time.tm_mon  = bcd2bin(buff[4]) - 1;
 	alrm->time.tm_year = bcd2bin(buff[5]) + 100 * cent_flag;
 	alrm->enabled = !!(ctrl1 & CTRL1_ALARM_ENABLED);
-	dev_dbg(dev, "read alarm: %d-%02d-%02d %02d:%02d:%02d\n",
-		alrm->time.tm_year + 1900, alrm->time.tm_mon + 1,
-		alrm->time.tm_mday, alrm->time.tm_hour,
-		alrm->time.tm_min, alrm->time.tm_sec);
+	dev_dbg(dev, "read alarm: %ptR\n", &alrm->time);
 
 	return 0;
 }
@@ -430,7 +426,7 @@ static int rc5t619_rtc_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "rc5t619 interrupt is disabled\n");
 	}
 
-	return rtc_register_device(rtc->rtc);
+	return devm_rtc_register_device(rtc->rtc);
 }
 
 static struct platform_driver rc5t619_rtc_driver = {

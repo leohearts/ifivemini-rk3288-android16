@@ -37,6 +37,7 @@
 #include <linux/slab.h>
 #include <uapi/linux/sched/types.h>
 #include <linux/sched/clock.h>
+#include <soc/rockchip/rockchip_system_monitor.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/cpufreq_interactive.h>
@@ -100,6 +101,7 @@ struct interactive_tunables {
 	int touchboostpulse_duration_val;
 	/* End time of touchboost pulse in ktime converted to usecs */
 	u64 touchboostpulse_endtime;
+	bool touchboost, is_touchboosted;
 #endif
 	bool boosted;
 
@@ -126,7 +128,6 @@ struct interactive_cpu {
 	struct interactive_policy *ipolicy;
 
 	struct irq_work irq_work;
-	struct irq_work boost_irq_work;
 	u64 last_sample_time;
 	unsigned long next_sample_jiffies;
 	bool work_in_progress;
@@ -149,9 +150,6 @@ struct interactive_cpu {
 	u64 pol_hispeed_val_time; /* policy hispeed_validate_time */
 	u64 loc_hispeed_val_time; /* per-cpu hispeed_validate_time */
 	int cpu;
-	unsigned int task_boost_freq;
-	unsigned long task_boost_util;
-	u64 task_boos_endtime;
 };
 
 static DEFINE_PER_CPU(struct interactive_cpu, interactive_cpu);
@@ -302,6 +300,7 @@ static unsigned int choose_freq(struct interactive_cpu *icpu,
 		 */
 
 		index = cpufreq_frequency_table_target(policy, loadadjfreq / tl,
+						       policy->min, policy->max,
 						       CPUFREQ_RELATION_L);
 
 		freq = freq_table[index].frequency;
@@ -315,7 +314,7 @@ static unsigned int choose_freq(struct interactive_cpu *icpu,
 
 			/* Find highest frequency that is less than freqmax */
 			index = cpufreq_frequency_table_target(policy,
-					freqmax - 1, CPUFREQ_RELATION_H);
+					freqmax - 1, policy->min, policy->max, CPUFREQ_RELATION_H);
 
 			freq = freq_table[index].frequency;
 
@@ -337,7 +336,7 @@ static unsigned int choose_freq(struct interactive_cpu *icpu,
 
 			/* Find lowest frequency that is higher than freqmin */
 			index = cpufreq_frequency_table_target(policy,
-					freqmin + 1, CPUFREQ_RELATION_L);
+					freqmin + 1, policy->min, policy->max, CPUFREQ_RELATION_L);
 
 			freq = freq_table[index].frequency;
 
@@ -427,9 +426,6 @@ static void eval_target_freq(struct interactive_cpu *icpu)
 	    new_freq < tunables->touchboost_freq) {
 		new_freq = tunables->touchboost_freq;
 	}
-	if ((now < icpu->task_boos_endtime) && (new_freq < icpu->task_boost_freq)) {
-		new_freq = icpu->task_boost_freq;
-	}
 #endif
 	if (policy->cur >= tunables->hispeed_freq &&
 	    new_freq > policy->cur &&
@@ -442,6 +438,7 @@ static void eval_target_freq(struct interactive_cpu *icpu)
 	icpu->loc_hispeed_val_time = now;
 
 	index = cpufreq_frequency_table_target(policy, new_freq,
+					       policy->min, policy->max,
 					       CPUFREQ_RELATION_L);
 	new_freq = freq_table[index].frequency;
 
@@ -606,7 +603,44 @@ again:
 	for_each_cpu(cpu, &tmp_mask) {
 		struct interactive_cpu *icpu = &per_cpu(interactive_cpu, cpu);
 		struct cpufreq_policy *policy;
+#ifdef CONFIG_ARCH_ROCKCHIP
+		struct interactive_tunables *tunables;
+		bool update_policy = false;
+		u64 now;
 
+		now = ktime_to_us(ktime_get());
+		if (!down_read_trylock(&icpu->enable_sem))
+			continue;
+
+		if (!icpu->ipolicy) {
+			up_read(&icpu->enable_sem);
+			continue;
+		}
+
+		tunables = icpu->ipolicy->tunables;
+		if (!tunables) {
+			up_read(&icpu->enable_sem);
+			continue;
+		}
+
+		if (tunables->touchboost &&
+		    now > tunables->touchboostpulse_endtime) {
+			tunables->touchboost = false;
+			rockchip_monitor_restore_cpu_limit(cpu);
+			update_policy = true;
+		}
+
+		if (!tunables->is_touchboosted && tunables->touchboost) {
+			rockchip_monitor_remove_cpu_limit(cpu);
+			update_policy = true;
+		}
+
+		tunables->is_touchboosted = tunables->touchboost;
+
+		up_read(&icpu->enable_sem);
+		if (update_policy)
+			cpufreq_update_policy(cpu);
+#endif
 		policy = cpufreq_cpu_get(cpu);
 		if (!policy)
 			continue;
@@ -676,25 +710,31 @@ static int cpufreq_interactive_notifier(struct notifier_block *nb,
 					unsigned long val, void *data)
 {
 	struct cpufreq_freqs *freq = data;
-	struct interactive_cpu *icpu = &per_cpu(interactive_cpu, freq->cpu);
+	struct cpufreq_policy *policy = freq->policy;
+	struct interactive_cpu *icpu;
 	unsigned long flags;
+	int cpu;
 
 	if (val != CPUFREQ_POSTCHANGE)
 		return 0;
 
-	if (!down_read_trylock(&icpu->enable_sem))
-		return 0;
+	for_each_cpu(cpu, policy->cpus) {
+		icpu = &per_cpu(interactive_cpu, cpu);
 
-	if (!icpu->ipolicy) {
+		if (!down_read_trylock(&icpu->enable_sem))
+			continue;
+
+		if (!icpu->ipolicy) {
+			up_read(&icpu->enable_sem);
+			continue;
+		}
+
+		spin_lock_irqsave(&icpu->load_lock, flags);
+		update_load(icpu, cpu);
+		spin_unlock_irqrestore(&icpu->load_lock, flags);
+
 		up_read(&icpu->enable_sem);
-		return 0;
 	}
-
-	spin_lock_irqsave(&icpu->load_lock, flags);
-	update_load(icpu, freq->cpu);
-	spin_unlock_irqrestore(&icpu->load_lock, flags);
-
-	up_read(&icpu->enable_sem);
 
 	return 0;
 }
@@ -1012,6 +1052,44 @@ static ssize_t store_io_is_busy(struct gov_attr_set *attr_set, const char *buf,
 	return count;
 }
 
+static ssize_t store_touchboost_freq(struct gov_attr_set *attr_set,
+				     const char *buf, size_t count)
+{
+	struct interactive_tunables *tunables = to_tunables(attr_set);
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+
+	tunables->touchboost_freq = val;
+
+	return count;
+}
+
+static ssize_t show_touchboost_duration(struct gov_attr_set *attr_set, char *buf)
+{
+	struct interactive_tunables *tunables = to_tunables(attr_set);
+
+	return sprintf(buf, "%d\n", tunables->touchboostpulse_duration_val);
+}
+
+static ssize_t store_touchboost_duration(struct gov_attr_set *attr_set,
+					 const char *buf, size_t count)
+{
+	struct interactive_tunables *tunables = to_tunables(attr_set);
+	int val, ret;
+
+	ret = kstrtoint(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+
+	tunables->touchboostpulse_duration_val = val;
+
+	return count;
+}
+
 show_one(hispeed_freq, "%u");
 show_one(go_hispeed_load, "%lu");
 show_one(min_sample_time, "%lu");
@@ -1019,6 +1097,7 @@ show_one(timer_slack, "%lu");
 show_one(boost, "%u");
 show_one(boostpulse_duration, "%u");
 show_one(io_is_busy, "%u");
+show_one(touchboost_freq, "%lu");
 
 gov_attr_rw(target_loads);
 gov_attr_rw(above_hispeed_delay);
@@ -1031,8 +1110,10 @@ gov_attr_rw(boost);
 gov_attr_wo(boostpulse);
 gov_attr_rw(boostpulse_duration);
 gov_attr_rw(io_is_busy);
+gov_attr_rw(touchboost_freq);
+gov_attr_rw(touchboost_duration);
 
-static struct attribute *interactive_attributes[] = {
+static struct attribute *interactive_attrs[] = {
 	&target_loads.attr,
 	&above_hispeed_delay.attr,
 	&hispeed_freq.attr,
@@ -1044,11 +1125,14 @@ static struct attribute *interactive_attributes[] = {
 	&boostpulse.attr,
 	&boostpulse_duration.attr,
 	&io_is_busy.attr,
+	&touchboost_freq.attr,
+	&touchboost_duration.attr,
 	NULL
 };
+ATTRIBUTE_GROUPS(interactive);
 
 static struct kobj_type interactive_tunables_ktype = {
-	.default_attrs = interactive_attributes,
+	.default_groups = interactive_groups,
 	.sysfs_ops = &governor_sysfs_ops,
 };
 
@@ -1137,15 +1221,12 @@ static inline void gov_clear_update_util(struct cpufreq_policy *policy)
 	for_each_cpu(i, policy->cpus)
 		cpufreq_remove_update_util_hook(i);
 
-	synchronize_sched();
+	synchronize_rcu();
 }
 
 static void icpu_cancel_work(struct interactive_cpu *icpu)
 {
 	irq_work_sync(&icpu->irq_work);
-#ifdef CONFIG_ARCH_ROCKCHIP
-	irq_work_sync(&icpu->boost_irq_work);
-#endif
 	icpu->work_in_progress = false;
 	del_timer_sync(&icpu->slack_timer);
 }
@@ -1245,6 +1326,7 @@ static void cpufreq_interactive_input_event(struct input_handle *handle,
 			cpumask_set_cpu(i, &speedchange_cpumask);
 			pcpu->loc_hispeed_val_time =
 					ktime_to_us(ktime_get());
+			tunables->touchboost = true;
 			anyboost = 1;
 		}
 
@@ -1370,86 +1452,9 @@ static void rockchip_cpufreq_policy_init(struct interactive_policy *ipolicy)
 		tunables->attr_set = attr_set;
 	}
 }
-
-static unsigned int get_freq_for_util(struct cpufreq_policy *policy, unsigned long util)
-{
-	struct cpufreq_frequency_table *pos;
-	unsigned long max_cap, cur_cap;
-	unsigned int freq = 0;
-
-	max_cap = arch_scale_cpu_capacity(NULL, policy->cpu);
-	cpufreq_for_each_valid_entry(pos, policy->freq_table) {
-		freq = pos->frequency;
-
-		cur_cap = max_cap * freq / policy->max;
-		if (cur_cap > util)
-			break;
-	}
-
-	return freq;
-}
-
-static void task_boost_irq_work(struct irq_work *irq_work)
-{
-	struct interactive_cpu *pcpu;
-	struct interactive_policy *ipolicy;
-	unsigned long flags[2];
-	u64 now, prev_boos_endtime;
-	unsigned int boost_freq;
-
-	pcpu = container_of(irq_work, struct interactive_cpu, boost_irq_work);
-	if (!down_read_trylock(&pcpu->enable_sem))
-		return;
-
-	ipolicy = pcpu->ipolicy;
-	if (!ipolicy)
-		goto out;
-
-	if (ipolicy->policy->cur == ipolicy->policy->max)
-		goto out;
-
-	now = ktime_to_us(ktime_get());
-	prev_boos_endtime = pcpu->task_boos_endtime;;
-	pcpu->task_boos_endtime = now + ipolicy->tunables->sampling_rate;
-	boost_freq = get_freq_for_util(ipolicy->policy, pcpu->task_boost_util);
-	if ((now < prev_boos_endtime) && (boost_freq <= pcpu->task_boost_freq))
-		goto out;
-	pcpu->task_boost_freq = boost_freq;
-
-	spin_lock_irqsave(&speedchange_cpumask_lock, flags[0]);
-	spin_lock_irqsave(&pcpu->target_freq_lock, flags[1]);
-	if (pcpu->target_freq < pcpu->task_boost_freq) {
-		pcpu->target_freq = pcpu->task_boost_freq;
-		cpumask_set_cpu(pcpu->cpu, &speedchange_cpumask);
-		wake_up_process(speedchange_task);
-	}
-	spin_unlock_irqrestore(&pcpu->target_freq_lock, flags[1]);
-	spin_unlock_irqrestore(&speedchange_cpumask_lock, flags[0]);
-
-out:
-	up_read(&pcpu->enable_sem);
-}
-
-extern unsigned long capacity_curr_of(int cpu);
-
-void cpufreq_task_boost(int cpu, unsigned long util)
-{
-	struct interactive_cpu *pcpu = &per_cpu(interactive_cpu, cpu);
-	unsigned long cap, min_util;
-
-	if (!speedchange_task)
-		return;
-
-	min_util = util + (util >> 2);
-	cap = capacity_curr_of(cpu);
-	if (min_util > cap) {
-		pcpu->task_boost_util = min_util;
-		irq_work_queue(&pcpu->boost_irq_work);
-	}
-}
 #endif
 
-int cpufreq_interactive_init(struct cpufreq_policy *policy)
+static int cpufreq_interactive_init(struct cpufreq_policy *policy)
 {
 	struct interactive_policy *ipolicy;
 	struct interactive_tunables *tunables;
@@ -1540,7 +1545,7 @@ int cpufreq_interactive_init(struct cpufreq_policy *policy)
 	return ret;
 }
 
-void cpufreq_interactive_exit(struct cpufreq_policy *policy)
+static void cpufreq_interactive_exit(struct cpufreq_policy *policy)
 {
 	struct interactive_policy *ipolicy = policy->governor_data;
 	struct interactive_tunables *tunables = ipolicy->tunables;
@@ -1555,6 +1560,10 @@ void cpufreq_interactive_exit(struct cpufreq_policy *policy)
 		idle_notifier_unregister(&cpufreq_interactive_idle_nb);
 #ifdef CONFIG_ARCH_ROCKCHIP
 		input_unregister_handler(&cpufreq_interactive_input_handler);
+		if (tunables->touchboost) {
+			tunables->touchboost = false;
+			rockchip_monitor_restore_cpu_limit(policy->cpu);
+		}
 #endif
 	}
 
@@ -1575,7 +1584,7 @@ void cpufreq_interactive_exit(struct cpufreq_policy *policy)
 	interactive_policy_free(ipolicy);
 }
 
-int cpufreq_interactive_start(struct cpufreq_policy *policy)
+static int cpufreq_interactive_start(struct cpufreq_policy *policy)
 {
 	struct interactive_policy *ipolicy = policy->governor_data;
 	struct interactive_cpu *icpu;
@@ -1602,7 +1611,7 @@ int cpufreq_interactive_start(struct cpufreq_policy *policy)
 	return 0;
 }
 
-void cpufreq_interactive_stop(struct cpufreq_policy *policy)
+static void cpufreq_interactive_stop(struct cpufreq_policy *policy)
 {
 	struct interactive_policy *ipolicy = policy->governor_data;
 	struct interactive_cpu *icpu;
@@ -1620,7 +1629,7 @@ void cpufreq_interactive_stop(struct cpufreq_policy *policy)
 	}
 }
 
-void cpufreq_interactive_limits(struct cpufreq_policy *policy)
+static void cpufreq_interactive_limits(struct cpufreq_policy *policy)
 {
 	struct interactive_cpu *icpu;
 	unsigned int cpu;
@@ -1675,9 +1684,6 @@ static int __init cpufreq_interactive_gov_init(void)
 		icpu = &per_cpu(interactive_cpu, cpu);
 
 		init_irq_work(&icpu->irq_work, irq_work);
-#ifdef CONFIG_ARCH_ROCKCHIP
-		init_irq_work(&icpu->boost_irq_work, task_boost_irq_work);
-#endif
 		spin_lock_init(&icpu->load_lock);
 		spin_lock_init(&icpu->target_freq_lock);
 		init_rwsem(&icpu->enable_sem);

@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Regulator driver for Rockchip RK808/RK818
+ * Regulator driver for Rockchip RK805/RK808/RK818
  *
  * Copyright (c) 2014, Fuzhou Rockchip Electronics Co., Ltd
  *
@@ -9,15 +10,6 @@
  * Copyright (C) 2016 PHYTEC Messtechnik GmbH
  *
  * Author: Wadim Egorov <w.egorov@phytec.de>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/delay.h>
@@ -32,20 +24,23 @@
 #include <linux/gpio/consumer.h>
 
 /* Field Definitions */
+#define RK805B_BUCK_VSEL_MASK	0x7f
+#define RK805B_LDO_VSEL_MASK	0x3f
+
 #define RK808_BUCK_VSEL_MASK	0x3f
 #define RK808_BUCK4_VSEL_MASK	0xf
 #define RK808_LDO_VSEL_MASK	0x1f
 
-#define RK809_BUCK5_VSEL_MASK           0x7
+#define RK809_BUCK5_VSEL_MASK		0x7
+
+#define RK817_LDO_VSEL_MASK		0x7f
+#define RK817_BOOST_VSEL_MASK		0x7
+#define RK817_BUCK_VSEL_MASK		0x7f
 
 #define RK816_DCDC_SLP_EN_REG_OFFSET	2
 #define RK816_SWITCH_SLP_EN_REG_OFFSET	1
 #define RK816_LDO1_4_SLP_EN_REG_OFFSET	1
 #define RK816_LDO5_6_SLP_EN_REG_OFFSET	2
-
-#define RK817_LDO_VSEL_MASK		0x7f
-#define RK817_BOOST_VSEL_MASK		0x7
-#define RK817_BUCK_VSEL_MASK		0x7f
 
 #define RK818_BUCK_VSEL_MASK		0x3f
 #define RK818_BUCK4_VSEL_MASK		0x1f
@@ -183,36 +178,47 @@ static const int rk808_buck_config_regs[] = {
 	RK808_BUCK4_CONFIG_REG,
 };
 
-static const struct regulator_linear_range rk805_buck_1_2_voltage_ranges[] = {
+static const struct linear_range rk805_buck_1_2_voltage_ranges[] = {
 	REGULATOR_LINEAR_RANGE(712500, 0, 59, 12500),	/* 0.7125v - 1.45v */
 	REGULATOR_LINEAR_RANGE(1800000, 60, 62, 200000),/* 1.8v - 2.2v */
 	REGULATOR_LINEAR_RANGE(2300000, 63, 63, 0),	/* 2.3v - 2.3v */
 };
 
-static const struct regulator_linear_range rk805_buck4_voltage_ranges[] = {
+static const struct linear_range rk805_buck4_voltage_ranges[] = {
 	REGULATOR_LINEAR_RANGE(800000, 0, 26, 100000),	/* 0.8v - 3.4v */
 	REGULATOR_LINEAR_RANGE(3500000, 27, 31, 0),	/* 3.5v */
 };
 
-static const struct regulator_linear_range rk808_ldo3_voltage_ranges[] = {
+static const struct linear_range rk805b_cm_mode_1_buck_ranges[] = {
+	REGULATOR_LINEAR_RANGE(500000, 0, 76, 12500),	/* 0.5V - 1.45V */
+	REGULATOR_LINEAR_RANGE(1800000, 77, 79, 200000),/* 1.8V - 2.2V */
+	REGULATOR_LINEAR_RANGE(2300000, 80, 127, 0),	/* 2.3V */
+};
+
+static const struct linear_range rk805b_cm_mode_1_buck4_ranges[] = {
+	REGULATOR_LINEAR_RANGE(500000, 0, 58, 50000),	/* 0.5V - 3.4V */
+	REGULATOR_LINEAR_RANGE(3400000, 59, 63, 0),	/* 3.4V */
+};
+
+static const struct linear_range rk808_ldo3_voltage_ranges[] = {
 	REGULATOR_LINEAR_RANGE(800000, 0, 13, 100000),
 	REGULATOR_LINEAR_RANGE(2500000, 15, 15, 0),
 };
 
-static const struct regulator_linear_range rk816_buck_voltage_ranges[] = {
+static const struct linear_range rk816_buck_voltage_ranges[] = {
 	REGULATOR_LINEAR_RANGE(712500, 0, 59, 12500),	/* 0.7125v - 1.45v */
 	REGULATOR_LINEAR_RANGE(1800000, 60, 62, 200000),/* 1.8v - 2.2v */
 	REGULATOR_LINEAR_RANGE(2300000, 63, 63, 0),	/* 2.3v - 2.3v */
 };
 
-static const struct regulator_linear_range rk816_buck4_voltage_ranges[] = {
+static const struct linear_range rk816_buck4_voltage_ranges[] = {
 	REGULATOR_LINEAR_RANGE(800000, 0, 26, 100000),	/* 0.8v - 3.4 */
 	REGULATOR_LINEAR_RANGE(3500000, 27, 31, 0),	/* 3.5v */
 };
 
 #define RK809_BUCK5_SEL_CNT		(8)
 
-static const struct regulator_linear_range rk809_buck5_voltage_ranges[] = {
+static const struct linear_range rk809_buck5_voltage_ranges[] = {
 	REGULATOR_LINEAR_RANGE(1500000, 0, 0, 0),
 	REGULATOR_LINEAR_RANGE(1800000, 1, 3, 200000),
 	REGULATOR_LINEAR_RANGE(2800000, 4, 5, 200000),
@@ -241,18 +247,27 @@ static const struct regulator_linear_range rk809_buck5_voltage_ranges[] = {
 #define RK817_BUCK1_SEL_CNT (RK817_BUCK1_SEL0 + RK817_BUCK1_SEL1 + 1)
 #define RK817_BUCK3_SEL_CNT (RK817_BUCK1_SEL0 + RK817_BUCK3_SEL1 + 1)
 
-static const struct regulator_linear_range rk817_buck1_voltage_ranges[] = {
+static const struct linear_range rk817_buck1_voltage_ranges[] = {
 	REGULATOR_LINEAR_RANGE(RK817_BUCK1_MIN0, 0,
 			       RK817_BUCK1_SEL0, RK817_BUCK1_STP0),
 	REGULATOR_LINEAR_RANGE(RK817_BUCK1_MIN1, RK817_BUCK1_SEL0 + 1,
 			       RK817_BUCK1_SEL_CNT, RK817_BUCK1_STP1),
 };
 
-static const struct regulator_linear_range rk817_buck3_voltage_ranges[] = {
+static const struct linear_range rk817_buck3_voltage_ranges[] = {
 	REGULATOR_LINEAR_RANGE(RK817_BUCK1_MIN0, 0,
 			       RK817_BUCK1_SEL0, RK817_BUCK1_STP0),
 	REGULATOR_LINEAR_RANGE(RK817_BUCK1_MIN1, RK817_BUCK1_SEL0 + 1,
 			       RK817_BUCK3_SEL_CNT, RK817_BUCK1_STP1),
+};
+
+static const unsigned int rk808_buck1_2_ramp_table[] = {
+	2000, 4000, 6000, 10000
+};
+
+/* RK817 RK809 */
+static const unsigned int rk817_buck1_4_ramp_table[] = {
+	3000, 6300, 12500, 25000
 };
 
 static int rk808_buck1_2_get_voltage_sel_regmap(struct regulator_dev *rdev)
@@ -327,7 +342,7 @@ static int rk808_buck1_2_i2c_set_voltage_sel(struct regulator_dev *rdev,
 	return ret;
 }
 
-#ifdef CONFIG_CPU_RK312X
+#ifdef CONFIG_CLK_RK312X
 extern void rkclk_cpuclk_div_setting(int div);
 #else
 static inline void rkclk_cpuclk_div_setting(int div) {}
@@ -432,119 +447,12 @@ static int rk808_buck1_2_set_voltage_time_sel(struct regulator_dev *rdev,
 	return regulator_set_voltage_time_sel(rdev, old_selector, new_selector);
 }
 
-static int rk805_set_ramp_delay(struct regulator_dev *rdev, int ramp_delay)
-{
-	unsigned int ramp_value = RK808_RAMP_RATE_10MV_PER_US;
-	unsigned int reg = rk808_buck_config_regs[rdev_get_id(rdev)];
-
-	switch (ramp_delay) {
-	case 0 ... 3000:
-		ramp_value = RK805_RAMP_RATE_3MV_PER_US;
-		break;
-	case 3001 ... 6000:
-		ramp_value = RK805_RAMP_RATE_6MV_PER_US;
-		break;
-	case 6001 ... 12500:
-		ramp_value = RK805_RAMP_RATE_12_5MV_PER_US;
-		break;
-	case 12501 ... 25000:
-		ramp_value = RK805_RAMP_RATE_25MV_PER_US;
-		break;
-	default:
-		pr_warn("%s ramp_delay: %d not supported\n",
-			rdev->desc->name, ramp_delay);
-	}
-
-	return regmap_update_bits(rdev->regmap, reg,
-				  RK805_RAMP_RATE_MASK, ramp_value);
-}
-
-static int rk808_set_ramp_delay(struct regulator_dev *rdev, int ramp_delay)
-{
-	unsigned int ramp_value = RK808_RAMP_RATE_10MV_PER_US;
-	unsigned int reg = rk808_buck_config_regs[rdev_get_id(rdev)];
-
-	switch (ramp_delay) {
-	case 1 ... 2000:
-		ramp_value = RK808_RAMP_RATE_2MV_PER_US;
-		break;
-	case 2001 ... 4000:
-		ramp_value = RK808_RAMP_RATE_4MV_PER_US;
-		break;
-	case 4001 ... 6000:
-		ramp_value = RK808_RAMP_RATE_6MV_PER_US;
-		break;
-	case 6001 ... 10000:
-		break;
-	default:
-		pr_warn("%s ramp_delay: %d not supported, setting 10000\n",
-			rdev->desc->name, ramp_delay);
-	}
-
-	return regmap_update_bits(rdev->regmap, reg,
-				  RK808_RAMP_RATE_MASK, ramp_value);
-}
-
-static int rk8xx_set_ramp_delay(struct regulator_dev *rdev, int ramp_delay)
-{
-	struct rk808 *rk808 = dev_get_drvdata(rdev->dev.parent);
-
-	if (rk808->variant == RK805_ID)
-		return rk805_set_ramp_delay(rdev, ramp_delay);
-
-	return rk808_set_ramp_delay(rdev, ramp_delay);
-}
-
-/*
- * RK817 RK809
- */
-static int rk817_set_ramp_delay(struct regulator_dev *rdev, int ramp_delay)
-{
-	unsigned int ramp_value = RK817_RAMP_RATE_25MV_PER_US;
-	unsigned int reg = RK817_BUCK_CONFIG_REG(rdev_get_id(rdev));
-
-	switch (ramp_delay) {
-	case 0 ... 3000:
-		ramp_value = RK817_RAMP_RATE_3MV_PER_US;
-		break;
-	case 3001 ... 6300:
-		ramp_value = RK817_RAMP_RATE_6_3MV_PER_US;
-		break;
-	case 6301 ... 12500:
-		ramp_value = RK817_RAMP_RATE_12_5MV_PER_US;
-		break;
-	case 12501 ... 25000:
-		break;
-	default:
-		dev_warn(&rdev->dev,
-			 "%s ramp_delay: %d not supported, setting 10000\n",
-			 rdev->desc->name, ramp_delay);
-	}
-
-	return regmap_update_bits(rdev->regmap, reg,
-				  RK817_RAMP_RATE_MASK, ramp_value);
-}
 
 static int rk808_set_suspend_voltage(struct regulator_dev *rdev, int uv)
 {
 	unsigned int reg;
 	int sel = regulator_map_voltage_linear(rdev, uv, uv);
 
-	if (sel < 0)
-		return -EINVAL;
-
-	reg = rdev->desc->vsel_reg + RK808_SLP_REG_OFFSET;
-
-	return regmap_update_bits(rdev->regmap, reg,
-				  rdev->desc->vsel_mask,
-				  sel);
-}
-
-static int rk817_set_suspend_voltage(struct regulator_dev *rdev, int uv)
-{
-	unsigned int reg;
-	int sel = regulator_map_voltage_linear(rdev, uv, uv);
-	/* only ldo1~ldo9 */
 	if (sel < 0)
 		return -EINVAL;
 
@@ -811,7 +719,7 @@ static unsigned int rk8xx_regulator_of_map_mode(unsigned int mode)
 	case 2:
 		return REGULATOR_MODE_NORMAL;
 	default:
-		return -EINVAL;
+		return REGULATOR_MODE_INVALID;
 	}
 }
 
@@ -824,10 +732,10 @@ static const struct regulator_ops rk808_buck1_2_ops = {
 	.enable			= regulator_enable_regmap,
 	.disable		= regulator_disable_regmap,
 	.is_enabled		= regulator_is_enabled_regmap,
+	.set_ramp_delay		= regulator_set_ramp_delay_regmap,
 	.set_mode		= rk8xx_set_mode,
 	.get_mode		= rk8xx_get_mode,
 	.set_suspend_mode	= rk8xx_set_suspend_mode,
-	.set_ramp_delay		= rk8xx_set_ramp_delay,
 	.set_suspend_voltage	= rk808_set_suspend_voltage,
 	.set_suspend_enable	= rk808_set_suspend_enable,
 	.set_suspend_disable	= rk808_set_suspend_disable,
@@ -845,7 +753,7 @@ static const struct regulator_ops rk816_buck1_2_ops_ranges = {
 	.set_mode		= rk8xx_set_mode,
 	.get_mode		= rk8xx_get_mode,
 	.set_suspend_mode	= rk8xx_set_suspend_mode,
-	.set_ramp_delay		= rk8xx_set_ramp_delay,
+	.set_ramp_delay		= regulator_set_ramp_delay_regmap,
 	.set_suspend_voltage	= rk808_set_suspend_voltage_range,
 	.set_suspend_enable	= rk808_set_suspend_enable,
 	.set_suspend_disable	= rk808_set_suspend_disable,
@@ -875,7 +783,7 @@ static const struct regulator_ops rk808_reg_ops_ranges = {
 	.set_mode		= rk8xx_set_mode,
 	.get_mode		= rk8xx_get_mode,
 	.set_suspend_mode	= rk8xx_set_suspend_mode,
-	.set_ramp_delay		= rk8xx_set_ramp_delay,
+	.set_ramp_delay		= regulator_set_ramp_delay_regmap,
 	.set_suspend_voltage	= rk808_set_suspend_voltage_range,
 	.set_suspend_enable	= rk808_set_suspend_enable,
 	.set_suspend_disable	= rk808_set_suspend_disable,
@@ -891,7 +799,7 @@ static const struct regulator_ops rk808_switch_ops = {
 	.set_suspend_disable	= rk808_set_suspend_disable,
 };
 
-static struct regulator_ops rk809_buck5_ops_range = {
+static const struct regulator_ops rk809_buck5_ops_range = {
 	.list_voltage		= regulator_list_voltage_linear_range,
 	.map_voltage		= regulator_map_voltage_linear_range,
 	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
@@ -905,7 +813,7 @@ static struct regulator_ops rk809_buck5_ops_range = {
 	.set_suspend_disable	= rk817_set_suspend_disable,
 };
 
-static struct regulator_ops rk817_reg_ops = {
+static const struct regulator_ops rk817_reg_ops = {
 	.list_voltage		= regulator_list_voltage_linear,
 	.map_voltage		= regulator_map_voltage_linear,
 	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
@@ -913,12 +821,12 @@ static struct regulator_ops rk817_reg_ops = {
 	.enable			= rk8xx_enabled_wmsk_regmap,
 	.disable		= rk8xx_disabled_wmsk_regmap,
 	.is_enabled		= rk8xx_is_enabled_wmsk_regmap,
-	.set_suspend_voltage	= rk817_set_suspend_voltage,
+	.set_suspend_voltage	= rk808_set_suspend_voltage,
 	.set_suspend_enable	= rk817_set_suspend_enable,
 	.set_suspend_disable	= rk817_set_suspend_disable,
 };
 
-static struct regulator_ops rk817_boost_ops = {
+static const struct regulator_ops rk817_boost_ops = {
 	.list_voltage		= regulator_list_voltage_linear,
 	.map_voltage		= regulator_map_voltage_linear,
 	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
@@ -930,7 +838,7 @@ static struct regulator_ops rk817_boost_ops = {
 	.set_suspend_disable	= rk817_set_suspend_disable,
 };
 
-static struct regulator_ops rk817_buck_ops_range = {
+static const struct regulator_ops rk817_buck_ops_range = {
 	.list_voltage		= regulator_list_voltage_linear_range,
 	.map_voltage		= regulator_map_voltage_linear_range,
 	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
@@ -942,13 +850,13 @@ static struct regulator_ops rk817_buck_ops_range = {
 	.set_mode		= rk8xx_set_mode,
 	.get_mode		= rk8xx_get_mode,
 	.set_suspend_mode	= rk8xx_set_suspend_mode,
-	.set_ramp_delay		= rk817_set_ramp_delay,
+	.set_ramp_delay		= regulator_set_ramp_delay_regmap,
 	.set_suspend_voltage	= rk808_set_suspend_voltage_range,
 	.set_suspend_enable	= rk817_set_suspend_enable,
 	.set_suspend_disable	= rk817_set_suspend_disable,
 };
 
-static struct regulator_ops rk817_switch_ops = {
+static const struct regulator_ops rk817_switch_ops = {
 	.enable			= rk8xx_enabled_wmsk_regmap,
 	.disable		= rk8xx_disabled_wmsk_regmap,
 	.is_enabled		= rk8xx_is_enabled_wmsk_regmap,
@@ -972,6 +880,10 @@ static const struct regulator_desc rk805_reg[] = {
 		.vsel_mask = RK818_BUCK_VSEL_MASK,
 		.enable_reg = RK805_DCDC_EN_REG,
 		.enable_mask = ENABLE_MASK(RK805_ID_DCDC1),
+		.ramp_reg = RK808_BUCK1_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.enable_val = ENABLE_MASK(RK805_ID_DCDC1),
 		.disable_val = DISABLE_VAL(RK805_ID_DCDC1),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
@@ -991,6 +903,10 @@ static const struct regulator_desc rk805_reg[] = {
 		.vsel_mask = RK818_BUCK_VSEL_MASK,
 		.enable_reg = RK805_DCDC_EN_REG,
 		.enable_mask = ENABLE_MASK(RK805_ID_DCDC2),
+		.ramp_reg = RK808_BUCK1_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.enable_val = ENABLE_MASK(RK805_ID_DCDC2),
 		.disable_val = DISABLE_VAL(RK805_ID_DCDC2),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
@@ -1042,6 +958,100 @@ static const struct regulator_desc rk805_reg[] = {
 		ENABLE_MASK(2), DISABLE_VAL(2), 400),
 };
 
+static const struct regulator_desc rk805b_4_8_reg[] = {
+	{
+		.name = "DCDC_REG1",
+		.supply_name = "vcc1",
+		.of_match = of_match_ptr("DCDC_REG1"),
+		.regulators_node = of_match_ptr("regulators"),
+		.id = RK805_ID_DCDC1,
+		.ops = &rk808_reg_ops_ranges,
+		.type = REGULATOR_VOLTAGE,
+		.n_voltages = 128,
+		.linear_ranges = rk805b_cm_mode_1_buck_ranges,
+		.n_linear_ranges = ARRAY_SIZE(rk805b_cm_mode_1_buck_ranges),
+		.vsel_reg = RK805_BUCK1_ON_VSEL_REG,
+		.vsel_mask = RK805B_BUCK_VSEL_MASK,
+		.enable_reg = RK805_DCDC_EN_REG,
+		.enable_mask = ENABLE_MASK(RK805_ID_DCDC1),
+		.ramp_reg = RK808_BUCK1_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
+		.enable_val = ENABLE_MASK(RK805_ID_DCDC1),
+		.disable_val = DISABLE_VAL(RK805_ID_DCDC1),
+		.of_map_mode = rk8xx_regulator_of_map_mode,
+		.owner = THIS_MODULE,
+	}, {
+		.name = "DCDC_REG2",
+		.supply_name = "vcc2",
+		.of_match = of_match_ptr("DCDC_REG2"),
+		.regulators_node = of_match_ptr("regulators"),
+		.id = RK805_ID_DCDC2,
+		.ops = &rk808_reg_ops_ranges,
+		.type = REGULATOR_VOLTAGE,
+		.n_voltages = 128,
+		.linear_ranges = rk805b_cm_mode_1_buck_ranges,
+		.n_linear_ranges = ARRAY_SIZE(rk805b_cm_mode_1_buck_ranges),
+		.vsel_reg = RK805_BUCK2_ON_VSEL_REG,
+		.vsel_mask = RK805B_BUCK_VSEL_MASK,
+		.enable_reg = RK805_DCDC_EN_REG,
+		.enable_mask = ENABLE_MASK(RK805_ID_DCDC2),
+		.ramp_reg = RK808_BUCK1_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
+		.enable_val = ENABLE_MASK(RK805_ID_DCDC2),
+		.disable_val = DISABLE_VAL(RK805_ID_DCDC2),
+		.of_map_mode = rk8xx_regulator_of_map_mode,
+		.owner = THIS_MODULE,
+	}, {
+		.name = "DCDC_REG3",
+		.supply_name = "vcc3",
+		.of_match = of_match_ptr("DCDC_REG3"),
+		.regulators_node = of_match_ptr("regulators"),
+		.id = RK805_ID_DCDC3,
+		.ops = &rk808_switch_ops,
+		.type = REGULATOR_VOLTAGE,
+		.n_voltages = 1,
+		.enable_reg = RK805_DCDC_EN_REG,
+		.enable_mask = ENABLE_MASK(RK805_ID_DCDC3),
+		.enable_val = ENABLE_MASK(RK805_ID_DCDC3),
+		.disable_val = DISABLE_VAL(RK805_ID_DCDC3),
+		.of_map_mode = rk8xx_regulator_of_map_mode,
+		.owner = THIS_MODULE,
+	}, {
+		.name = "DCDC_REG4",
+		.supply_name = "vcc4",
+		.of_match = of_match_ptr("DCDC_REG4"),
+		.regulators_node = of_match_ptr("regulators"),
+		.id = RK805_ID_DCDC4,
+		.ops = &rk808_reg_ops_ranges,
+		.type = REGULATOR_VOLTAGE,
+		.n_voltages = 64,
+		.linear_ranges = rk805b_cm_mode_1_buck4_ranges,
+		.n_linear_ranges = ARRAY_SIZE(rk805b_cm_mode_1_buck4_ranges),
+		.vsel_reg = RK805_BUCK4_ON_VSEL_REG,
+		.vsel_mask = RK818_BUCK_VSEL_MASK,
+		.enable_reg = RK805_DCDC_EN_REG,
+		.enable_mask = ENABLE_MASK(RK805_ID_DCDC4),
+		.enable_val = ENABLE_MASK(RK805_ID_DCDC4),
+		.disable_val = DISABLE_VAL(RK805_ID_DCDC4),
+		.of_map_mode = rk8xx_regulator_of_map_mode,
+		.owner = THIS_MODULE,
+	},
+
+	RK805_DESC(RK805_ID_LDO1, "LDO_REG1", "vcc5", 500, 3400, 50,
+		RK805_LDO1_ON_VSEL_REG, RK805B_LDO_VSEL_MASK, RK805_LDO_EN_REG,
+		ENABLE_MASK(0), DISABLE_VAL(0), 400),
+	RK805_DESC(RK805_ID_LDO2, "LDO_REG2", "vcc5", 500, 3400, 50,
+		RK805_LDO2_ON_VSEL_REG, RK805B_LDO_VSEL_MASK, RK805_LDO_EN_REG,
+		ENABLE_MASK(1), DISABLE_VAL(1), 400),
+	RK805_DESC(RK805_ID_LDO3, "LDO_REG3", "vcc6", 500, 3400, 50,
+		RK805_LDO3_ON_VSEL_REG, RK805B_LDO_VSEL_MASK, RK805_LDO_EN_REG,
+		ENABLE_MASK(2), DISABLE_VAL(2), 400),
+};
+
 static const struct regulator_desc rk808_reg[] = {
 	{
 		.name = "DCDC_REG1",
@@ -1058,6 +1068,10 @@ static const struct regulator_desc rk808_reg[] = {
 		.vsel_mask = RK808_BUCK_VSEL_MASK,
 		.enable_reg = RK808_DCDC_EN_REG,
 		.enable_mask = BIT(0),
+		.ramp_reg = RK808_BUCK1_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk808_buck1_2_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk808_buck1_2_ramp_table),
 		.owner = THIS_MODULE,
 	}, {
 		.name = "DCDC_REG2",
@@ -1074,6 +1088,10 @@ static const struct regulator_desc rk808_reg[] = {
 		.vsel_mask = RK808_BUCK_VSEL_MASK,
 		.enable_reg = RK808_DCDC_EN_REG,
 		.enable_mask = BIT(1),
+		.ramp_reg = RK808_BUCK2_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk808_buck1_2_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk808_buck1_2_ramp_table),
 		.owner = THIS_MODULE,
 	}, {
 		.name = "DCDC_REG3",
@@ -1136,7 +1154,6 @@ static const struct regulator_desc rk808_reg[] = {
 		RK808_DCDC_EN_REG, BIT(6)),
 };
 
-
 static const struct regulator_desc rk816_reg[] = {
 	{
 		.name = "DCDC_REG1",
@@ -1153,6 +1170,10 @@ static const struct regulator_desc rk816_reg[] = {
 		.vsel_mask = RK818_BUCK_VSEL_MASK,
 		.enable_reg = RK816_DCDC_EN_REG1,
 		.enable_mask = BIT(4) | BIT(0),
+		.ramp_reg = RK808_BUCK1_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk808_buck1_2_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk808_buck1_2_ramp_table),
 		.enable_val = BIT(4) | BIT(0),
 		.disable_val = BIT(4),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
@@ -1172,6 +1193,10 @@ static const struct regulator_desc rk816_reg[] = {
 		.vsel_mask = RK818_BUCK_VSEL_MASK,
 		.enable_reg = RK816_DCDC_EN_REG1,
 		.enable_mask = BIT(5) | BIT(1),
+		.ramp_reg = RK808_BUCK2_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk808_buck1_2_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk808_buck1_2_ramp_table),
 		.enable_val = BIT(5) | BIT(1),
 		.disable_val = BIT(5),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
@@ -1250,6 +1275,10 @@ static const struct regulator_desc rk809_reg[] = {
 		.enable_mask = ENABLE_MASK(RK817_ID_DCDC1),
 		.enable_val = BIT(RK817_ID_DCDC1),
 		.disable_val = DISABLE_VAL(RK817_ID_DCDC1),
+		.ramp_reg = RK817_BUCK_CONFIG_REG(RK817_ID_DCDC1),
+		.ramp_mask = RK817_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
 		.owner = THIS_MODULE,
 	}, {
@@ -1269,6 +1298,10 @@ static const struct regulator_desc rk809_reg[] = {
 		.enable_mask = ENABLE_MASK(RK817_ID_DCDC2),
 		.enable_val = BIT(RK817_ID_DCDC2),
 		.disable_val = DISABLE_VAL(RK817_ID_DCDC2),
+		.ramp_reg = RK817_BUCK_CONFIG_REG(RK817_ID_DCDC2),
+		.ramp_mask = RK817_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
 		.owner = THIS_MODULE,
 	}, {
@@ -1284,10 +1317,16 @@ static const struct regulator_desc rk809_reg[] = {
 		.n_linear_ranges = ARRAY_SIZE(rk817_buck1_voltage_ranges),
 		.vsel_reg = RK817_BUCK3_ON_VSEL_REG,
 		.vsel_mask = RK817_BUCK_VSEL_MASK,
+		.apply_reg = RK817_POWER_CONFIG,
+		.apply_bit = RK817_BUCK3_FB_RES_INTER,
 		.enable_reg = RK817_POWER_EN_REG(0),
 		.enable_mask = ENABLE_MASK(RK817_ID_DCDC3),
 		.enable_val = BIT(RK817_ID_DCDC3),
 		.disable_val = DISABLE_VAL(RK817_ID_DCDC3),
+		.ramp_reg = RK817_BUCK_CONFIG_REG(RK817_ID_DCDC3),
+		.ramp_mask = RK817_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
 		.owner = THIS_MODULE,
 	}, {
@@ -1307,6 +1346,10 @@ static const struct regulator_desc rk809_reg[] = {
 		.enable_mask = ENABLE_MASK(RK817_ID_DCDC4),
 		.enable_val = BIT(RK817_ID_DCDC4),
 		.disable_val = DISABLE_VAL(RK817_ID_DCDC4),
+		.ramp_reg = RK817_BUCK_CONFIG_REG(RK817_ID_DCDC4),
+		.ramp_mask = RK817_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
 		.owner = THIS_MODULE,
 	},
@@ -1392,6 +1435,10 @@ static const struct regulator_desc rk817_reg[] = {
 		.enable_mask = ENABLE_MASK(RK817_ID_DCDC1),
 		.enable_val = ENABLE_MASK(RK817_ID_DCDC1),
 		.disable_val = DISABLE_VAL(RK817_ID_DCDC1),
+		.ramp_reg = RK817_BUCK_CONFIG_REG(RK817_ID_DCDC1),
+		.ramp_mask = RK817_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
 		.owner = THIS_MODULE,
 	}, {
@@ -1411,6 +1458,10 @@ static const struct regulator_desc rk817_reg[] = {
 		.enable_mask = ENABLE_MASK(RK817_ID_DCDC2),
 		.enable_val = ENABLE_MASK(RK817_ID_DCDC2),
 		.disable_val = DISABLE_VAL(RK817_ID_DCDC2),
+		.ramp_reg = RK817_BUCK_CONFIG_REG(RK817_ID_DCDC2),
+		.ramp_mask = RK817_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
 		.owner = THIS_MODULE,
 	}, {
@@ -1430,6 +1481,10 @@ static const struct regulator_desc rk817_reg[] = {
 		.enable_mask = ENABLE_MASK(RK817_ID_DCDC3),
 		.enable_val = ENABLE_MASK(RK817_ID_DCDC3),
 		.disable_val = DISABLE_VAL(RK817_ID_DCDC3),
+		.ramp_reg = RK817_BUCK_CONFIG_REG(RK817_ID_DCDC3),
+		.ramp_mask = RK817_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
 		.owner = THIS_MODULE,
 	}, {
@@ -1449,6 +1504,10 @@ static const struct regulator_desc rk817_reg[] = {
 		.enable_mask = ENABLE_MASK(RK817_ID_DCDC4),
 		.enable_val = ENABLE_MASK(RK817_ID_DCDC4),
 		.disable_val = DISABLE_VAL(RK817_ID_DCDC4),
+		.ramp_reg = RK817_BUCK_CONFIG_REG(RK817_ID_DCDC4),
+		.ramp_mask = RK817_RAMP_RATE_MASK,
+		.ramp_delay_table = rk817_buck1_4_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk817_buck1_4_ramp_table),
 		.of_map_mode = rk8xx_regulator_of_map_mode,
 		.owner = THIS_MODULE,
 	},
@@ -1513,6 +1572,10 @@ static const struct regulator_desc rk818_reg[] = {
 		.vsel_mask = RK818_BUCK_VSEL_MASK,
 		.enable_reg = RK818_DCDC_EN_REG,
 		.enable_mask = BIT(0),
+		.ramp_reg = RK808_BUCK1_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk808_buck1_2_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk808_buck1_2_ramp_table),
 		.owner = THIS_MODULE,
 	}, {
 		.name = "DCDC_REG2",
@@ -1529,6 +1592,10 @@ static const struct regulator_desc rk818_reg[] = {
 		.vsel_mask = RK818_BUCK_VSEL_MASK,
 		.enable_reg = RK818_DCDC_EN_REG,
 		.enable_mask = BIT(1),
+		.ramp_reg = RK808_BUCK2_CONFIG_REG,
+		.ramp_mask = RK808_RAMP_RATE_MASK,
+		.ramp_delay_table = rk808_buck1_2_ramp_table,
+		.n_ramp_values = ARRAY_SIZE(rk808_buck1_2_ramp_table),
 		.owner = THIS_MODULE,
 	}, {
 		.name = "DCDC_REG3",
@@ -1660,7 +1727,10 @@ static int rk808_regulator_probe(struct platform_device *pdev)
 
 	switch (rk808->variant) {
 	case RK805_ID:
-		regulators = rk805_reg;
+		if (rk808->vsel_table == RK805B_VSELTABLE_4OR8)
+			regulators = rk805b_4_8_reg;
+		else
+			regulators = rk805_reg;
 		nregulators = RK805_NUM_REGULATORS;
 		break;
 	case RK808_ID:
@@ -1707,8 +1777,19 @@ static int rk808_regulator_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static const struct platform_device_id rk8xx_regulator_id_table[] = {
+	{ "rk805-regulator", 0 },
+	{ "rk809-regulator", 0 },
+	{ "rk816-regulator", 0 },
+	{ "rk817-regulator", 0 },
+	{ "rk818-regulator", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, rk8xx_regulator_id_table);
+
 static struct platform_driver rk808_regulator_driver = {
 	.probe = rk808_regulator_probe,
+	.id_table = rk8xx_regulator_id_table,
 	.driver = {
 		.name = "rk808-regulator"
 	},
@@ -1730,7 +1811,7 @@ module_exit(rk808_regulator_driver_exit);
 module_platform_driver(rk808_regulator_driver);
 #endif
 
-MODULE_DESCRIPTION("regulator driver for the RK805/RK808/RK809/RK817/RK818 series PMICs");
+MODULE_DESCRIPTION("regulator driver for the RK805/RK808/RK816/RK818 series PMICs");
 MODULE_AUTHOR("Tony xie <tony.xie@rock-chips.com>");
 MODULE_AUTHOR("Chris Zhong <zyw@rock-chips.com>");
 MODULE_AUTHOR("Zhang Qing <zhangqing@rock-chips.com>");

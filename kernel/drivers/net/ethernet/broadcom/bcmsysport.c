@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Broadcom BCM7xxx System Port Ethernet MAC driver
  *
  * Copyright (C) 2014 Broadcom Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
@@ -15,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
+#include <linux/dsa/brcm.h>
 #include <linux/etherdevice.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
@@ -23,6 +21,7 @@
 #include <linux/phy.h>
 #include <linux/phy_fixed.h>
 #include <net/dsa.h>
+#include <linux/clk.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
 
@@ -116,22 +115,9 @@ static inline void dma_desc_set_addr(struct bcm_sysport_priv *priv,
 	writel_relaxed(lower_32_bits(addr), d + DESC_ADDR_LO);
 }
 
-static inline void tdma_port_write_desc_addr(struct bcm_sysport_priv *priv,
-					     struct dma_desc *desc,
-					     unsigned int port)
-{
-	unsigned long desc_flags;
-
-	/* Ports are latched, so write upper address first */
-	spin_lock_irqsave(&priv->desc_lock, desc_flags);
-	tdma_writel(priv, desc->addr_status_len, TDMA_WRITE_PORT_HI(port));
-	tdma_writel(priv, desc->addr_lo, TDMA_WRITE_PORT_LO(port));
-	spin_unlock_irqrestore(&priv->desc_lock, desc_flags);
-}
-
 /* Ethtool operations */
-static int bcm_sysport_set_rx_csum(struct net_device *dev,
-				   netdev_features_t wanted)
+static void bcm_sysport_set_rx_csum(struct net_device *dev,
+				    netdev_features_t wanted)
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	u32 reg;
@@ -165,12 +151,10 @@ static int bcm_sysport_set_rx_csum(struct net_device *dev,
 		reg &= ~RXCHK_BRCM_TAG_EN;
 
 	rxchk_writel(priv, reg, RXCHK_CONTROL);
-
-	return 0;
 }
 
-static int bcm_sysport_set_tx_csum(struct net_device *dev,
-				   netdev_features_t wanted)
+static void bcm_sysport_set_tx_csum(struct net_device *dev,
+				    netdev_features_t wanted)
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	u32 reg;
@@ -178,30 +162,51 @@ static int bcm_sysport_set_tx_csum(struct net_device *dev,
 	/* Hardware transmit checksum requires us to enable the Transmit status
 	 * block prepended to the packet contents
 	 */
-	priv->tsb_en = !!(wanted & (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM));
+	priv->tsb_en = !!(wanted & (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
+				    NETIF_F_HW_VLAN_CTAG_TX));
 	reg = tdma_readl(priv, TDMA_CONTROL);
 	if (priv->tsb_en)
 		reg |= tdma_control_bit(priv, TSB_EN);
 	else
 		reg &= ~tdma_control_bit(priv, TSB_EN);
+	/* Indicating that software inserts Broadcom tags is needed for the TX
+	 * checksum to be computed correctly when using VLAN HW acceleration,
+	 * else it has no effect, so it can always be turned on.
+	 */
+	if (netdev_uses_dsa(dev))
+		reg |= tdma_control_bit(priv, SW_BRCM_TAG);
+	else
+		reg &= ~tdma_control_bit(priv, SW_BRCM_TAG);
 	tdma_writel(priv, reg, TDMA_CONTROL);
 
-	return 0;
+	/* Default TPID is ETH_P_8021AD, change to ETH_P_8021Q */
+	if (wanted & NETIF_F_HW_VLAN_CTAG_TX)
+		tdma_writel(priv, ETH_P_8021Q, TDMA_TPID);
 }
 
 static int bcm_sysport_set_features(struct net_device *dev,
 				    netdev_features_t features)
 {
-	netdev_features_t changed = features ^ dev->features;
-	netdev_features_t wanted = dev->wanted_features;
-	int ret = 0;
+	struct bcm_sysport_priv *priv = netdev_priv(dev);
+	int ret;
 
-	if (changed & NETIF_F_RXCSUM)
-		ret = bcm_sysport_set_rx_csum(dev, wanted);
-	if (changed & (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM))
-		ret = bcm_sysport_set_tx_csum(dev, wanted);
+	ret = clk_prepare_enable(priv->clk);
+	if (ret)
+		return ret;
 
-	return ret;
+	/* Read CRC forward */
+	if (!priv->is_lite)
+		priv->crc_fwd = !!(umac_readl(priv, UMAC_CMD) & CMD_CRC_FWD);
+	else
+		priv->crc_fwd = !((gib_readl(priv, GIB_CONTROL) &
+				  GIB_FCS_STRIP) >> GIB_FCS_STRIP_SHIFT);
+
+	bcm_sysport_set_rx_csum(dev, features);
+	bcm_sysport_set_tx_csum(dev, features);
+
+	clk_disable_unprepare(priv->clk);
+
+	return 0;
 }
 
 /* Hardware counters must be kept in sync because the order/offset
@@ -293,6 +298,8 @@ static const struct bcm_sysport_stats bcm_sysport_gstrings_stats[] = {
 	STAT_MIB_SOFT("alloc_rx_buff_failed", mib.alloc_rx_buff_failed),
 	STAT_MIB_SOFT("rx_dma_failed", mib.rx_dma_failed),
 	STAT_MIB_SOFT("tx_dma_failed", mib.tx_dma_failed),
+	STAT_MIB_SOFT("tx_realloc_tsb", mib.tx_realloc_tsb),
+	STAT_MIB_SOFT("tx_realloc_tsb_failed", mib.tx_realloc_tsb_failed),
 	/* Per TX-queue statistics are dynamically appended */
 };
 
@@ -301,9 +308,8 @@ static const struct bcm_sysport_stats bcm_sysport_gstrings_stats[] = {
 static void bcm_sysport_get_drvinfo(struct net_device *dev,
 				    struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
-	strlcpy(info->version, "0.1", sizeof(info->version));
-	strlcpy(info->bus_info, "platform", sizeof(info->bus_info));
+	strscpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
+	strscpy(info->bus_info, "platform", sizeof(info->bus_info));
 }
 
 static u32 bcm_sysport_get_msglvl(struct net_device *dev)
@@ -601,7 +607,9 @@ static void bcm_sysport_set_tx_coalesce(struct bcm_sysport_tx_ring *ring,
 }
 
 static int bcm_sysport_get_coalesce(struct net_device *dev,
-				    struct ethtool_coalesce *ec)
+				    struct ethtool_coalesce *ec,
+				    struct kernel_ethtool_coalesce *kernel_coal,
+				    struct netlink_ext_ack *extack)
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	u32 reg;
@@ -621,10 +629,12 @@ static int bcm_sysport_get_coalesce(struct net_device *dev,
 }
 
 static int bcm_sysport_set_coalesce(struct net_device *dev,
-				    struct ethtool_coalesce *ec)
+				    struct ethtool_coalesce *ec,
+				    struct kernel_ethtool_coalesce *kernel_coal,
+				    struct netlink_ext_ack *extack)
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
-	struct net_dim_cq_moder moder;
+	struct dim_cq_moder moder;
 	u32 usecs, pkts;
 	unsigned int i;
 
@@ -639,8 +649,7 @@ static int bcm_sysport_set_coalesce(struct net_device *dev,
 		return -EINVAL;
 
 	if ((ec->tx_coalesce_usecs == 0 && ec->tx_max_coalesced_frames == 0) ||
-	    (ec->rx_coalesce_usecs == 0 && ec->rx_max_coalesced_frames == 0) ||
-	    ec->use_adaptive_tx_coalesce)
+	    (ec->rx_coalesce_usecs == 0 && ec->rx_max_coalesced_frames == 0))
 		return -EINVAL;
 
 	for (i = 0; i < dev->num_tx_queues; i++)
@@ -724,8 +733,7 @@ static int bcm_sysport_alloc_rx_bufs(struct bcm_sysport_priv *priv)
 	for (i = 0; i < priv->num_rx_bds; i++) {
 		cb = &priv->rx_cbs[i];
 		skb = bcm_sysport_rx_refill(priv, cb);
-		if (skb)
-			dev_kfree_skb(skb);
+		dev_kfree_skb(skb);
 		if (!cb->skb)
 			return -ENOMEM;
 	}
@@ -1008,7 +1016,7 @@ static int bcm_sysport_poll(struct napi_struct *napi, int budget)
 {
 	struct bcm_sysport_priv *priv =
 		container_of(napi, struct bcm_sysport_priv, napi);
-	struct net_dim_sample dim_sample;
+	struct dim_sample dim_sample = {};
 	unsigned int work_done = 0;
 
 	work_done = bcm_sysport_desc_rx(priv, budget);
@@ -1032,8 +1040,8 @@ static int bcm_sysport_poll(struct napi_struct *napi, int budget)
 	}
 
 	if (priv->dim.use_dim) {
-		net_dim_sample(priv->dim.event_ctr, priv->dim.packets,
-			       priv->dim.bytes, &dim_sample);
+		dim_update_sample(priv->dim.event_ctr, priv->dim.packets,
+				  priv->dim.bytes, &dim_sample);
 		net_dim(&priv->dim.dim, dim_sample);
 	}
 
@@ -1066,6 +1074,7 @@ static void mpd_enable_set(struct bcm_sysport_priv *priv, bool enable)
 
 static void bcm_sysport_resume_from_wol(struct bcm_sysport_priv *priv)
 {
+	unsigned int index;
 	u32 reg;
 
 	/* Disable RXCHK, active filters and Broadcom tag matching */
@@ -1073,6 +1082,15 @@ static void bcm_sysport_resume_from_wol(struct bcm_sysport_priv *priv)
 	reg &= ~(RXCHK_BRCM_TAG_MATCH_MASK <<
 		 RXCHK_BRCM_TAG_MATCH_SHIFT | RXCHK_EN | RXCHK_BRCM_TAG_EN);
 	rxchk_writel(priv, reg, RXCHK_CONTROL);
+
+	/* Make sure we restore correct CID index in case HW lost
+	 * its context during deep idle state
+	 */
+	for_each_set_bit(index, priv->filters, RXCHK_BRCM_TAG_MAX) {
+		rxchk_writel(priv, priv->filters_loc[index] <<
+			     RXCHK_BRCM_TAG_CID_SHIFT, RXCHK_BRCM_TAG(index));
+		rxchk_writel(priv, 0xff00ffff, RXCHK_BRCM_TAG_MASK(index));
+	}
 
 	/* Clear the MagicPacket detection logic */
 	mpd_enable_set(priv, false);
@@ -1093,16 +1111,16 @@ static void bcm_sysport_resume_from_wol(struct bcm_sysport_priv *priv)
 
 static void bcm_sysport_dim_work(struct work_struct *work)
 {
-	struct net_dim *dim = container_of(work, struct net_dim, work);
+	struct dim *dim = container_of(work, struct dim, work);
 	struct bcm_sysport_net_dim *ndim =
 			container_of(dim, struct bcm_sysport_net_dim, dim);
 	struct bcm_sysport_priv *priv =
 			container_of(ndim, struct bcm_sysport_priv, dim);
-	struct net_dim_cq_moder cur_profile =
-			net_dim_get_rx_moderation(dim->mode, dim->profile_ix);
+	struct dim_cq_moder cur_profile = net_dim_get_rx_moderation(dim->mode,
+								    dim->profile_ix);
 
 	bcm_sysport_set_rx_coalesce(priv, cur_profile.usec, cur_profile.pkts);
-	dim->state = NET_DIM_START_MEASURE;
+	dim->state = DIM_START_MEASURE;
 }
 
 /* RX and misc interrupt routine */
@@ -1217,6 +1235,7 @@ static void bcm_sysport_poll_controller(struct net_device *dev)
 static struct sk_buff *bcm_sysport_insert_tsb(struct sk_buff *skb,
 					      struct net_device *dev)
 {
+	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	struct sk_buff *nskb;
 	struct bcm_tsb *tsb;
 	u32 csum_info;
@@ -1227,18 +1246,26 @@ static struct sk_buff *bcm_sysport_insert_tsb(struct sk_buff *skb,
 	/* Re-allocate SKB if needed */
 	if (unlikely(skb_headroom(skb) < sizeof(*tsb))) {
 		nskb = skb_realloc_headroom(skb, sizeof(*tsb));
-		dev_kfree_skb(skb);
 		if (!nskb) {
+			dev_kfree_skb_any(skb);
+			priv->mib.tx_realloc_tsb_failed++;
 			dev->stats.tx_errors++;
 			dev->stats.tx_dropped++;
 			return NULL;
 		}
+		dev_consume_skb_any(skb);
 		skb = nskb;
+		priv->mib.tx_realloc_tsb++;
 	}
 
 	tsb = skb_push(skb, sizeof(*tsb));
 	/* Zero-out TSB by default */
 	memset(tsb, 0, sizeof(*tsb));
+
+	if (skb_vlan_tag_present(skb)) {
+		tsb->pcp_dei_vid = skb_vlan_tag_get_prio(skb) & PCP_DEI_MASK;
+		tsb->pcp_dei_vid |= (u32)skb_vlan_tag_get_id(skb) << VID_SHIFT;
+	}
 
 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
 		ip_ver = skb->protocol;
@@ -1255,6 +1282,9 @@ static struct sk_buff *bcm_sysport_insert_tsb(struct sk_buff *skb,
 
 		/* Get the checksum offset and the L4 (transport) offset */
 		csum_start = skb_checksum_start_offset(skb) - sizeof(*tsb);
+		/* Account for the HW inserted VLAN tag */
+		if (skb_vlan_tag_present(skb))
+			csum_start += VLAN_HLEN;
 		csum_info = (csum_start + skb->csum_offset) & L4_CSUM_PTR_MASK;
 		csum_info |= (csum_start << L4_PTR_SHIFT);
 
@@ -1279,13 +1309,12 @@ static netdev_tx_t bcm_sysport_xmit(struct sk_buff *skb,
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	struct device *kdev = &priv->pdev->dev;
 	struct bcm_sysport_tx_ring *ring;
+	unsigned long flags, desc_flags;
 	struct bcm_sysport_cb *cb;
 	struct netdev_queue *txq;
-	struct dma_desc *desc;
+	u32 len_status, addr_lo;
 	unsigned int skb_len;
-	unsigned long flags;
 	dma_addr_t mapping;
-	u32 len_status;
 	u16 queue;
 	int ret;
 
@@ -1319,6 +1348,7 @@ static netdev_tx_t bcm_sysport_xmit(struct sk_buff *skb,
 		netif_err(priv, tx_err, dev, "DMA map failed at %p (len=%d)\n",
 			  skb->data, skb_len);
 		ret = NETDEV_TX_OK;
+		dev_kfree_skb_any(skb);
 		goto out;
 	}
 
@@ -1328,32 +1358,26 @@ static netdev_tx_t bcm_sysport_xmit(struct sk_buff *skb,
 	dma_unmap_addr_set(cb, dma_addr, mapping);
 	dma_unmap_len_set(cb, dma_len, skb_len);
 
-	/* Fetch a descriptor entry from our pool */
-	desc = ring->desc_cpu;
-
-	desc->addr_lo = lower_32_bits(mapping);
+	addr_lo = lower_32_bits(mapping);
 	len_status = upper_32_bits(mapping) & DESC_ADDR_HI_MASK;
 	len_status |= (skb_len << DESC_LEN_SHIFT);
 	len_status |= (DESC_SOP | DESC_EOP | TX_STATUS_APP_CRC) <<
 		       DESC_STATUS_SHIFT;
 	if (skb->ip_summed == CHECKSUM_PARTIAL)
 		len_status |= (DESC_L4_CSUM << DESC_STATUS_SHIFT);
+	if (skb_vlan_tag_present(skb))
+		len_status |= (TX_STATUS_VLAN_VID_TSB << DESC_STATUS_SHIFT);
 
 	ring->curr_desc++;
 	if (ring->curr_desc == ring->size)
 		ring->curr_desc = 0;
 	ring->desc_count--;
 
-	/* Ensure write completion of the descriptor status/length
-	 * in DRAM before the System Port WRITE_PORT register latches
-	 * the value
-	 */
-	wmb();
-	desc->addr_status_len = len_status;
-	wmb();
-
-	/* Write this descriptor address to the RING write port */
-	tdma_port_write_desc_addr(priv, desc, ring->index);
+	/* Ports are latched, so write upper address first */
+	spin_lock_irqsave(&priv->desc_lock, desc_flags);
+	tdma_writel(priv, len_status, TDMA_WRITE_PORT_HI(ring->index));
+	tdma_writel(priv, addr_lo, TDMA_WRITE_PORT_LO(ring->index));
+	spin_unlock_irqrestore(&priv->desc_lock, desc_flags);
 
 	/* Check ring space and update SW control flow */
 	if (ring->desc_count == 0)
@@ -1368,7 +1392,7 @@ out:
 	return ret;
 }
 
-static void bcm_sysport_tx_timeout(struct net_device *dev)
+static void bcm_sysport_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	netdev_warn(dev, "transmit timeout!\n");
 
@@ -1450,7 +1474,7 @@ static void bcm_sysport_init_dim(struct bcm_sysport_priv *priv,
 	struct bcm_sysport_net_dim *dim = &priv->dim;
 
 	INIT_WORK(&dim->dim.work, cb);
-	dim->dim.mode = NET_DIM_CQ_PERIOD_MODE_START_FROM_EQE;
+	dim->dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
 	dim->event_ctr = 0;
 	dim->packets = 0;
 	dim->bytes = 0;
@@ -1459,7 +1483,7 @@ static void bcm_sysport_init_dim(struct bcm_sysport_priv *priv,
 static void bcm_sysport_init_rx_coalesce(struct bcm_sysport_priv *priv)
 {
 	struct bcm_sysport_net_dim *dim = &priv->dim;
-	struct net_dim_cq_moder moder;
+	struct dim_cq_moder moder;
 	u32 usecs, pkts;
 
 	usecs = priv->rx_coalesce_usecs;
@@ -1479,28 +1503,14 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 				    unsigned int index)
 {
 	struct bcm_sysport_tx_ring *ring = &priv->tx_rings[index];
-	struct device *kdev = &priv->pdev->dev;
 	size_t size;
-	void *p;
 	u32 reg;
 
 	/* Simple descriptors partitioning for now */
 	size = 256;
 
-	/* We just need one DMA descriptor which is DMA-able, since writing to
-	 * the port will allocate a new descriptor in its internal linked-list
-	 */
-	p = dma_zalloc_coherent(kdev, sizeof(struct dma_desc), &ring->desc_dma,
-				GFP_KERNEL);
-	if (!p) {
-		netif_err(priv, hw, priv->netdev, "DMA alloc failed\n");
-		return -ENOMEM;
-	}
-
 	ring->cbs = kcalloc(size, sizeof(struct bcm_sysport_cb), GFP_KERNEL);
 	if (!ring->cbs) {
-		dma_free_coherent(kdev, sizeof(struct dma_desc),
-				  ring->desc_cpu, ring->desc_dma);
 		netif_err(priv, hw, priv->netdev, "CB allocation failed\n");
 		return -ENOMEM;
 	}
@@ -1508,12 +1518,11 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 	/* Initialize SW view of the ring */
 	spin_lock_init(&ring->lock);
 	ring->priv = priv;
-	netif_tx_napi_add(priv->netdev, &ring->napi, bcm_sysport_tx_poll, 64);
+	netif_napi_add_tx(priv->netdev, &ring->napi, bcm_sysport_tx_poll);
 	ring->index = index;
 	ring->size = size;
 	ring->clean_index = 0;
 	ring->alloc_size = ring->size;
-	ring->desc_cpu = p;
 	ring->desc_count = ring->size;
 	ring->curr_desc = 0;
 
@@ -1533,7 +1542,13 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 		reg |= RING_IGNORE_STATUS;
 	}
 	tdma_writel(priv, reg, TDMA_DESC_RING_MAPPING(index));
-	tdma_writel(priv, 0, TDMA_DESC_RING_PCP_DEI_VID(index));
+	reg = 0;
+	/* Adjust the packet size calculations if SYSTEMPORT is responsible
+	 * for HW insertion of VLAN tags
+	 */
+	if (priv->netdev->features & NETIF_F_HW_VLAN_CTAG_TX)
+		reg = VLAN_HLEN << RING_PKT_SIZE_ADJ_SHIFT;
+	tdma_writel(priv, reg, TDMA_DESC_RING_PCP_DEI_VID(index));
 
 	/* Enable ACB algorithm 2 */
 	reg = tdma_readl(priv, TDMA_CONTROL);
@@ -1568,8 +1583,8 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 	napi_enable(&ring->napi);
 
 	netif_dbg(priv, hw, priv->netdev,
-		  "TDMA cfg, size=%d, desc_cpu=%p switch q=%d,port=%d\n",
-		  ring->size, ring->desc_cpu, ring->switch_queue,
+		  "TDMA cfg, size=%d, switch q=%d,port=%d\n",
+		  ring->size, ring->switch_queue,
 		  ring->switch_port);
 
 	return 0;
@@ -1579,7 +1594,6 @@ static void bcm_sysport_fini_tx_ring(struct bcm_sysport_priv *priv,
 				     unsigned int index)
 {
 	struct bcm_sysport_tx_ring *ring = &priv->tx_rings[index];
-	struct device *kdev = &priv->pdev->dev;
 	u32 reg;
 
 	/* Caller should stop the TDMA engine */
@@ -1601,12 +1615,6 @@ static void bcm_sysport_fini_tx_ring(struct bcm_sysport_priv *priv,
 
 	kfree(ring->cbs);
 	ring->cbs = NULL;
-
-	if (ring->desc_dma) {
-		dma_free_coherent(kdev, sizeof(struct dma_desc),
-				  ring->desc_cpu, ring->desc_dma);
-		ring->desc_dma = 0;
-	}
 	ring->size = 0;
 	ring->alloc_size = 0;
 
@@ -1813,7 +1821,7 @@ static inline void umac_reset(struct bcm_sysport_priv *priv)
 }
 
 static void umac_set_hw_addr(struct bcm_sysport_priv *priv,
-			     unsigned char *addr)
+			     const unsigned char *addr)
 {
 	u32 mac0 = (addr[0] << 24) | (addr[1] << 16) | (addr[2] << 8) |
 		    addr[3];
@@ -1845,7 +1853,7 @@ static int bcm_sysport_change_mac(struct net_device *dev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EINVAL;
 
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, addr->sa_data);
 
 	/* interface is disabled, changes to MAC will be reflected on next
 	 * open call
@@ -1948,6 +1956,12 @@ static int bcm_sysport_open(struct net_device *dev)
 	unsigned int i;
 	int ret;
 
+	ret = clk_prepare_enable(priv->clk);
+	if (ret) {
+		netdev_err(dev, "could not enable priv clock\n");
+		return ret;
+	}
+
 	/* Reset UniMAC */
 	umac_reset(priv);
 
@@ -1966,22 +1980,24 @@ static int bcm_sysport_open(struct net_device *dev)
 	else
 		gib_set_pad_extension(priv);
 
+	/* Apply features again in case we changed them while interface was
+	 * down
+	 */
+	bcm_sysport_set_features(dev, dev->features);
+
 	/* Set MAC address */
 	umac_set_hw_addr(priv, dev->dev_addr);
-
-	/* Read CRC forward */
-	if (!priv->is_lite)
-		priv->crc_fwd = !!(umac_readl(priv, UMAC_CMD) & CMD_CRC_FWD);
-	else
-		priv->crc_fwd = !((gib_readl(priv, GIB_CONTROL) &
-				  GIB_FCS_STRIP) >> GIB_FCS_STRIP_SHIFT);
 
 	phydev = of_phy_connect(dev, priv->phy_dn, bcm_sysport_adj_link,
 				0, priv->phy_interface);
 	if (!phydev) {
 		netdev_err(dev, "could not attach to PHY\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto out_clk_disable;
 	}
+
+	/* Indicate that the MAC is responsible for PHY PM */
+	phydev->mac_managed_pm = true;
 
 	/* Reset house keeping link status */
 	priv->old_duplex = -1;
@@ -2059,6 +2075,8 @@ out_free_irq0:
 	free_irq(priv->irq0, dev);
 out_phy_disconnect:
 	phy_disconnect(phydev);
+out_clk_disable:
+	clk_disable_unprepare(priv->clk);
 	return ret;
 }
 
@@ -2117,6 +2135,8 @@ static int bcm_sysport_stop(struct net_device *dev)
 	/* Disconnect from PHY */
 	phy_disconnect(dev->phydev);
 
+	clk_disable_unprepare(priv->clk);
+
 	return 0;
 }
 
@@ -2168,13 +2188,9 @@ static int bcm_sysport_rule_set(struct bcm_sysport_priv *priv,
 	if (nfc->fs.ring_cookie != RX_CLS_FLOW_WAKE)
 		return -EOPNOTSUPP;
 
-	/* All filters are already in use, we cannot match more rules */
-	if (bitmap_weight(priv->filters, RXCHK_BRCM_TAG_MAX) ==
-	    RXCHK_BRCM_TAG_MAX)
-		return -ENOSPC;
-
 	index = find_first_zero_bit(priv->filters, RXCHK_BRCM_TAG_MAX);
 	if (index >= RXCHK_BRCM_TAG_MAX)
+		/* All filters are already in use, we cannot match more rules */
 		return -ENOSPC;
 
 	/* Location is the classification ID, and index is the position
@@ -2186,6 +2202,7 @@ static int bcm_sysport_rule_set(struct bcm_sysport_priv *priv,
 	rxchk_writel(priv, reg, RXCHK_BRCM_TAG(index));
 	rxchk_writel(priv, 0xff00ffff, RXCHK_BRCM_TAG_MASK(index));
 
+	priv->filters_loc[index] = nfc->fs.location;
 	set_bit(index, priv->filters);
 
 	return 0;
@@ -2205,6 +2222,7 @@ static int bcm_sysport_rule_del(struct bcm_sysport_priv *priv,
 	 * be taken care of during suspend time by bcm_sysport_suspend_to_wol
 	 */
 	clear_bit(index, priv->filters);
+	priv->filters_loc[index] = 0;
 
 	return 0;
 }
@@ -2247,6 +2265,9 @@ static int bcm_sysport_set_rxnfc(struct net_device *dev,
 }
 
 static const struct ethtool_ops bcm_sysport_ethtool_ops = {
+	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
+				     ETHTOOL_COALESCE_MAX_FRAMES |
+				     ETHTOOL_COALESCE_USE_ADAPTIVE_RX,
 	.get_drvinfo		= bcm_sysport_get_drvinfo,
 	.get_msglevel		= bcm_sysport_get_msglvl,
 	.set_msglevel		= bcm_sysport_set_msglvl,
@@ -2265,8 +2286,7 @@ static const struct ethtool_ops bcm_sysport_ethtool_ops = {
 };
 
 static u16 bcm_sysport_select_queue(struct net_device *dev, struct sk_buff *skb,
-				    struct net_device *sb_dev,
-				    select_queue_fallback_t fallback)
+				    struct net_device *sb_dev)
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	u16 queue = skb_get_queue_mapping(skb);
@@ -2274,7 +2294,7 @@ static u16 bcm_sysport_select_queue(struct net_device *dev, struct sk_buff *skb,
 	unsigned int q, port;
 
 	if (!netdev_uses_dsa(dev))
-		return fallback(dev, skb, NULL);
+		return netdev_pick_tx(dev, skb, NULL);
 
 	/* DSA tagging layer will have configured the correct queue */
 	q = BRCM_TAG_GET_QUEUE(queue);
@@ -2282,7 +2302,7 @@ static u16 bcm_sysport_select_queue(struct net_device *dev, struct sk_buff *skb,
 	tx_ring = priv->ring_map[q + port * priv->per_port_num_tx_queues];
 
 	if (unlikely(!tx_ring))
-		return fallback(dev, skb, NULL);
+		return netdev_pick_tx(dev, skb, NULL);
 
 	return tx_ring->index;
 }
@@ -2302,33 +2322,22 @@ static const struct net_device_ops bcm_sysport_netdev_ops = {
 	.ndo_select_queue	= bcm_sysport_select_queue,
 };
 
-static int bcm_sysport_map_queues(struct notifier_block *nb,
-				  struct dsa_notifier_register_info *info)
+static int bcm_sysport_map_queues(struct net_device *dev,
+				  struct net_device *slave_dev)
 {
+	struct dsa_port *dp = dsa_port_from_netdev(slave_dev);
+	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	struct bcm_sysport_tx_ring *ring;
-	struct bcm_sysport_priv *priv;
-	struct net_device *slave_dev;
 	unsigned int num_tx_queues;
-	unsigned int q, start, port;
-	struct net_device *dev;
-
-	priv = container_of(nb, struct bcm_sysport_priv, dsa_notifier);
-	if (priv->netdev != info->master)
-		return 0;
-
-	dev = info->master;
+	unsigned int q, qp, port;
 
 	/* We can't be setting up queue inspection for non directly attached
 	 * switches
 	 */
-	if (info->switch_number)
+	if (dp->ds->index)
 		return 0;
 
-	if (dev->netdev_ops != &bcm_sysport_netdev_ops)
-		return 0;
-
-	port = info->port_number;
-	slave_dev = info->info.dev;
+	port = dp->index;
 
 	/* On SYSTEMPORT Lite we have twice as less queues, so we cannot do a
 	 * 1:1 mapping, we can only do a 2:1 mapping. By reducing the number of
@@ -2348,36 +2357,84 @@ static int bcm_sysport_map_queues(struct notifier_block *nb,
 
 	priv->per_port_num_tx_queues = num_tx_queues;
 
-	start = find_first_zero_bit(&priv->queue_bitmap, dev->num_tx_queues);
-	for (q = 0; q < num_tx_queues; q++) {
-		ring = &priv->tx_rings[q + start];
+	for (q = 0, qp = 0; q < dev->num_tx_queues && qp < num_tx_queues;
+	     q++) {
+		ring = &priv->tx_rings[q];
+
+		if (ring->inspect)
+			continue;
 
 		/* Just remember the mapping actual programming done
 		 * during bcm_sysport_init_tx_ring
 		 */
-		ring->switch_queue = q;
+		ring->switch_queue = qp;
 		ring->switch_port = port;
 		ring->inspect = true;
-		priv->ring_map[q + port * num_tx_queues] = ring;
-
-		/* Set all queues as being used now */
-		set_bit(q + start, &priv->queue_bitmap);
+		priv->ring_map[qp + port * num_tx_queues] = ring;
+		qp++;
 	}
 
 	return 0;
 }
 
-static int bcm_sysport_dsa_notifier(struct notifier_block *nb,
-				    unsigned long event, void *ptr)
+static int bcm_sysport_unmap_queues(struct net_device *dev,
+				    struct net_device *slave_dev)
 {
-	struct dsa_notifier_register_info *info;
+	struct dsa_port *dp = dsa_port_from_netdev(slave_dev);
+	struct bcm_sysport_priv *priv = netdev_priv(dev);
+	struct bcm_sysport_tx_ring *ring;
+	unsigned int num_tx_queues;
+	unsigned int q, qp, port;
 
-	if (event != DSA_PORT_REGISTER)
+	port = dp->index;
+
+	num_tx_queues = slave_dev->real_num_tx_queues;
+
+	for (q = 0; q < dev->num_tx_queues; q++) {
+		ring = &priv->tx_rings[q];
+
+		if (ring->switch_port != port)
+			continue;
+
+		if (!ring->inspect)
+			continue;
+
+		ring->inspect = false;
+		qp = ring->switch_queue;
+		priv->ring_map[qp + port * num_tx_queues] = NULL;
+	}
+
+	return 0;
+}
+
+static int bcm_sysport_netdevice_event(struct notifier_block *nb,
+				       unsigned long event, void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+	struct netdev_notifier_changeupper_info *info = ptr;
+	struct bcm_sysport_priv *priv;
+	int ret = 0;
+
+	priv = container_of(nb, struct bcm_sysport_priv, netdev_notifier);
+	if (priv->netdev != dev)
 		return NOTIFY_DONE;
 
-	info = ptr;
+	switch (event) {
+	case NETDEV_CHANGEUPPER:
+		if (dev->netdev_ops != &bcm_sysport_netdev_ops)
+			return NOTIFY_DONE;
 
-	return notifier_from_errno(bcm_sysport_map_queues(nb, info));
+		if (!dsa_slave_dev_check(info->upper_dev))
+			return NOTIFY_DONE;
+
+		if (info->linking)
+			ret = bcm_sysport_map_queues(dev, info->upper_dev);
+		else
+			ret = bcm_sysport_unmap_queues(dev, info->upper_dev);
+		break;
+	}
+
+	return notifier_from_errno(ret);
 }
 
 #define REV_FMT	"v%2x.%02x"
@@ -2411,16 +2468,21 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 	struct bcm_sysport_priv *priv;
 	struct device_node *dn;
 	struct net_device *dev;
-	const void *macaddr;
-	struct resource *r;
 	u32 txq, rxq;
 	int ret;
 
 	dn = pdev->dev.of_node;
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	of_id = of_match_node(bcm_sysport_of_match, dn);
 	if (!of_id || !of_id->data)
 		return -EINVAL;
+
+	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(40));
+	if (ret)
+		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+	if (ret) {
+		dev_err(&pdev->dev, "unable to set DMA mask: %d\n", ret);
+		return ret;
+	}
 
 	/* Fairly quickly we need to know the type of adapter we have */
 	params = of_id->data;
@@ -2442,6 +2504,12 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 	/* Initialize private members */
 	priv = netdev_priv(dev);
 
+	priv->clk = devm_clk_get_optional(&pdev->dev, "sw_sysport");
+	if (IS_ERR(priv->clk)) {
+		ret = PTR_ERR(priv->clk);
+		goto err_free_netdev;
+	}
+
 	/* Allocate number of TX rings */
 	priv->tx_rings = devm_kcalloc(&pdev->dev, txq,
 				      sizeof(struct bcm_sysport_tx_ring),
@@ -2462,12 +2530,11 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 		priv->wol_irq = platform_get_irq(pdev, 1);
 	}
 	if (priv->irq0 <= 0 || (priv->irq1 <= 0 && !priv->is_lite)) {
-		dev_err(&pdev->dev, "invalid interrupts\n");
 		ret = -EINVAL;
 		goto err_free_netdev;
 	}
 
-	priv->base = devm_ioremap_resource(&pdev->dev, r);
+	priv->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->base)) {
 		ret = PTR_ERR(priv->base);
 		goto err_free_netdev;
@@ -2476,9 +2543,9 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 	priv->netdev = dev;
 	priv->pdev = pdev;
 
-	priv->phy_interface = of_get_phy_mode(dn);
+	ret = of_get_phy_mode(dn, &priv->phy_interface);
 	/* Default to GMII interface mode */
-	if ((int)priv->phy_interface < 0)
+	if (ret)
 		priv->phy_interface = PHY_INTERFACE_MODE_GMII;
 
 	/* In the case of a fixed PHY, the DT node associated
@@ -2495,23 +2562,23 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 	}
 
 	/* Initialize netdevice members */
-	macaddr = of_get_mac_address(dn);
-	if (!macaddr || !is_valid_ether_addr(macaddr)) {
+	ret = of_get_ethdev_address(dn, dev);
+	if (ret) {
 		dev_warn(&pdev->dev, "using random Ethernet MAC\n");
 		eth_hw_addr_random(dev);
-	} else {
-		ether_addr_copy(dev->dev_addr, macaddr);
 	}
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	dev_set_drvdata(&pdev->dev, dev);
 	dev->ethtool_ops = &bcm_sysport_ethtool_ops;
 	dev->netdev_ops = &bcm_sysport_netdev_ops;
-	netif_napi_add(dev, &priv->napi, bcm_sysport_poll, 64);
+	netif_napi_add(dev, &priv->napi, bcm_sysport_poll);
 
-	/* HW supported features, none enabled by default */
-	dev->hw_features |= NETIF_F_RXCSUM | NETIF_F_HIGHDMA |
-				NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
+	dev->features |= NETIF_F_RXCSUM | NETIF_F_HIGHDMA |
+			 NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
+			 NETIF_F_HW_VLAN_CTAG_TX;
+	dev->hw_features |= dev->features;
+	dev->vlan_features |= dev->features;
 	dev->max_mtu = UMAC_MAX_MTU_SIZE;
 
 	/* Request the WOL interrupt and advertise suspend if available */
@@ -2520,6 +2587,12 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 			       bcm_sysport_wol_isr, 0, dev->name, priv);
 	if (!ret)
 		device_set_wakeup_capable(&pdev->dev, 1);
+
+	priv->wol_clk = devm_clk_get_optional(&pdev->dev, "sw_sysportwol");
+	if (IS_ERR(priv->wol_clk)) {
+		ret = PTR_ERR(priv->wol_clk);
+		goto err_deregister_fixed_link;
+	}
 
 	/* Set the needed headroom once and for all */
 	BUILD_BUG_ON(sizeof(struct bcm_tsb) != 8);
@@ -2531,9 +2604,9 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 	priv->rx_max_coalesced_frames = 1;
 	u64_stats_init(&priv->syncp);
 
-	priv->dsa_notifier.notifier_call = bcm_sysport_dsa_notifier;
+	priv->netdev_notifier.notifier_call = bcm_sysport_netdevice_event;
 
-	ret = register_dsa_notifier(&priv->dsa_notifier);
+	ret = register_netdevice_notifier(&priv->netdev_notifier);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register DSA notifier\n");
 		goto err_deregister_fixed_link;
@@ -2545,18 +2618,28 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 		goto err_deregister_notifier;
 	}
 
+	ret = clk_prepare_enable(priv->clk);
+	if (ret) {
+		dev_err(&pdev->dev, "could not enable priv clock\n");
+		goto err_deregister_netdev;
+	}
+
 	priv->rev = topctrl_readl(priv, REV_CNTL) & REV_MASK;
 	dev_info(&pdev->dev,
-		 "Broadcom SYSTEMPORT%s" REV_FMT
-		 " at 0x%p (irqs: %d, %d, TXQs: %d, RXQs: %d)\n",
+		 "Broadcom SYSTEMPORT%s " REV_FMT
+		 " (irqs: %d, %d, TXQs: %d, RXQs: %d)\n",
 		 priv->is_lite ? " Lite" : "",
 		 (priv->rev >> 8) & 0xff, priv->rev & 0xff,
-		 priv->base, priv->irq0, priv->irq1, txq, rxq);
+		 priv->irq0, priv->irq1, txq, rxq);
+
+	clk_disable_unprepare(priv->clk);
 
 	return 0;
 
+err_deregister_netdev:
+	unregister_netdev(dev);
 err_deregister_notifier:
-	unregister_dsa_notifier(&priv->dsa_notifier);
+	unregister_netdevice_notifier(&priv->netdev_notifier);
 err_deregister_fixed_link:
 	if (of_phy_is_fixed_link(dn))
 		of_phy_deregister_fixed_link(dn);
@@ -2574,7 +2657,7 @@ static int bcm_sysport_remove(struct platform_device *pdev)
 	/* Not much to do, ndo_close has been called
 	 * and we use managed allocations
 	 */
-	unregister_dsa_notifier(&priv->dsa_notifier);
+	unregister_netdevice_notifier(&priv->netdev_notifier);
 	unregister_netdev(dev);
 	if (of_phy_is_fixed_link(dn))
 		of_phy_deregister_fixed_link(dn);
@@ -2706,8 +2789,12 @@ static int __maybe_unused bcm_sysport_suspend(struct device *d)
 	bcm_sysport_fini_rx_ring(priv);
 
 	/* Get prepared for Wake-on-LAN */
-	if (device_may_wakeup(d) && priv->wolopts)
+	if (device_may_wakeup(d) && priv->wolopts) {
+		clk_prepare_enable(priv->wol_clk);
 		ret = bcm_sysport_suspend_to_wol(priv);
+	}
+
+	clk_disable_unprepare(priv->clk);
 
 	return ret;
 }
@@ -2717,11 +2804,19 @@ static int __maybe_unused bcm_sysport_resume(struct device *d)
 	struct net_device *dev = dev_get_drvdata(d);
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	unsigned int i;
-	u32 reg;
 	int ret;
 
 	if (!netif_running(dev))
 		return 0;
+
+	ret = clk_prepare_enable(priv->clk);
+	if (ret) {
+		netdev_err(dev, "could not enable priv clock\n");
+		return ret;
+	}
+
+	if (priv->wolopts)
+		clk_disable_unprepare(priv->wol_clk);
 
 	umac_reset(priv);
 
@@ -2762,12 +2857,8 @@ static int __maybe_unused bcm_sysport_resume(struct device *d)
 		goto out_free_rx_ring;
 	}
 
-	/* Enable rxhck */
-	if (priv->rx_chk_en) {
-		reg = rxchk_readl(priv, RXCHK_CONTROL);
-		reg |= RXCHK_EN;
-		rxchk_writel(priv, reg, RXCHK_CONTROL);
-	}
+	/* Restore enabled features */
+	bcm_sysport_set_features(dev, dev->features);
 
 	rbuf_init(priv);
 
@@ -2806,6 +2897,7 @@ out_free_rx_ring:
 out_free_tx_rings:
 	for (i = 0; i < dev->num_tx_queues; i++)
 		bcm_sysport_fini_tx_ring(priv, i);
+	clk_disable_unprepare(priv->clk);
 	return ret;
 }
 

@@ -4,7 +4,7 @@
  *
  * Copyright (C) 2011 Google, Inc.
  * Copyright (C) 2019, 2020 Linaro Ltd.
- * Copyright (c) 2021, 2022 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2021, 2022 Rockchip Electronics Co., Ltd.
  *
  * Portions based off of Andrew Davis' SRAM heap:
  * Copyright (C) 2019 Texas Instruments Incorporated - http://www.ti.com/
@@ -58,12 +58,11 @@ struct dma_heap_attachment {
 	bool uncached;
 };
 
-#define LOW_ORDER_GFP (GFP_HIGHUSER | __GFP_ZERO | __GFP_COMP)
-#define MID_ORDER_GFP (LOW_ORDER_GFP | __GFP_NOWARN)
+#define LOW_ORDER_GFP (GFP_HIGHUSER | __GFP_ZERO)
 #define HIGH_ORDER_GFP  (((GFP_HIGHUSER | __GFP_ZERO | __GFP_NOWARN \
 				| __GFP_NORETRY) & ~__GFP_RECLAIM) \
 				| __GFP_COMP)
-static gfp_t order_flags[] = {HIGH_ORDER_GFP, MID_ORDER_GFP, LOW_ORDER_GFP};
+static gfp_t order_flags[] = {HIGH_ORDER_GFP, HIGH_ORDER_GFP, LOW_ORDER_GFP};
 /*
  * The selection of the orders used for allocation (1MB, 64K, 4K) is designed
  * to match with the sizes often found in IOMMUs. Using order 4 pages instead
@@ -72,8 +71,8 @@ static gfp_t order_flags[] = {HIGH_ORDER_GFP, MID_ORDER_GFP, LOW_ORDER_GFP};
  */
 static unsigned int orders[] = {8, 4, 0};
 #define NUM_ORDERS ARRAY_SIZE(orders)
-struct dmabuf_page_pool *pools[NUM_ORDERS];
-struct dmabuf_page_pool *dma32_pools[NUM_ORDERS];
+static struct dmabuf_page_pool *pools[NUM_ORDERS];
+static struct dmabuf_page_pool *dma32_pools[NUM_ORDERS];
 
 static struct sg_table *dup_sg_table(struct sg_table *table)
 {
@@ -266,7 +265,7 @@ static int system_heap_sgl_sync_range(struct device *dev,
 	return 0;
 }
 
-static int
+static int __maybe_unused
 system_heap_dma_buf_begin_cpu_access_partial(struct dma_buf *dmabuf,
 					     enum dma_data_direction direction,
 					     unsigned int offset,
@@ -296,7 +295,7 @@ system_heap_dma_buf_begin_cpu_access_partial(struct dma_buf *dmabuf,
 	return ret;
 }
 
-static int
+static int __maybe_unused
 system_heap_dma_buf_end_cpu_access_partial(struct dma_buf *dmabuf,
 					   enum dma_data_direction direction,
 					   unsigned int offset,
@@ -479,8 +478,10 @@ static const struct dma_buf_ops system_heap_buf_ops = {
 	.unmap_dma_buf = system_heap_unmap_dma_buf,
 	.begin_cpu_access = system_heap_dma_buf_begin_cpu_access,
 	.end_cpu_access = system_heap_dma_buf_end_cpu_access,
+#ifdef CONFIG_DMABUF_PARTIAL
 	.begin_cpu_access_partial = system_heap_dma_buf_begin_cpu_access_partial,
 	.end_cpu_access_partial = system_heap_dma_buf_end_cpu_access_partial,
+#endif
 	.mmap = system_heap_mmap,
 	.vmap = system_heap_vmap,
 	.vunmap = system_heap_vunmap,
@@ -703,9 +704,6 @@ static int set_heap_dev_dma(struct device *heap_dev)
 	if (!heap_dev)
 		return -EINVAL;
 
-	/* Set a dma ops(swiotlb) for the heap device. */
-	arch_setup_dma_ops(heap_dev, 0, 0, NULL, 0);
-
 	dma_coerce_mask_and_coherent(heap_dev, DMA_BIT_MASK(64));
 
 	if (!heap_dev->dma_parms) {
@@ -770,7 +768,8 @@ static int system_heap_create(void)
 	}
 
 	for (i = 0; i < NUM_ORDERS; i++) {
-		dma32_pools[i] = dmabuf_page_pool_create(order_flags[i] | GFP_DMA32, orders[i]);
+		dma32_pools[i] = dmabuf_page_pool_create((order_flags[i] & ~__GFP_HIGHMEM) |
+							 GFP_DMA32, orders[i]);
 
 		if (!dma32_pools[i]) {
 			int j;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * cyttsp4_core.c
  * Cypress TrueTouch(TM) Standard Product V4 Core driver module.
@@ -8,18 +9,7 @@
  *
  * Copyright (C) 2012 Cypress Semiconductor
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2, and only version 2, as published by the
- * Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  * Contact Cypress Semiconductor at www.cypress.com <ttdrivers@cypress.com>
- *
  */
 
 #include "cyttsp4_core.h"
@@ -39,6 +29,20 @@
 #define CY_CORE_WAKEUP_TIMEOUT			500
 
 #define CY_CORE_STARTUP_RETRY_COUNT		3
+
+static const char * const cyttsp4_tch_abs_string[] = {
+	[CY_TCH_X]	= "X",
+	[CY_TCH_Y]	= "Y",
+	[CY_TCH_P]	= "P",
+	[CY_TCH_T]	= "T",
+	[CY_TCH_E]	= "E",
+	[CY_TCH_O]	= "O",
+	[CY_TCH_W]	= "W",
+	[CY_TCH_MAJ]	= "MAJ",
+	[CY_TCH_MIN]	= "MIN",
+	[CY_TCH_OR]	= "OR",
+	[CY_TCH_NUM_ABS] = "INVALID"
+};
 
 static const u8 ldr_exit[] = {
 	0xFF, 0x01, 0x3B, 0x00, 0x00, 0x4F, 0x6D, 0x17
@@ -754,8 +758,7 @@ static void cyttsp4_report_slot_liftoff(struct cyttsp4_mt_data *md,
 
 	for (t = 0; t < max_slots; t++) {
 		input_mt_slot(md->input, t);
-		input_mt_report_slot_state(md->input,
-			MT_TOOL_FINGER, false);
+		input_mt_report_slot_inactive(md->input);
 	}
 }
 
@@ -855,7 +858,7 @@ static void cyttsp4_final_sync(struct input_dev *input, int max_slots, int *ids)
 		if (ids[t])
 			continue;
 		input_mt_slot(input, t);
-		input_mt_report_slot_state(input, MT_TOOL_FINGER, false);
+		input_mt_report_slot_inactive(input);
 	}
 
 	input_sync(input);
@@ -868,7 +871,7 @@ static void cyttsp4_get_mt_touches(struct cyttsp4_mt_data *md, int num_cur_tch)
 	struct cyttsp4_touch tch;
 	int sig;
 	int i, j, t = 0;
-	int ids[max(CY_TMA1036_MAX_TCH, CY_TMA4XX_MAX_TCH)];
+	int ids[MAX(CY_TMA1036_MAX_TCH, CY_TMA4XX_MAX_TCH)];
 
 	memset(ids, 0, si->si_ofs.tch_abs[CY_TCH_T].max * sizeof(int));
 	for (i = 0; i < num_cur_tch; i++) {

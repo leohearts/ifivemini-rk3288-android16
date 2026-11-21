@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * isl29125.c - Support for Intersil ISL29125 RGB light sensor
  *
  * Copyright (c) 2014 Peter Meerwald <pmeerw@pmeerw.net>
- *
- * This file is subject to the terms and conditions of version 2 of
- * the GNU General Public License.  See the file COPYING in the main
- * directory of this archive for more details.
  *
  * RGB light sensor with 16-bit channels for red, green, blue);
  * 7-bit I2C slave address 0x44
@@ -220,7 +217,7 @@ static const struct iio_info isl29125_info = {
 	.attrs = &isl29125_attribute_group,
 };
 
-static int isl29125_buffer_preenable(struct iio_dev *indio_dev)
+static int isl29125_buffer_postenable(struct iio_dev *indio_dev)
 {
 	struct isl29125_data *data = iio_priv(indio_dev);
 
@@ -232,11 +229,6 @@ static int isl29125_buffer_preenable(struct iio_dev *indio_dev)
 static int isl29125_buffer_predisable(struct iio_dev *indio_dev)
 {
 	struct isl29125_data *data = iio_priv(indio_dev);
-	int ret;
-
-	ret = iio_triggered_buffer_predisable(indio_dev);
-	if (ret < 0)
-		return ret;
 
 	data->conf1 &= ~ISL29125_MODE_MASK;
 	data->conf1 |= ISL29125_MODE_PD;
@@ -245,8 +237,7 @@ static int isl29125_buffer_predisable(struct iio_dev *indio_dev)
 }
 
 static const struct iio_buffer_setup_ops isl29125_buffer_setup_ops = {
-	.preenable = isl29125_buffer_preenable,
-	.postenable = &iio_triggered_buffer_postenable,
+	.postenable = isl29125_buffer_postenable,
 	.predisable = isl29125_buffer_predisable,
 };
 
@@ -265,7 +256,6 @@ static int isl29125_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, indio_dev);
 	data->client = client;
 
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->info = &isl29125_info;
 	indio_dev->name = ISL29125_DRV_NAME;
 	indio_dev->channels = isl29125_channels;
@@ -310,18 +300,15 @@ static int isl29125_powerdown(struct isl29125_data *data)
 		(data->conf1 & ~ISL29125_MODE_MASK) | ISL29125_MODE_PD);
 }
 
-static int isl29125_remove(struct i2c_client *client)
+static void isl29125_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 
 	iio_device_unregister(indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 	isl29125_powerdown(iio_priv(indio_dev));
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int isl29125_suspend(struct device *dev)
 {
 	struct isl29125_data *data = iio_priv(i2c_get_clientdata(
@@ -336,9 +323,9 @@ static int isl29125_resume(struct device *dev)
 	return i2c_smbus_write_byte_data(data->client, ISL29125_CONF1,
 		data->conf1);
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(isl29125_pm_ops, isl29125_suspend, isl29125_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(isl29125_pm_ops, isl29125_suspend,
+				isl29125_resume);
 
 static const struct i2c_device_id isl29125_id[] = {
 	{ "isl29125", 0 },
@@ -349,7 +336,7 @@ MODULE_DEVICE_TABLE(i2c, isl29125_id);
 static struct i2c_driver isl29125_driver = {
 	.driver = {
 		.name	= ISL29125_DRV_NAME,
-		.pm	= &isl29125_pm_ops,
+		.pm	= pm_sleep_ptr(&isl29125_pm_ops),
 	},
 	.probe		= isl29125_probe,
 	.remove		= isl29125_remove,

@@ -135,7 +135,6 @@
 #include <linux/list.h>
 
 #define XGBE_DRV_NAME		"amd-xgbe"
-#define XGBE_DRV_VERSION	"1.0.3"
 #define XGBE_DRV_DESC		"AMD 10 Gigabit Ethernet Driver"
 
 /* Descriptor related defines */
@@ -152,7 +151,8 @@
 #define XGBE_TX_MAX_BUF_SIZE	(0x3fff & ~(64 - 1))
 
 /* Descriptors required for maximum contiguous TSO/GSO packet */
-#define XGBE_TX_MAX_SPLIT	((GSO_MAX_SIZE / XGBE_TX_MAX_BUF_SIZE) + 1)
+#define XGBE_TX_MAX_SPLIT	\
+	((GSO_LEGACY_MAX_SIZE / XGBE_TX_MAX_BUF_SIZE) + 1)
 
 /* Maximum possible descriptors needed for an SKB:
  * - Maximum number of SKB frags
@@ -290,12 +290,13 @@
 /* Auto-negotiation */
 #define XGBE_AN_MS_TIMEOUT		500
 #define XGBE_LINK_TIMEOUT		5
+#define XGBE_KR_TRAINING_WAIT_ITER	50
 
-#define XGBE_SGMII_AN_LINK_STATUS	BIT(1)
+#define XGBE_SGMII_AN_LINK_DUPLEX	BIT(1)
 #define XGBE_SGMII_AN_LINK_SPEED	(BIT(2) | BIT(3))
 #define XGBE_SGMII_AN_LINK_SPEED_100	0x04
 #define XGBE_SGMII_AN_LINK_SPEED_1000	0x08
-#define XGBE_SGMII_AN_LINK_DUPLEX	BIT(4)
+#define XGBE_SGMII_AN_LINK_STATUS	BIT(4)
 
 /* ECC correctable error notification window (seconds) */
 #define XGBE_ECC_LIMIT			60
@@ -417,7 +418,7 @@ struct xgbe_rx_ring_data {
 
 /* Structure used to hold information related to the descriptor
  * and the packet associated with the descriptor (always use
- * use the XGBE_GET_DESC_DATA macro to access this data from the ring)
+ * the XGBE_GET_DESC_DATA macro to access this data from the ring)
  */
 struct xgbe_ring_data {
 	struct xgbe_ring_desc *rdesc;	/* Virtual address of descriptor */
@@ -611,6 +612,31 @@ enum xgbe_mdio_mode {
 	XGBE_MDIO_MODE_CL45,
 };
 
+enum xgbe_mb_cmd {
+	XGBE_MB_CMD_POWER_OFF = 0,
+	XGBE_MB_CMD_SET_1G,
+	XGBE_MB_CMD_SET_2_5G,
+	XGBE_MB_CMD_SET_10G_SFI,
+	XGBE_MB_CMD_SET_10G_KR,
+	XGBE_MB_CMD_RRC
+};
+
+enum xgbe_mb_subcmd {
+	XGBE_MB_SUBCMD_NONE = 0,
+
+	/* 10GbE SFP subcommands */
+	XGBE_MB_SUBCMD_ACTIVE = 0,
+	XGBE_MB_SUBCMD_PASSIVE_1M,
+	XGBE_MB_SUBCMD_PASSIVE_3M,
+	XGBE_MB_SUBCMD_PASSIVE_OTHER,
+
+	/* 1GbE Mode subcommands */
+	XGBE_MB_SUBCMD_10MBITS = 0,
+	XGBE_MB_SUBCMD_100MBITS,
+	XGBE_MB_SUBCMD_1G_SGMII,
+	XGBE_MB_SUBCMD_1G_KX
+};
+
 struct xgbe_phy {
 	struct ethtool_link_ksettings lks;
 
@@ -730,7 +756,7 @@ struct xgbe_ext_stats {
 struct xgbe_hw_if {
 	int (*tx_complete)(struct xgbe_ring_desc *);
 
-	int (*set_mac_address)(struct xgbe_prv_data *, u8 *addr);
+	int (*set_mac_address)(struct xgbe_prv_data *, const u8 *addr);
 	int (*config_rx_mode)(struct xgbe_prv_data *);
 
 	int (*enable_rx_csum)(struct xgbe_prv_data *);
@@ -833,6 +859,10 @@ struct xgbe_hw_if {
 	void (*enable_vxlan)(struct xgbe_prv_data *);
 	void (*disable_vxlan)(struct xgbe_prv_data *);
 	void (*set_vxlan_id)(struct xgbe_prv_data *);
+
+	/* For Split Header */
+	void (*enable_sph)(struct xgbe_prv_data *pdata);
+	void (*disable_sph)(struct xgbe_prv_data *pdata);
 };
 
 /* This structure represents implementation specific routines for an
@@ -1013,12 +1043,7 @@ struct xgbe_version_data {
 	unsigned int tx_desc_prefetch;
 	unsigned int rx_desc_prefetch;
 	unsigned int an_cdr_workaround;
-};
-
-struct xgbe_vxlan_data {
-	struct list_head list;
-	sa_family_t sa_family;
-	__be16 port;
+	unsigned int enable_rrc;
 };
 
 struct xgbe_prv_data {
@@ -1051,9 +1076,6 @@ struct xgbe_prv_data {
 	unsigned int pp2;
 	unsigned int pp3;
 	unsigned int pp4;
-
-	/* Overall device lock */
-	spinlock_t lock;
 
 	/* XPCS indirect addressing lock */
 	spinlock_t xpcs_lock;
@@ -1173,13 +1195,7 @@ struct xgbe_prv_data {
 	u32 rss_options;
 
 	/* VXLAN settings */
-	unsigned int vxlan_port_set;
-	unsigned int vxlan_offloads_set;
-	unsigned int vxlan_force_disable;
-	unsigned int vxlan_port_count;
-	struct list_head vxlan_ports;
 	u16 vxlan_port;
-	netdev_features_t vxlan_features;
 
 	/* Netdev related settings */
 	unsigned char mac_addr[ETH_ALEN];
@@ -1266,6 +1282,7 @@ struct xgbe_prv_data {
 	unsigned int parallel_detect;
 	unsigned int fec_ability;
 	unsigned long an_start;
+	unsigned long kr_start_time;
 	enum xgbe_an_mode an_mode;
 
 	/* I2C support */
@@ -1322,6 +1339,7 @@ void xgbe_init_function_ptrs_desc(struct xgbe_desc_if *);
 void xgbe_init_function_ptrs_i2c(struct xgbe_i2c_if *);
 const struct net_device_ops *xgbe_get_netdev_ops(void);
 const struct ethtool_ops *xgbe_get_ethtool_ops(void);
+const struct udp_tunnel_nic_info *xgbe_get_udp_tunnel_info(void);
 
 #ifdef CONFIG_AMD_XGBE_DCB
 const struct dcbnl_rtnl_ops *xgbe_get_dcbnl_ops(void);

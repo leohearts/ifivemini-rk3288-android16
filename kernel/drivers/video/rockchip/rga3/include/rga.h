@@ -31,7 +31,7 @@
 #define RGA_IMPORT_DMA			0x601d
 #define RGA_RELEASE_DMA			0x601e
 
-#define RGA_TASK_NUM_MAX		50
+#define RGA_TASK_NUM_MAX		256
 
 #define RGA_OUT_OF_RESOURCES		-10
 #define RGA_MALLOC_ERROR		-11
@@ -69,6 +69,17 @@
 		RGA_MODE_X_MIRROR | \
 		RGA_MODE_Y_MIRROR)
 
+enum rga_csc_mode {
+	RGA_Y2R_BT601_LIMIT			= 0x1 << 0,
+	RGA_Y2R_BT601_FULL			= 0x2 << 0,
+	RGA_Y2R_BT709_LIMIT			= 0x3 << 0,
+	RGA_Y2R_MASK				= 0x3 << 0,
+	RGA_R2Y_BT601_LIMIT			= 0x2 << 2,
+	RGA_R2Y_BT601_FULL			= 0x1 << 2,
+	RGA_R2Y_BT709_LIMIT			= 0x3 << 2,
+	RGA_R2Y_MASK				= 0x3 << 2,
+};
+
 enum rga_memory_type {
 	RGA_DMA_BUFFER = 0,
 	RGA_VIRTUAL_ADDRESS,
@@ -86,6 +97,22 @@ enum rga_scale_down_mode {
 	RGA_SCALE_DOWN_AVG	= 0x1,
 };
 
+enum RGA_SCHEDULER_CORE {
+	RGA3_SCHEDULER_CORE0	= 1 << 0,
+	RGA3_SCHEDULER_CORE1	= 1 << 1,
+	RGA2_SCHEDULER_CORE0	= 1 << 2,
+	RGA2_SCHEDULER_CORE1	= 1 << 3,
+	RGA_CORE_MASK		= 0xf,
+	RGA_NONE_CORE		= 0x0,
+};
+
+enum rga_scale_interp {
+	RGA_INTERP_DEFAULT   = 0x0,
+	RGA_INTERP_LINEAR    = 0x1,
+	RGA_INTERP_BICUBIC   = 0x2,
+	RGA_INTERP_AVERAGE   = 0x3,
+};
+
 /* RGA process mode enum */
 enum {
 	BITBLT_MODE			= 0x0,
@@ -101,6 +128,9 @@ enum {
 	RGA_RASTER_MODE			 = 0x1 << 0,
 	RGA_FBC_MODE			 = 0x1 << 1,
 	RGA_TILE_MODE			 = 0x1 << 2,
+	RGA_TILE4x4_MODE		 = 0x1 << 3,
+	RGA_RKFBC_MODE			 = 0x1 << 4,
+	RGA_AFBC32x8_MODE		 = 0x1 << 5,
 };
 
 enum {
@@ -108,6 +138,7 @@ enum {
 	RGA_10BIT_INCOMPACT		= 0x1,
 };
 
+/* MPI context flags(request flags) */
 enum {
 	RGA_CONTEXT_NONE		= 0x0,
 	RGA_CONTEXT_SRC_FIX_ENABLE	= 0x1 << 0,
@@ -124,6 +155,9 @@ enum {
 					  RGA_CONTEXT_DST_CACHE_INFO,
 };
 
+/* request flags */
+#define RGA_REQUEST_FLAGS_EXEC_SEQUENTIAL	BIT(6)
+
 /* RGA feature */
 enum {
 	RGA_COLOR_FILL			= 0x1 << 0,
@@ -139,6 +173,11 @@ enum {
 	RGA_YUV_VDS			= 0x1 << 10,
 	RGA_OSD				= 0x1 << 11,
 	RGA_PRE_INTR			= 0x1 << 12,
+	RGA_FULL_CSC			= 0x1 << 13,
+	RGA_GAUSS			= 0x1 << 14,
+	RGA_SECURE_ACCESS		= 0x1 << 15,
+	RGA_CFA				= 0x1 << 16,
+	RGA_FULL_CSC_10BIT		= 0x1 << 17,
 };
 
 enum rga_surf_format {
@@ -199,8 +238,76 @@ enum rga_surf_format {
 	RGA_FORMAT_ABGR_4444		= 0x2f,
 
 	RGA_FORMAT_RGBA_2BPP		= 0x30,
+	RGA_FORMAT_A8			= 0x31,
+
+	RGA_FORMAT_YCbCr_444_SP		= 0x32,
+	RGA_FORMAT_YCrCb_444_SP		= 0x33,
+
+	RGA_FORMAT_Y8			= 0x34,
+	RGA_FORMAT_Y1			= 0x35,
+
+	RGA_FORMAT_RGBA_1010102		= 0x36,
+	RGA_FORMAT_BGRA_1010102		= 0x37,
+	RGA_FORMAT_ARGB_2101010		= 0x38,
+	RGA_FORMAT_ABGR_2101010		= 0x39,
+
+	RGA_FORMAT_RGBX_1010102		= 0x3a,
+	RGA_FORMAT_BGRX_1010102		= 0x3b,
+	RGA_FORMAT_XRGB_2101010		= 0x3c,
+	RGA_FORMAT_XBGR_2101010		= 0x3d,
+
+	RGA_FORMAT_YUV_101010		= 0x3e,
 
 	RGA_FORMAT_UNKNOWN		= 0x100,
+};
+
+enum rga_alpha_mode {
+	RGA_ALPHA_STRAIGHT		= 0,
+	RGA_ALPHA_INVERSE		= 1,
+};
+
+enum rga_global_blend_mode {
+	RGA_ALPHA_GLOBAL		= 0,
+	RGA_ALPHA_PER_PIXEL		= 1,
+	RGA_ALPHA_PER_PIXEL_GLOBAL	= 2,
+};
+
+enum rga_alpha_cal_mode {
+	RGA_ALPHA_SATURATION		= 0,
+	RGA_ALPHA_NO_SATURATION		= 1,
+};
+
+enum rga_factor_mode {
+	RGA_ALPHA_ZERO			= 0,
+	RGA_ALPHA_ONE			= 1,
+	/*
+	 *   When used as a factor for the SRC channel, it indicates
+	 * the use of the DST channel's alpha value, and vice versa.
+	 */
+	RGA_ALPHA_OPPOSITE		= 2,
+	RGA_ALPHA_OPPOSITE_INVERSE	= 3,
+	RGA_ALPHA_OWN			= 4,
+};
+
+enum rga_color_mode {
+	RGA_ALPHA_PRE_MULTIPLIED	= 0,
+	RGA_ALPHA_NO_PRE_MULTIPLIED	= 1,
+};
+
+enum rga_alpha_blend_mode {
+	RGA_ALPHA_NONE			= 0,
+	RGA_ALPHA_BLEND_SRC,
+	RGA_ALPHA_BLEND_DST,
+	RGA_ALPHA_BLEND_SRC_OVER,
+	RGA_ALPHA_BLEND_DST_OVER,
+	RGA_ALPHA_BLEND_SRC_IN,
+	RGA_ALPHA_BLEND_DST_IN,
+	RGA_ALPHA_BLEND_SRC_OUT,
+	RGA_ALPHA_BLEND_DST_OUT,
+	RGA_ALPHA_BLEND_SRC_ATOP,
+	RGA_ALPHA_BLEND_DST_ATOP,
+	RGA_ALPHA_BLEND_XOR,
+	RGA_ALPHA_BLEND_CLEAR,
 };
 
 #define RGA_SCHED_PRIORITY_DEFAULT 0
@@ -331,9 +438,24 @@ struct rga_full_csc {
 	struct rga_csc_coe coe_v;
 };
 
+struct rga_csc_range {
+	uint16_t max;
+	uint16_t min;
+};
+
+struct rga_csc_clip {
+	struct rga_csc_range y;
+	struct rga_csc_range uv;
+};
+
 struct rga_mosaic_info {
 	uint8_t enable;
 	uint8_t mode;
+};
+
+struct rga_gauss_config {
+	uint32_t size;
+	uint64_t coe_ptr;
 };
 
 /* MAX(min, (max - channel_value)) */
@@ -507,6 +629,28 @@ struct rga_img_info_t {
 	uint16_t enable;
 };
 
+struct rga_feature {
+	uint32_t global_alpha_en:1;
+	uint32_t full_csc_clip_en:1;
+	uint32_t user_close_fence:1;
+};
+
+struct rga_interp {
+	uint8_t horiz:4;
+	uint8_t verti:4;
+};
+
+struct rga_iommu_prefetch {
+	uint32_t y_threshold;
+	uint32_t uv_threshold;
+};
+
+struct rga_rgba5551_alpha {
+	uint16_t flags;
+	uint8_t alpha0;
+	uint8_t alpha1;
+};
+
 struct rga_req {
 	/* (enum) process mode sel */
 	uint8_t render_mode;
@@ -515,10 +659,23 @@ struct rga_req {
 	struct rga_img_info_t dst;
 	struct rga_img_info_t pat;
 
-	/* rop4 mask addr */
-	uint64_t rop_mask_addr;
-	/* LUT addr */
-	uint64_t LUT_addr;
+	union {
+		struct {
+			uint32_t comps_handle;
+			uint32_t pattern_handle;
+		};
+		/* rop4 mask addr */
+		uint64_t rop_mask_addr;
+	};
+
+	union {
+		struct {
+			uint32_t comps_addr;
+			uint32_t pattern_addr;
+		};
+		/* LUT addr */
+		uint64_t LUT_addr;
+	};
 
 	/* dst clip window default value is dst_vir */
 	/* value from [0, w-1] / [0, h-1]*/
@@ -529,19 +686,38 @@ struct rga_req {
 	/* dst angle default value 0 16.16 scan from table */
 	int32_t cosa;
 
-	/* alpha rop process flag		 */
-	/* ([0] = 1 alpha_rop_enable)	 */
-	/* ([1] = 1 rop enable)			 */
-	/* ([2] = 1 fading_enable)		 */
-	/* ([3] = 1 PD_enable)			 */
-	/* ([4] = 1 alpha cal_mode_sel)	 */
-	/* ([5] = 1 dither_enable)		 */
-	/* ([6] = 1 gradient fill mode sel) */
-	/* ([7] = 1 AA_enable)			 */
-	uint16_t alpha_rop_flag;
+	union {
+		struct {
+			uint16_t alpha_rop_enable:1;
+			uint16_t rop_enable:1;
+			uint16_t fading_enable:1;
+			uint16_t PD_enable:1;
+			uint16_t alpha_cal_mode_sel:1;
+			uint16_t dither_enable:1;
+			uint16_t gradient_fill_mode_sel:1;
+			uint16_t AA_enable:1;
+			uint16_t nn_quantize:1;
+			uint16_t real_color_mode:1;
+			uint16_t secure_access:1;
+			uint16_t cfa_enable:1;
+		};
+		/* legacy alpha rop process flag	 */
+		/* ([0] = 1 alpha_rop_enable)		 */
+		/* ([1] = 1 rop enable)			 */
+		/* ([2] = 1 fading_enable)		 */
+		/* ([3] = 1 PD_enable)			 */
+		/* ([4] = 1 alpha cal_mode_sel)		 */
+		/* ([5] = 1 dither_enable)		 */
+		/* ([6] = 1 gradient fill mode sel)	 */
+		/* ([7] = 1 AA_enable)			 */
+		uint16_t alpha_rop_flag;
+	};
 
-	/* 0 nearst / 1 bilnear / 2 bicubic */
-	uint8_t scale_mode;
+	union {
+		struct rga_interp interp;
+		/* 0 nearst / 1 bilnear / 2 bicubic */
+		uint8_t scale_mode;
+	};
 
 	/* color key max */
 	uint32_t color_key_max;
@@ -563,7 +739,7 @@ struct rga_req {
 	/* porter duff alpha mode sel */
 	uint8_t PD_mode;
 
-	/* global alpha value */
+	/* legacy: global alpha value */
 	uint8_t alpha_global_value;
 
 	/* rop2/3/4 code scan from rop code table*/
@@ -625,7 +801,39 @@ struct rga_req {
 
 	struct rga_pre_intr_info pre_intr_info;
 
-	uint8_t reservr[59];
+	/* global alpha */
+	uint8_t fg_global_alpha;
+	uint8_t bg_global_alpha;
+
+	struct rga_feature feature;
+
+	struct rga_csc_clip full_csc_clip;
+
+	struct rga_rgba5551_alpha rgba5551_alpha;
+
+	struct rga_gauss_config gauss_config;
+
+	/* cfa reg */
+	uint32_t cfa_ctrl0;
+	uint32_t cfa_ctrl1;
+	uint32_t cfa_apattern;
+	uint32_t cfa_dither_coe05;
+	uint32_t cfa_dither_coe6b;
+
+	uint8_t reservr[4];
+};
+
+struct rga_alpha_config {
+	bool enable;
+	bool fg_pre_multiplied;
+	bool bg_pre_multiplied;
+	bool fg_pixel_alpha_en;
+	bool bg_pixel_alpha_en;
+	bool fg_global_alpha_en;
+	bool bg_global_alpha_en;
+	uint16_t fg_global_alpha_value;
+	uint16_t bg_global_alpha_value;
+	enum rga_alpha_blend_mode mode;
 };
 
 struct rga2_req {
@@ -672,29 +880,7 @@ struct rga2_req {
 	/* ([7] = 1 gradient fill mode sel) */
 	u16 alpha_rop_flag;
 
-	/* [0]	 SrcAlphaMode0		 */
-	/* [2:1] SrcGlobalAlphaMode0	*/
-	/* [3]	 SrcAlphaSelectMode0	*/
-	/* [6:4] SrcFactorMode0		 */
-	/* [7]	 SrcColorMode		 */
-
-	/* [8]	 DstAlphaMode0		 */
-	/* [10:9] DstGlobalAlphaMode0	*/
-	/* [11]	DstAlphaSelectMode0	*/
-	/* [14:12] DstFactorMode0		 */
-	/* [15]	DstColorMode0		 */
-	u16 alpha_mode_0;
-
-	/* [0]	 SrcAlphaMode1		 */
-	/* [2:1] SrcGlobalAlphaMode1	*/
-	/* [3]	 SrcAlphaSelectMode1	*/
-	/* [6:4] SrcFactorMode1		 */
-
-	/* [8]	 DstAlphaMode1		 */
-	/* [10:9] DstGlobalAlphaMode1	*/
-	/* [11]	DstAlphaSelectMode1	*/
-	/* [14:12] DstFactorMode1		 */
-	u16 alpha_mode_1;
+	struct rga_alpha_config alpha_config;
 
 	/* 0 1 2 3 */
 	u8 scale_bicu_mode;
@@ -761,6 +947,24 @@ struct rga2_req {
 	uint8_t uvvds_mode;
 
 	struct rga_osd_info osd_info;
+
+	struct rga_interp interp;
+
+	struct rga_iommu_prefetch iommu_prefetch;
+
+	struct rga_rgba5551_alpha rgba5551_alpha;
+
+	struct rga_gauss_config gauss_config;
+
+	uint8_t secure_access;
+
+	/* cfa reg */
+	uint8_t cfa_enable;
+	uint32_t cfa_ctrl0;
+	uint32_t cfa_ctrl1;
+	uint32_t cfa_apattern;
+	uint32_t cfa_dither_coe05;
+	uint32_t cfa_dither_coe6b;
 };
 
 struct rga3_req {
@@ -782,8 +986,11 @@ struct rga3_req {
 
 	u16 alpha_rop_flag;
 
-	u16 alpha_mode_0;
-	u16 alpha_mode_1;
+	struct rga_alpha_config alpha_config;
+
+	/* for abb mode presever alpha. */
+	bool bg_alpha_pass;
+	bool fg_alpha_pass;
 
 	u8 scale_bicu_mode;
 
@@ -800,11 +1007,6 @@ struct rga3_req {
 	u8 fading_r_value;
 	u8 fading_g_value;
 	u8 fading_b_value;
-
-	/* win0 global alpha value		*/
-	u8 win0_a_global_val;
-	/* win1 global alpha value		*/
-	u8 win1_a_global_val;
 
 	u8 rop_mode;
 	u16 rop_code;

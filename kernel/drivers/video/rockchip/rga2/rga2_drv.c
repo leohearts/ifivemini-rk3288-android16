@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012 ROCKCHIP, Inc.
+ * Copyright (C) 2012 Rockchip Electronics Co., Ltd.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -45,7 +45,11 @@
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
 #include <linux/pm_runtime.h>
+#ifdef CONFIG_DMABUF_CACHE
 #include <linux/dma-buf-cache.h>
+#else
+#include <linux/dma-buf.h>
+#endif
 #endif
 
 #include "rga2.h"
@@ -76,7 +80,6 @@
 #define RGA2_PHY_PAGE_SIZE	(((8192 * 8192 * 4) / 4096) + 1)
 
 ktime_t rga2_start;
-ktime_t rga2_end;
 int rga2_flag;
 int first_RGA2_proc;
 static int rk3368;
@@ -463,13 +466,11 @@ static inline int rga2_init_version(void)
 	pm_runtime_get_sync(rga2_drvdata->dev);
 #endif
 
-	clk_prepare_enable(rga2_drvdata->clk_rga2);
 	clk_prepare_enable(rga2_drvdata->aclk_rga2);
 	clk_prepare_enable(rga2_drvdata->hclk_rga2);
 
 	reg_version = rga2_read(0x028);
 
-	clk_disable_unprepare(rga2_drvdata->clk_rga2);
 	clk_disable_unprepare(rga2_drvdata->aclk_rga2);
 	clk_disable_unprepare(rga2_drvdata->hclk_rga2);
 
@@ -1181,9 +1182,11 @@ retry:
 
 #ifdef CONFIG_ROCKCHIP_RGA2_DEBUGGER
 	if (RGA2_TEST_TIME) {
-		rga2_end = ktime_get();
-		rga2_end = ktime_sub(rga2_end, rga2_start);
-		DBG("sync one cmd end time %d\n", (int)ktime_to_us(rga2_end));
+		ktime_t rga2_cmd_end;
+
+		rga2_cmd_end = ktime_get();
+		rga2_cmd_end = ktime_sub(rga2_cmd_end, rga2_start);
+		DBG("sync one cmd end time %d us\n", (int)ktime_to_us(rga2_cmd_end));
 	}
 #endif
 	if (ret == -ETIMEDOUT && try--) {
@@ -1628,11 +1631,11 @@ static void RGA2_flush_page(void)
 	struct rga2_reg *reg;
 	int i;
 
-	if (list_empty(&rga2_service.running))
-		return;
-
 	reg = list_entry(rga2_service.running.prev,
 			 struct rga2_reg, status_link);
+
+	if (reg == NULL)
+		return;
 
 	if (reg->MMU_src0_base != NULL) {
 		for (i = 0; i < reg->MMU_src0_count; i++)
@@ -1659,6 +1662,14 @@ static irqreturn_t rga2_irq_thread(int irq, void *dev_id)
 	if (RGA2_INT_FLAG)
 		INFO("irqthread INT[%x],STATS[%x]\n", rga2_read(RGA2_INT),
 		     rga2_read(RGA2_STATUS));
+
+	if (RGA2_TEST_TIME) {
+		ktime_t rga2_hw_end;
+
+		rga2_hw_end = ktime_get();
+		rga2_hw_end = ktime_sub(rga2_hw_end, rga2_start);
+		DBG("RGA hardware cost time %d us\n", (int)ktime_to_us(rga2_hw_end));
+	}
 #endif
 	RGA2_flush_page();
 	mutex_lock(&rga2_service.lock);
@@ -1790,9 +1801,9 @@ static int rga2_drv_probe(struct platform_device *pdev)
 	/* map the registers */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	data->rga_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(data->rga_base)) {
+	if (!data->rga_base) {
 		ERR("rga ioremap failed\n");
-		ret = PTR_ERR(data->rga_base);
+		ret = -ENOENT;
 		goto err_ioremap;
 	}
 

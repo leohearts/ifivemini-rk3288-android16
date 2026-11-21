@@ -1,81 +1,101 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2009 Sunplus Core Technology Co., Ltd.
  *  Chen Liqin <liqin.chen@sunplusct.com>
  *  Lennox Wu <lennox.wu@sunplusct.com>
  * Copyright (C) 2012 Regents of the University of California
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see the file COPYING, or write
- * to the Free Software Foundation, Inc.,
  */
 
+#include <linux/compat.h>
 #include <linux/signal.h>
 #include <linux/uaccess.h>
 #include <linux/syscalls.h>
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 #include <linux/linkage.h>
 
 #include <asm/ucontext.h>
 #include <asm/vdso.h>
+#include <asm/signal.h>
+#include <asm/signal32.h>
 #include <asm/switch_to.h>
 #include <asm/csr.h>
+#include <asm/cacheflush.h>
+
+extern u32 __user_rt_sigreturn[2];
 
 #define DEBUG_SIG 0
 
 struct rt_sigframe {
 	struct siginfo info;
 	struct ucontext uc;
+#ifndef CONFIG_MMU
+	u32 sigreturn_code[2];
+#endif
 };
 
-static long restore_d_state(struct pt_regs *regs,
-	struct __riscv_d_ext_state __user *state)
+#ifdef CONFIG_FPU
+static long restore_fp_state(struct pt_regs *regs,
+			     union __riscv_fp_state __user *sc_fpregs)
 {
 	long err;
-	err = __copy_from_user(&current->thread.fstate, state, sizeof(*state));
-	if (likely(!err))
-		fstate_restore(current, regs);
-	return err;
-}
-
-static long save_d_state(struct pt_regs *regs,
-	struct __riscv_d_ext_state __user *state)
-{
-	fstate_save(current, regs);
-	return __copy_to_user(state, &current->thread.fstate, sizeof(*state));
-}
-
-static long restore_sigcontext(struct pt_regs *regs,
-	struct sigcontext __user *sc)
-{
-	long err;
+	struct __riscv_d_ext_state __user *state = &sc_fpregs->d;
 	size_t i;
-	/* sc_regs is structured the same as the start of pt_regs */
-	err = __copy_from_user(regs, &sc->sc_regs, sizeof(sc->sc_regs));
+
+	err = __copy_from_user(&current->thread.fstate, state, sizeof(*state));
 	if (unlikely(err))
 		return err;
-	/* Restore the floating-point state. */
-	err = restore_d_state(regs, &sc->sc_fpregs.d);
-	if (unlikely(err))
-		return err;
+
+	fstate_restore(current, regs);
+
 	/* We support no other extension state at this time. */
-	for (i = 0; i < ARRAY_SIZE(sc->sc_fpregs.q.reserved); i++) {
+	for (i = 0; i < ARRAY_SIZE(sc_fpregs->q.reserved); i++) {
 		u32 value;
-		err = __get_user(value, &sc->sc_fpregs.q.reserved[i]);
+
+		err = __get_user(value, &sc_fpregs->q.reserved[i]);
 		if (unlikely(err))
 			break;
 		if (value != 0)
 			return -EINVAL;
 	}
+
+	return err;
+}
+
+static long save_fp_state(struct pt_regs *regs,
+			  union __riscv_fp_state __user *sc_fpregs)
+{
+	long err;
+	struct __riscv_d_ext_state __user *state = &sc_fpregs->d;
+	size_t i;
+
+	fstate_save(current, regs);
+	err = __copy_to_user(state, &current->thread.fstate, sizeof(*state));
+	if (unlikely(err))
+		return err;
+
+	/* We support no other extension state at this time. */
+	for (i = 0; i < ARRAY_SIZE(sc_fpregs->q.reserved); i++) {
+		err = __put_user(0, &sc_fpregs->q.reserved[i]);
+		if (unlikely(err))
+			break;
+	}
+
+	return err;
+}
+#else
+#define save_fp_state(task, regs) (0)
+#define restore_fp_state(task, regs) (0)
+#endif
+
+static long restore_sigcontext(struct pt_regs *regs,
+	struct sigcontext __user *sc)
+{
+	long err;
+	/* sc_regs is structured the same as the start of pt_regs */
+	err = __copy_from_user(regs, &sc->sc_regs, sizeof(sc->sc_regs));
+	/* Restore the floating-point state. */
+	if (has_fpu())
+		err |= restore_fp_state(regs, &sc->sc_fpregs);
 	return err;
 }
 
@@ -91,7 +111,7 @@ SYSCALL_DEFINE0(rt_sigreturn)
 
 	frame = (struct rt_sigframe __user *)regs->sp;
 
-	if (!access_ok(VERIFY_READ, frame, sizeof(*frame)))
+	if (!access_ok(frame, sizeof(*frame)))
 		goto badframe;
 
 	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
@@ -105,6 +125,8 @@ SYSCALL_DEFINE0(rt_sigreturn)
 	if (restore_altstack(&frame->uc.uc_stack))
 		goto badframe;
 
+	regs->cause = -1UL;
+
 	return regs->a0;
 
 badframe:
@@ -113,9 +135,9 @@ badframe:
 		pr_info_ratelimited(
 			"%s[%d]: bad frame in %s: frame=%p pc=%p sp=%p\n",
 			task->comm, task_pid_nr(task), __func__,
-			frame, (void *)regs->sepc, (void *)regs->sp);
+			frame, (void *)regs->epc, (void *)regs->sp);
 	}
-	force_sig(SIGSEGV, task);
+	force_sig(SIGSEGV);
 	return 0;
 }
 
@@ -124,14 +146,11 @@ static long setup_sigcontext(struct rt_sigframe __user *frame,
 {
 	struct sigcontext __user *sc = &frame->uc.uc_mcontext;
 	long err;
-	size_t i;
 	/* sc_regs is structured the same as the start of pt_regs */
 	err = __copy_to_user(&sc->sc_regs, regs, sizeof(sc->sc_regs));
 	/* Save the floating-point state. */
-	err |= save_d_state(regs, &sc->sc_fpregs.d);
-	/* We support no other extension state at this time. */
-	for (i = 0; i < ARRAY_SIZE(sc->sc_fpregs.q.reserved); i++)
-		err |= __put_user(0, &sc->sc_fpregs.q.reserved[i]);
+	if (has_fpu())
+		err |= save_fp_state(regs, &sc->sc_fpregs);
 	return err;
 }
 
@@ -158,15 +177,15 @@ static inline void __user *get_sigframe(struct ksignal *ksig,
 	return (void __user *)sp;
 }
 
-
 static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
 	struct pt_regs *regs)
 {
 	struct rt_sigframe __user *frame;
 	long err = 0;
+	unsigned long __maybe_unused addr;
 
 	frame = get_sigframe(ksig, regs, sizeof(*frame));
-	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
+	if (!access_ok(frame, sizeof(*frame)))
 		return -EFAULT;
 
 	err |= copy_siginfo_to_user(&frame->info, &ksig->info);
@@ -181,8 +200,24 @@ static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
 		return -EFAULT;
 
 	/* Set up to return from userspace. */
+#ifdef CONFIG_MMU
 	regs->ra = (unsigned long)VDSO_SYMBOL(
 		current->mm->context.vdso, rt_sigreturn);
+#else
+	/*
+	 * For the nommu case we don't have a VDSO.  Instead we push two
+	 * instructions to call the rt_sigreturn syscall onto the user stack.
+	 */
+	if (copy_to_user(&frame->sigreturn_code, __user_rt_sigreturn,
+			 sizeof(frame->sigreturn_code)))
+		return -EFAULT;
+
+	addr = (unsigned long)&frame->sigreturn_code;
+	/* Make sure the two instructions are pushed to icache. */
+	flush_icache_range(addr, addr + sizeof(frame->sigreturn_code));
+
+	regs->ra = addr;
+#endif /* CONFIG_MMU */
 
 	/*
 	 * Set up registers for signal handler.
@@ -191,7 +226,7 @@ static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
 	 * We always pass siginfo and mcontext, regardless of SA_SIGINFO,
 	 * since some things rely on this (e.g. glibc's debug/segfault.c).
 	 */
-	regs->sepc = (unsigned long)ksig->ka.sa.sa_handler;
+	regs->epc = (unsigned long)ksig->ka.sa.sa_handler;
 	regs->sp = (unsigned long)frame;
 	regs->a0 = ksig->sig;                     /* a0: signal number */
 	regs->a1 = (unsigned long)(&frame->info); /* a1: siginfo pointer */
@@ -200,7 +235,7 @@ static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
 #if DEBUG_SIG
 	pr_info("SIG deliver (%s:%d): sig=%d pc=%p ra=%p sp=%p\n",
 		current->comm, task_pid_nr(current), ksig->sig,
-		(void *)regs->sepc, (void *)regs->ra, frame);
+		(void *)regs->epc, (void *)regs->ra, frame);
 #endif
 
 	return 0;
@@ -211,61 +246,78 @@ static void handle_signal(struct ksignal *ksig, struct pt_regs *regs)
 	sigset_t *oldset = sigmask_to_save();
 	int ret;
 
-	/* Are we from a system call? */
-	if (regs->scause == EXC_SYSCALL) {
-		/* If so, check system call restarting.. */
-		switch (regs->a0) {
-		case -ERESTART_RESTARTBLOCK:
-		case -ERESTARTNOHAND:
-			regs->a0 = -EINTR;
-			break;
-
-		case -ERESTARTSYS:
-			if (!(ksig->ka.sa.sa_flags & SA_RESTART)) {
-				regs->a0 = -EINTR;
-				break;
-			}
-			/* fallthrough */
-		case -ERESTARTNOINTR:
-                        regs->a0 = regs->orig_a0;
-			regs->sepc -= 0x4;
-			break;
-		}
-	}
+	rseq_signal_deliver(ksig, regs);
 
 	/* Set up the stack frame */
-	ret = setup_rt_frame(ksig, oldset, regs);
+	if (is_compat_task())
+		ret = compat_setup_rt_frame(ksig, oldset, regs);
+	else
+		ret = setup_rt_frame(ksig, oldset, regs);
 
 	signal_setup_done(ret, ksig, 0);
 }
 
 static void do_signal(struct pt_regs *regs)
 {
+	unsigned long continue_addr = 0, restart_addr = 0;
+	int retval = 0;
 	struct ksignal ksig;
+	bool syscall = (regs->cause == EXC_SYSCALL);
 
+	/* If we were from a system call, check for system call restarting */
+	if (syscall) {
+		continue_addr = regs->epc;
+		restart_addr = continue_addr - 4;
+		retval = regs->a0;
+
+		/* Avoid additional syscall restarting via ret_from_exception */
+		regs->cause = -1UL;
+
+		/*
+		 * Prepare for system call restart. We do this here so that a
+		 * debugger will see the already changed PC.
+		 */
+		switch (retval) {
+		case -ERESTARTNOHAND:
+		case -ERESTARTSYS:
+		case -ERESTARTNOINTR:
+		case -ERESTART_RESTARTBLOCK:
+			regs->a0 = regs->orig_a0;
+			regs->epc = restart_addr;
+			break;
+		}
+	}
+
+	/*
+	 * Get the signal to deliver. When running under ptrace, at this point
+	 * the debugger may change all of our registers.
+	 */
 	if (get_signal(&ksig)) {
+		/*
+		 * Depending on the signal settings, we may need to revert the
+		 * decision to restart the system call, but skip this if a
+		 * debugger has chosen to restart at a different PC.
+		 */
+		if (regs->epc == restart_addr &&
+		    (retval == -ERESTARTNOHAND ||
+		     retval == -ERESTART_RESTARTBLOCK ||
+		     (retval == -ERESTARTSYS &&
+		      !(ksig.ka.sa.sa_flags & SA_RESTART)))) {
+			regs->a0 = -EINTR;
+			regs->epc = continue_addr;
+		}
+
 		/* Actually deliver the signal */
 		handle_signal(&ksig, regs);
 		return;
 	}
 
-	/* Did we come from a system call? */
-	if (regs->scause == EXC_SYSCALL) {
-		/* Restart the system call - no handlers present */
-		switch (regs->a0) {
-		case -ERESTARTNOHAND:
-		case -ERESTARTSYS:
-		case -ERESTARTNOINTR:
-                        regs->a0 = regs->orig_a0;
-			regs->sepc -= 0x4;
-			break;
-		case -ERESTART_RESTARTBLOCK:
-                        regs->a0 = regs->orig_a0;
-			regs->a7 = __NR_restart_syscall;
-			regs->sepc -= 0x4;
-			break;
-		}
-	}
+	/*
+	 * Handle restarting a different system call. As above, if a debugger
+	 * has chosen to restart at a different PC, ignore the restart.
+	 */
+	if (syscall && regs->epc == restart_addr && retval == -ERESTART_RESTARTBLOCK)
+		regs->a7 = __NR_restart_syscall;
 
 	/*
 	 * If there is no signal to deliver, we just put the saved
@@ -275,18 +327,27 @@ static void do_signal(struct pt_regs *regs)
 }
 
 /*
- * notification of userspace execution resumption
- * - triggered by the _TIF_WORK_MASK flags
+ * Handle any pending work on the resume-to-userspace path, as indicated by
+ * _TIF_WORK_MASK. Entered from assembly with IRQs off.
  */
-asmlinkage void do_notify_resume(struct pt_regs *regs,
-	unsigned long thread_info_flags)
+asmlinkage __visible void do_work_pending(struct pt_regs *regs,
+					  unsigned long thread_info_flags)
 {
-	/* Handle pending signal delivery */
-	if (thread_info_flags & _TIF_SIGPENDING)
-		do_signal(regs);
-
-	if (thread_info_flags & _TIF_NOTIFY_RESUME) {
-		clear_thread_flag(TIF_NOTIFY_RESUME);
-		tracehook_notify_resume(regs);
-	}
+	do {
+		if (thread_info_flags & _TIF_NEED_RESCHED) {
+			schedule();
+		} else {
+			local_irq_enable();
+			if (thread_info_flags & _TIF_UPROBE)
+				uprobe_notify_resume(regs);
+			/* Handle pending signal delivery */
+			if (thread_info_flags & (_TIF_SIGPENDING |
+						 _TIF_NOTIFY_SIGNAL))
+				do_signal(regs);
+			if (thread_info_flags & _TIF_NOTIFY_RESUME)
+				resume_user_mode_work(regs);
+		}
+		local_irq_disable();
+		thread_info_flags = read_thread_flags();
+	} while (thread_info_flags & _TIF_WORK_MASK);
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
- * Copyright (c) 2022 Rockchip Electronics Co., Ltd
+ * Copyright (c) 2023 Rockchip Electronics Co., Ltd.
  *
  * author:
  *	Ding Wei, leo.ding@rock-chips.com
@@ -27,6 +27,11 @@
 #define VDPP_DRIVER_NAME		"mpp_vdpp"
 
 #define	VDPP_SESSION_MAX_BUFFERS	15
+#define VDPP_REG_WORK_MODE			0x0008
+#define VDPP_REG_VDPP_MODE			BIT(1)
+#define VDPP_GET_VDPP_MODE(x)			((x) & 0x2)
+
+#define VDPP_FMT_DEFAULT			(0)
 
 #define to_vdpp_info(info)	\
 		container_of(info, struct vdpp_hw_info, hw)
@@ -89,7 +94,8 @@ struct vdpp_dev {
 	void __iomem *zme_base;
 };
 
-static struct vdpp_hw_info vdpp_v1_hw_info = {
+// RK3528
+static struct vdpp_hw_info vdpp1_hw_info = {
 	.hw = {
 		.reg_num = 53,
 		.reg_id = 21,
@@ -113,18 +119,89 @@ static struct vdpp_hw_info vdpp_v1_hw_info = {
 	.bit_rst_done = BIT(0),
 };
 
+// RK3576
+static struct vdpp_hw_info vdpp2_hw_info = {
+	.hw = {
+		.reg_num = 300,
+		.reg_id = 21,
+		.reg_en = 0,
+		.reg_start = 0,
+		.reg_end = 299,
+	},
+	.start_base = 0x0000,
+	.cfg_base = 0x0004,
+	.work_mode_base = 0x0008,
+	.gate_base = 0x0010,
+	.rst_sta_base = 0x0014,
+	.int_en_base = 0x0020,
+	.int_clr_base = 0x0024,
+	.int_sta_base = 0x0028,
+	.int_mask = 0x0073,
+	.err_mask = 0x0070,
+	.zme_reg_off = 0x2000,
+	.zme_reg_num = 530,
+	.bit_rst_en = BIT(21),
+	.bit_rst_done = BIT(0),
+};
+
+/* RK3538 */
+static struct vdpp_hw_info vdpp3_hw_info = {
+	.hw = {
+		.reg_num = 300,
+		.reg_id = 21,
+		.reg_en = 0,
+		.reg_start = 0,
+		.reg_end = 299,
+	},
+	.start_base = 0x0000,
+	.cfg_base = 0x0004,
+	.work_mode_base = 0x0008,
+	.gate_base = 0x0010,
+	.rst_sta_base = 0x0014,
+	.int_en_base = 0x0020,
+	.int_clr_base = 0x0024,
+	.int_sta_base = 0x0028,
+	.int_mask = 0x0073,
+	.err_mask = 0x0070,
+	.zme_reg_off = 0x2800,
+	.zme_reg_num = 20,
+	.bit_rst_en = BIT(21),
+	.bit_rst_done = BIT(0),
+};
+
 /*
  * file handle translate information
  */
-static const u16 trans_tbl_vdpp[] = {
+static const u16 trans_tbl_vdpp1[] = {
 	24, 25, 26, 27,
 };
 
-#define VDPP_FMT_DEFAULT		0
-static struct mpp_trans_info vdpp_v1_trans[] = {
+static const u16 trans_tbl_vdpp2[] = {
+	24, 25, 26, 27, 56, 60,
+};
+
+static const u16 trans_tbl_vdpp3[] = {
+	24, 25, 26, 27, 56, 60, 101, 103, 105,
+};
+
+static struct mpp_trans_info vdpp1_trans[] = {
 	[VDPP_FMT_DEFAULT] = {
-		.count = ARRAY_SIZE(trans_tbl_vdpp),
-		.table = trans_tbl_vdpp,
+		.count = ARRAY_SIZE(trans_tbl_vdpp1),
+		.table = trans_tbl_vdpp1,
+	},
+};
+
+static struct mpp_trans_info vdpp2_trans[] = {
+	[VDPP_FMT_DEFAULT] = {
+		.count = ARRAY_SIZE(trans_tbl_vdpp2),
+		.table = trans_tbl_vdpp2,
+	},
+};
+
+static struct mpp_trans_info vdpp3_trans[] = {
+	[VDPP_FMT_DEFAULT] = {
+		.count = ARRAY_SIZE(trans_tbl_vdpp3),
+		.table = trans_tbl_vdpp3,
 	},
 };
 
@@ -307,6 +384,7 @@ static int vdpp_run(struct mpp_dev *mpp,
 	struct vdpp_dev *vdpp = to_vdpp_dev(mpp);
 	struct vdpp_task *task = to_vdpp_task(mpp_task);
 	struct vdpp_hw_info *hw_info = vdpp->hw_info;
+	u32 timing_en = mpp->srv->timing_en;
 
 	mpp_debug_enter();
 
@@ -332,11 +410,18 @@ static int vdpp_run(struct mpp_dev *mpp,
 		}
 	}
 
+	/* flush tlb before starting hardware */
+	mpp_iommu_flush_tlb(mpp->iommu_info);
+
 	/* init current task */
 	mpp->cur_task = mpp_task;
+
+	mpp_task_run_begin(mpp_task, timing_en, MPP_WORK_TIMEOUT_DELAY);
 	/* Flush the register before the start the device */
 	wmb();
 	mpp_write(mpp, hw_info->start_base, task->reg[reg_en]);
+
+	mpp_task_run_end(mpp_task, timing_en);
 
 	mpp_debug_leave();
 
@@ -371,7 +456,8 @@ static int vdpp_finish(struct mpp_dev *mpp,
 			mpp_read_req(mpp, task->reg, s, e);
 		}
 	}
-	task->reg[hw_info->int_sta_base] = task->irq_status;
+
+	task->reg[hw_info->int_sta_base / sizeof(u32)] = task->irq_status;
 
 	mpp_debug_leave();
 
@@ -385,6 +471,8 @@ static int vdpp_result(struct mpp_dev *mpp,
 	u32 i;
 	struct vdpp_task *task = to_vdpp_task(mpp_task);
 	struct vdpp_hw_info *hw_info = to_vdpp_info(mpp_task->hw_info);
+
+	mpp_debug_enter();
 
 	for (i = 0; i < task->r_req_cnt; i++) {
 		struct mpp_request *req;
@@ -412,6 +500,8 @@ static int vdpp_result(struct mpp_dev *mpp,
 			}
 		}
 	}
+
+	mpp_debug_leave();
 
 	return 0;
 }
@@ -546,12 +636,20 @@ static int vdpp_irq(struct mpp_dev *mpp)
 {
 	struct vdpp_dev *vdpp = to_vdpp_dev(mpp);
 	struct vdpp_hw_info *hw_info = vdpp->hw_info;
+	u32 work_mode = mpp_read(mpp, VDPP_REG_WORK_MODE);
 
+	mpp_debug_enter();
+
+	if (!(VDPP_GET_VDPP_MODE(work_mode) & VDPP_REG_VDPP_MODE))
+		return IRQ_NONE;
 	mpp->irq_status = mpp_read(mpp, hw_info->int_sta_base);
 	if (!(mpp->irq_status & hw_info->int_mask))
 		return IRQ_NONE;
 	mpp_write(mpp, hw_info->int_en_base, 0);
 	mpp_write(mpp, hw_info->int_clr_base, mpp->irq_status);
+
+	/* ensure hardware is being off status */
+	mpp_write(mpp, hw_info->start_base, 0);
 
 	return IRQ_WAKE_THREAD;
 }
@@ -561,6 +659,8 @@ static int vdpp_isr(struct mpp_dev *mpp)
 	struct vdpp_task *task = NULL;
 	struct vdpp_dev *vdpp = to_vdpp_dev(mpp);
 	struct mpp_task *mpp_task = mpp->cur_task;
+
+	mpp_debug_enter();
 
 	/* FIXME use a spin lock here */
 	if (!mpp_task) {
@@ -590,7 +690,7 @@ static int _vdpp_reset(struct mpp_dev *mpp, struct vdpp_dev *vdpp)
 		mpp_debug(DEBUG_RESET, "reset in\n");
 
 		/* Don't skip this or iommu won't work after reset */
-		rockchip_pmu_idle_request(mpp->dev, true);
+		mpp_pmu_idle_request(mpp, true);
 		mpp_safe_reset(vdpp->rst_a);
 		mpp_safe_reset(vdpp->rst_h);
 		mpp_safe_reset(vdpp->rst_s);
@@ -598,7 +698,7 @@ static int _vdpp_reset(struct mpp_dev *mpp, struct vdpp_dev *vdpp)
 		mpp_safe_unreset(vdpp->rst_a);
 		mpp_safe_unreset(vdpp->rst_h);
 		mpp_safe_unreset(vdpp->rst_s);
-		rockchip_pmu_idle_request(mpp->dev, false);
+		mpp_pmu_idle_request(mpp, false);
 
 		mpp_debug(DEBUG_RESET, "reset out\n");
 	}
@@ -617,8 +717,8 @@ static int vdpp_reset(struct mpp_dev *mpp)
 	mpp_write(mpp, hw_info->cfg_base, hw_info->bit_rst_en);
 	ret = readl_relaxed_poll_timeout(mpp->reg_base + hw_info->rst_sta_base,
 					 rst_status,
-					 !(rst_status & hw_info->bit_rst_done),
-					 0, 2);
+					 rst_status & hw_info->bit_rst_done,
+					 0, 5);
 	if (ret) {
 		mpp_err("soft reset timeout, use cru reset\n");
 		return _vdpp_reset(mpp, vdpp);
@@ -626,10 +726,13 @@ static int vdpp_reset(struct mpp_dev *mpp)
 
 	mpp_write(mpp, hw_info->rst_sta_base, 0);
 
+	/* ensure hardware is being off status */
+	mpp_write(mpp, hw_info->start_base, 0);
+
 	return 0;
 }
 
-static struct mpp_hw_ops vdpp_v1_hw_ops = {
+static struct mpp_hw_ops vdpp1_hw_ops = {
 	.init = vdpp_init,
 	.clk_on = vdpp_clk_on,
 	.clk_off = vdpp_clk_off,
@@ -638,7 +741,7 @@ static struct mpp_hw_ops vdpp_v1_hw_ops = {
 	.reset = vdpp_reset,
 };
 
-static struct mpp_dev_ops vdpp_v1_dev_ops = {
+static struct mpp_dev_ops vdpp1_dev_ops = {
 	.alloc_task = vdpp_alloc_task,
 	.run = vdpp_run,
 	.irq = vdpp_irq,
@@ -648,19 +751,47 @@ static struct mpp_dev_ops vdpp_v1_dev_ops = {
 	.free_task = vdpp_free_task,
 };
 
-static const struct mpp_dev_var vdpp_v1_data = {
+static const struct mpp_dev_var vdpp1_data = {
 	.device_type = MPP_DEVICE_VDPP,
-	.hw_info = &vdpp_v1_hw_info.hw,
-	.trans_info = vdpp_v1_trans,
-	.hw_ops = &vdpp_v1_hw_ops,
-	.dev_ops = &vdpp_v1_dev_ops,
+	.hw_info = &vdpp1_hw_info.hw,
+	.trans_info = vdpp1_trans,
+	.hw_ops = &vdpp1_hw_ops,
+	.dev_ops = &vdpp1_dev_ops,
+};
+
+static const struct mpp_dev_var vdpp2_data = {
+	.device_type = MPP_DEVICE_VDPP,
+	.hw_info = &vdpp2_hw_info.hw,
+	.trans_info = vdpp2_trans,
+	.hw_ops = &vdpp1_hw_ops,
+	.dev_ops = &vdpp1_dev_ops,
+};
+
+static const struct mpp_dev_var vdpp3_data = {
+	.device_type = MPP_DEVICE_VDPP,
+	.hw_info = &vdpp3_hw_info.hw,
+	.trans_info = vdpp3_trans,
+	.hw_ops = &vdpp1_hw_ops,
+	.dev_ops = &vdpp1_dev_ops,
 };
 
 static const struct of_device_id mpp_vdpp_dt_match[] = {
 	{
 		.compatible = "rockchip,vdpp-v1",
-		.data = &vdpp_v1_data,
+		.data = &vdpp1_data,
 	},
+#ifdef CONFIG_CPU_RK3576
+	{
+		.compatible = "rockchip,vdpp-rk3576",
+		.data = &vdpp2_data,
+	},
+#endif
+#ifdef CONFIG_CPU_RK3538
+	{
+		.compatible = "rockchip,vdpp-rk3538",
+		.data = &vdpp3_data,
+	},
+#endif
 	{},
 };
 
@@ -677,13 +808,13 @@ static int vdpp_probe(struct platform_device *pdev)
 	vdpp = devm_kzalloc(dev, sizeof(struct vdpp_dev), GFP_KERNEL);
 	if (!vdpp)
 		return -ENOMEM;
-	platform_set_drvdata(pdev, vdpp);
-
 	mpp = &vdpp->mpp;
+	platform_set_drvdata(pdev, mpp);
 	if (pdev->dev.of_node) {
 		match = of_match_node(mpp_vdpp_dt_match, pdev->dev.of_node);
 		if (match)
 			mpp->var = (struct mpp_dev_var *)match->data;
+		mpp->core_id = -1;
 	}
 
 	ret = mpp_dev_probe(mpp, pdev);
@@ -703,13 +834,14 @@ static int vdpp_probe(struct platform_device *pdev)
 	/* get irq */
 	ret = devm_request_threaded_irq(dev, mpp->irq,
 					mpp_dev_irq,
-					mpp_dev_isr_sched,
+					NULL,
 					IRQF_SHARED,
 					dev_name(dev), mpp);
 	if (ret) {
 		dev_err(dev, "register interrupter runtime failed\n");
 		return -EINVAL;
 	}
+
 	mpp->session_max_buffers = VDPP_SESSION_MAX_BUFFERS;
 	vdpp->hw_info = to_vdpp_info(mpp->var->hw_info);
 	vdpp_procfs_init(mpp);
@@ -724,40 +856,23 @@ static int vdpp_probe(struct platform_device *pdev)
 static int vdpp_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct vdpp_dev *vdpp = platform_get_drvdata(pdev);
+	struct mpp_dev *mpp = platform_get_drvdata(pdev);
 
 	dev_info(dev, "remove device\n");
-	mpp_dev_remove(&vdpp->mpp);
-	vdpp_procfs_remove(&vdpp->mpp);
+	mpp_dev_remove(mpp);
+	vdpp_procfs_remove(mpp);
 
 	return 0;
-}
-
-static void vdpp_shutdown(struct platform_device *pdev)
-{
-	int ret;
-	int val;
-	struct device *dev = &pdev->dev;
-	struct vdpp_dev *vdpp = platform_get_drvdata(pdev);
-	struct mpp_dev *mpp = &vdpp->mpp;
-
-	dev_info(dev, "shutdown device\n");
-
-	atomic_inc(&mpp->srv->shutdown_request);
-	ret = readx_poll_timeout(atomic_read,
-				 &mpp->task_count,
-				 val, val == 0, 20000, 200000);
-	if (ret == -ETIMEDOUT)
-		dev_err(dev, "wait total running time out\n");
 }
 
 struct platform_driver rockchip_vdpp_driver = {
 	.probe = vdpp_probe,
 	.remove = vdpp_remove,
-	.shutdown = vdpp_shutdown,
+	.shutdown = mpp_dev_shutdown,
 	.driver = {
 		.name = VDPP_DRIVER_NAME,
 		.of_match_table = of_match_ptr(mpp_vdpp_dt_match),
+		.pm = &mpp_common_pm_ops,
 	},
 };
 EXPORT_SYMBOL(rockchip_vdpp_driver);

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Register definitions for Rockchip's RK808/RK818 PMIC
  *
@@ -9,15 +10,6 @@
  * Copyright (C) 2016 PHYTEC Messtechnik GmbH
  *
  * Author: Wadim Egorov <w.egorov@phytec.de>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __LINUX_REGULATOR_RK808_H
@@ -25,6 +17,126 @@
 
 #include <linux/regulator/machine.h>
 #include <linux/regmap.h>
+
+/* RK801 */
+enum rk801_reg {
+	RK801_ID_DCDC1,
+	RK801_ID_DCDC2,
+	RK801_ID_DCDC4,
+	RK801_ID_DCDC3,
+	RK801_ID_LDO1,
+	RK801_ID_LDO2,
+	RK801_ID_SWITCH,
+	RK801_ID_MAX,
+};
+
+#define RK801_SLP_REG_OFFSET                     5
+#define RK801_NUM_REGULATORS                     7
+
+/* RK801 Register Definitions */
+#define RK801_ID_MSB                             0x00
+#define RK801_ID_LSB                             0x01
+#define RK801_OTP_VER_REG                        0x02
+#define RK801_POWER_EN0_REG                      0x03
+#define RK801_POWER_EN1_REG                      0x04
+#define RK801_POWER_SLP_EN_REG                   0x05
+#define RK801_POWER_FPWM_EN_REG                  0x06
+#define RK801_SLP_LP_CONFIG_REG                  0x07
+#define RK801_BUCK_CONFIG_REG                    0x08
+#define RK801_BUCK1_ON_VSEL_REG                  0x09
+#define RK801_BUCK2_ON_VSEL_REG                  0x0a
+#define RK801_BUCK4_ON_VSEL_REG                  0x0b
+#define RK801_LDO1_ON_VSEL_REG                   0x0c
+#define RK801_LDO2_ON_VSEL_REG                   0x0d
+#define RK801_BUCK1_SLP_VSEL_REG                 0x0e
+#define RK801_BUCK2_SLP_VSEL_REG                 0x0f
+#define RK801_BUCK4_SLP_VSEL_REG                 0x10
+#define RK801_LDO1_SLP_VSEL_REG                  0x11
+#define RK801_LDO2_SLP_VSEL_REG                  0x12
+#define RK801_LDO_SW_IMAX_REG                    0x13
+#define RK801_SYS_STS_REG                        0x14
+#define RK801_SYS_CFG0_REG                       0x15
+#define RK801_SYS_CFG1_REG                       0x16
+#define RK801_SYS_CFG2_REG                       0x17
+#define RK801_SYS_CFG3_REG                       0x18
+#define RK801_SYS_CFG4_REG                       0x19
+#define RK801_SLEEP_CFG_REG                      0x1a
+#define RK801_ON_SOURCE_REG                      0x1b
+#define RK801_OFF_SOURCE_REG                     0x1c
+#define RK801_PWRON_KEY_REG                      0x1d
+#define RK801_INT_STS0_REG                       0x1e
+#define RK801_INT_MASK0_REG                      0x1f
+#define RK801_INT_CONFIG_REG                     0x20
+#define RK801_CON_BACK1_REG                      0x21
+#define RK801_CON_BACK2_REG                      0x22
+#define RK801_DATA_CON0_REG                      0x23
+#define RK801_DATA_CON1_REG                      0x24
+#define RK801_DATA_CON2_REG                      0x25
+#define RK801_DATA_CON3_REG                      0x26
+#define RK801_POWER_EXIT_SLP_SEQ0_REG            0x27
+#define RK801_POWER_EXIT_SLP_SEQ1_REG            0x28
+#define RK801_POWER_EXIT_SLP_SEQ2_REG            0x29
+#define RK801_POWER_EXIT_SLP_SEQ3_REG            0x2a
+#define RK801_POWER_ENTER_SLP_OR_SHTD_SEQ0_REG   0x2b
+#define RK801_POWER_ENTER_SLP_OR_SHTD_SEQ1_REG   0x2c
+#define RK801_POWER_ENTER_SLP_OR_SHTD_SEQ2_REG   0x2d
+#define RK801_POWER_ENTER_SLP_OR_SHTD_SEQ3_REG   0x2e
+#define RK801_BUCK_DEBUG1_REG                    0x2f
+#define RK801_BUCK_DEBUG2_REG                    0x30
+#define RK801_BUCK_DEBUG3_REG                    0x31
+#define RK801_BUCK_DEBUG4_REG                    0x32
+#define RK801_BUCK_DEBUG5_REG                    0x33
+#define RK801_BUCK_DEBUG7_REG                    0x34
+#define RK801_OTP_EN_CON_REG                     0x35
+#define RK801_TEST_CON_REG                       0x36
+#define RK801_EFUSE_CONTROL_REG                  0x37
+#define RK801_SYS_CFG3_OTP_REG                   0x38
+
+/* RK801 IRQ Definitions */
+#define RK801_IRQ_PWRON_FALL                     0
+#define RK801_IRQ_PWRON_RISE                     1
+#define RK801_IRQ_PWRON                          2
+#define RK801_IRQ_PWRON_LP                       3
+#define RK801_IRQ_HOTDIE                         4
+#define RK801_IRQ_VDC_RISE                       5
+#define RK801_IRQ_VDC_FALL                       6
+#define RK801_IRQ_PWRON_FALL_MSK                 BIT(0)
+#define RK801_IRQ_PWRON_RISE_MSK                 BIT(1)
+#define RK801_IRQ_PWRON_MSK                      BIT(2)
+#define RK801_IRQ_PWRON_LP_MSK                   BIT(3)
+#define RK801_IRQ_HOTDIE_MSK                     BIT(4)
+#define RK801_IRQ_VDC_RISE_MSK                   BIT(5)
+#define RK801_IRQ_VDC_FALL_MSK                   BIT(6)
+
+/* RK801_SLP_LP_CONFIG_REG */
+#define RK801_BUCK_SLP_LP_EN                     BIT(3)
+#define RK801_PLDO_SLP_LP_EN                     BIT(1)
+#define RK801_SLP_LP_MASK                        (RK801_PLDO_SLP_LP_EN | RK801_BUCK_SLP_LP_EN)
+
+/* RK801_SLEEP_CFG_REG */
+#define RK801_SLEEP_FUN_MSK                      0x3
+#define RK801_NONE_FUN                           0x0
+#define RK801_SLEEP_FUN                          0x1
+#define RK801_SHUTDOWN_FUN                       0x2
+#define RK801_RESET_FUN                          0x3
+
+/* RK801_SYS_CFG2_REG */
+#define RK801_SLEEP_POL_MSK                      BIT(1)
+#define RK801_SLEEP_ACT_H                        BIT(1)
+#define RK801_SLEEP_ACT_L                        0
+#define RK801_RST_MSK                            (0x3 << 4)
+#define RK801_RST_RESTART_PMU                    (0x0 << 4)
+#define RK801_RST_RESTART_REG                    (0x1 << 4)
+#define RK801_RST_RESTART_REG_RESETB             (0x2 << 4)
+
+/* RK801_INT_CONFIG_REG */
+#define RK801_INT_POL_MSK                        BIT(1)
+#define RK801_INT_ACT_H                          BIT(1)
+#define RK801_INT_ACT_L                          0
+
+#define RK801_FPWM_MODE                          1
+#define RK801_AUTO_PWM_MODE                      0
+#define RK801_PLDO_HRDEC_EN                      BIT(6)
 
 /*
  * rk808 Global Register Map.
@@ -564,6 +676,11 @@ enum rk805_reg {
 #define RK805_OUT_REG			0x52
 #define RK805_ON_SOURCE_REG		0xAE
 #define RK805_OFF_SOURCE_REG		0xAF
+#define RK805B_VSELTABLE_REG		0x71
+
+#define RK805B_VSELTABLE_4OR8		0x80
+#define RK805B_CHIP_VER_MSK		0x0F
+#define RK805B_CHIP_VER_NUM		0x04
 
 #define RK805_NUM_REGULATORS		7
 
@@ -622,6 +739,9 @@ enum rk805_reg {
 #define RK805_RAMP_RATE_6MV_PER_US	(1 << RK805_RAMP_RATE_OFFSET)
 #define RK805_RAMP_RATE_12_5MV_PER_US	(2 << RK805_RAMP_RATE_OFFSET)
 #define RK805_RAMP_RATE_25MV_PER_US	(3 << RK805_RAMP_RATE_OFFSET)
+
+#define RK805_SLP_POL_MASK		(1 << 1)
+#define RK805_SLP_POL_SHIFT		1
 
 /* RK808 IRQ Definitions */
 #define RK808_IRQ_VOUT_LO	0
@@ -808,6 +928,7 @@ enum rk805_reg {
 #define SWITCH2_EN	BIT(6)
 #define SWITCH1_EN	BIT(5)
 #define DEV_OFF_RST	BIT(3)
+#define DEV_RST		BIT(2)
 #define DEV_OFF		BIT(0)
 #define RTC_STOP	BIT(0)
 
@@ -826,6 +947,7 @@ enum rk805_reg {
 #define SHUTDOWN_FUN			(0x2 << 2)
 #define SLEEP_FUN			(0x1 << 2)
 #define RK8XX_ID_MSK			0xfff0
+#define RK801_ID_MSK			0xffff
 #define PWM_MODE_MSK			BIT(7)
 #define FPWM_MODE			BIT(7)
 #define AUTO_PWM_MODE			0
@@ -880,6 +1002,158 @@ enum rk809_reg_id {
 #define RK817_POWER_EN_SAVE0            0x99
 #define RK817_POWER_EN_SAVE1            0xa4
 
+/* RK817 Codec Registers */
+#define RK817_CODEC_DTOP_VUCTL		0x12
+#define RK817_CODEC_DTOP_VUCTIME	0x13
+#define RK817_CODEC_DTOP_LPT_SRST	0x14
+#define RK817_CODEC_DTOP_DIGEN_CLKE	0x15
+#define RK817_CODEC_AREF_RTCFG0		0x16
+#define RK817_CODEC_AREF_RTCFG1		0x17
+#define RK817_CODEC_AADC_CFG0		0x18
+#define RK817_CODEC_AADC_CFG1		0x19
+#define RK817_CODEC_DADC_VOLL		0x1a
+#define RK817_CODEC_DADC_VOLR		0x1b
+#define RK817_CODEC_DADC_SR_ACL0	0x1e
+#define RK817_CODEC_DADC_ALC1		0x1f
+#define RK817_CODEC_DADC_ALC2		0x20
+#define RK817_CODEC_DADC_NG		0x21
+#define RK817_CODEC_DADC_HPF		0x22
+#define RK817_CODEC_DADC_RVOLL		0x23
+#define RK817_CODEC_DADC_RVOLR		0x24
+#define RK817_CODEC_AMIC_CFG0		0x27
+#define RK817_CODEC_AMIC_CFG1		0x28
+#define RK817_CODEC_DMIC_PGA_GAIN	0x29
+#define RK817_CODEC_DMIC_LMT1		0x2a
+#define RK817_CODEC_DMIC_LMT2		0x2b
+#define RK817_CODEC_DMIC_NG1		0x2c
+#define RK817_CODEC_DMIC_NG2		0x2d
+#define RK817_CODEC_ADAC_CFG0		0x2e
+#define RK817_CODEC_ADAC_CFG1		0x2f
+#define RK817_CODEC_DDAC_POPD_DACST	0x30
+#define RK817_CODEC_DDAC_VOLL		0x31
+#define RK817_CODEC_DDAC_VOLR		0x32
+#define RK817_CODEC_DDAC_SR_LMT0	0x35
+#define RK817_CODEC_DDAC_LMT1		0x36
+#define RK817_CODEC_DDAC_LMT2		0x37
+#define RK817_CODEC_DDAC_MUTE_MIXCTL	0x38
+#define RK817_CODEC_DDAC_RVOLL		0x39
+#define RK817_CODEC_DDAC_RVOLR		0x3a
+#define RK817_CODEC_AHP_ANTI0		0x3b
+#define RK817_CODEC_AHP_ANTI1		0x3c
+#define RK817_CODEC_AHP_CFG0		0x3d
+#define RK817_CODEC_AHP_CFG1		0x3e
+#define RK817_CODEC_AHP_CP		0x3f
+#define RK817_CODEC_ACLASSD_CFG1	0x40
+#define RK817_CODEC_ACLASSD_CFG2	0x41
+#define RK817_CODEC_APLL_CFG0		0x42
+#define RK817_CODEC_APLL_CFG1		0x43
+#define RK817_CODEC_APLL_CFG2		0x44
+#define RK817_CODEC_APLL_CFG3		0x45
+#define RK817_CODEC_APLL_CFG4		0x46
+#define RK817_CODEC_APLL_CFG5		0x47
+#define RK817_CODEC_DI2S_CKM		0x48
+#define RK817_CODEC_DI2S_RSD		0x49
+#define RK817_CODEC_DI2S_RXCR1		0x4a
+#define RK817_CODEC_DI2S_RXCR2		0x4b
+#define RK817_CODEC_DI2S_RXCMD_TSD	0x4c
+#define RK817_CODEC_DI2S_TXCR1		0x4d
+#define RK817_CODEC_DI2S_TXCR2		0x4e
+#define RK817_CODEC_DI2S_TXCR3_TXCMD	0x4f
+
+/* RK817_CODEC_DI2S_CKM */
+#define RK817_I2S_MODE_MASK		(0x1 << 0)
+#define RK817_I2S_MODE_MST		(0x1 << 0)
+#define RK817_I2S_MODE_SLV		(0x0 << 0)
+
+/* RK817_CODEC_DDAC_MUTE_MIXCTL */
+#define DACMT_MASK			(0x1 << 0)
+#define DACMT_ENABLE			(0x1 << 0)
+#define DACMT_DISABLE			(0x0 << 0)
+
+/* RK817_CODEC_DI2S_RXCR2 */
+#define VDW_RX_24BITS			(0x17)
+#define VDW_RX_16BITS			(0x0f)
+
+/* RK817_CODEC_DI2S_TXCR2 */
+#define VDW_TX_24BITS			(0x17)
+#define VDW_TX_16BITS			(0x0f)
+
+/* RK817_CODEC_AMIC_CFG0 */
+#define MIC_DIFF_MASK			(0x1 << 7)
+#define MIC_DIFF_DIS			(0x0 << 7)
+#define MIC_DIFF_EN			(0x1 << 7)
+
+/* RK817 Battery Registers */
+#define RK817_GAS_GAUGE_ADC_CONFIG0	0x50
+#define RK817_GG_EN			(0x1 << 7)
+#define RK817_SYS_VOL_ADC_EN		(0x1 << 6)
+#define RK817_TS_ADC_EN			(0x1 << 5)
+#define RK817_USB_VOL_ADC_EN		(0x1 << 4)
+#define RK817_BAT_VOL_ADC_EN		(0x1 << 3)
+#define RK817_BAT_CUR_ADC_EN		(0x1 << 2)
+
+#define RK817_GAS_GAUGE_ADC_CONFIG1	0x55
+
+#define RK817_VOL_CUR_CALIB_UPD		BIT(7)
+
+#define RK817_GAS_GAUGE_GG_CON		0x56
+#define RK817_GAS_GAUGE_GG_STS		0x57
+
+#define RK817_BAT_CON			(0x1 << 4)
+#define RK817_RELAX_VOL_UPD		(0x3 << 2)
+#define RK817_RELAX_STS			(0x1 << 1)
+
+#define RK817_GAS_GAUGE_RELAX_THRE_H	0x58
+#define RK817_GAS_GAUGE_RELAX_THRE_L	0x59
+#define RK817_GAS_GAUGE_OCV_THRE_VOL	0x62
+#define RK817_GAS_GAUGE_OCV_VOL_H	0x63
+#define RK817_GAS_GAUGE_OCV_VOL_L	0x64
+#define RK817_GAS_GAUGE_PWRON_VOL_H	0x6b
+#define RK817_GAS_GAUGE_PWRON_VOL_L	0x6c
+#define RK817_GAS_GAUGE_PWRON_CUR_H	0x6d
+#define RK817_GAS_GAUGE_PWRON_CUR_L	0x6e
+#define RK817_GAS_GAUGE_OFF_CNT		0x6f
+#define RK817_GAS_GAUGE_Q_INIT_H3	0x70
+#define RK817_GAS_GAUGE_Q_INIT_H2	0x71
+#define RK817_GAS_GAUGE_Q_INIT_L1	0x72
+#define RK817_GAS_GAUGE_Q_INIT_L0	0x73
+#define RK817_GAS_GAUGE_Q_PRES_H3	0x74
+#define RK817_GAS_GAUGE_Q_PRES_H2	0x75
+#define RK817_GAS_GAUGE_Q_PRES_L1	0x76
+#define RK817_GAS_GAUGE_Q_PRES_L0	0x77
+#define RK817_GAS_GAUGE_BAT_VOL_H	0x78
+#define RK817_GAS_GAUGE_BAT_VOL_L	0x79
+#define RK817_GAS_GAUGE_BAT_CUR_H	0x7a
+#define RK817_GAS_GAUGE_BAT_CUR_L	0x7b
+#define RK817_GAS_GAUGE_USB_VOL_H	0x7e
+#define RK817_GAS_GAUGE_USB_VOL_L	0x7f
+#define RK817_GAS_GAUGE_SYS_VOL_H	0x80
+#define RK817_GAS_GAUGE_SYS_VOL_L	0x81
+#define RK817_GAS_GAUGE_Q_MAX_H3	0x82
+#define RK817_GAS_GAUGE_Q_MAX_H2	0x83
+#define RK817_GAS_GAUGE_Q_MAX_L1	0x84
+#define RK817_GAS_GAUGE_Q_MAX_L0	0x85
+#define RK817_GAS_GAUGE_SLEEP_CON_SAMP_CUR_H	0x8f
+#define RK817_GAS_GAUGE_SLEEP_CON_SAMP_CUR_L	0x90
+#define RK817_GAS_GAUGE_CAL_OFFSET_H	0x91
+#define RK817_GAS_GAUGE_CAL_OFFSET_L	0x92
+#define RK817_GAS_GAUGE_VCALIB0_H	0x93
+#define RK817_GAS_GAUGE_VCALIB0_L	0x94
+#define RK817_GAS_GAUGE_VCALIB1_H	0x95
+#define RK817_GAS_GAUGE_VCALIB1_L	0x96
+#define RK817_GAS_GAUGE_IOFFSET_H	0x97
+#define RK817_GAS_GAUGE_IOFFSET_L	0x98
+#define RK817_GAS_GAUGE_BAT_R1		0x9a
+#define RK817_GAS_GAUGE_BAT_R2		0x9b
+#define RK817_GAS_GAUGE_BAT_R3		0x9c
+#define RK817_GAS_GAUGE_DATA0		0x9d
+#define RK817_GAS_GAUGE_DATA1		0x9e
+#define RK817_GAS_GAUGE_DATA2		0x9f
+#define RK817_GAS_GAUGE_DATA3		0xa0
+#define RK817_GAS_GAUGE_DATA4		0xa1
+#define RK817_GAS_GAUGE_DATA5		0xa2
+#define RK817_GAS_GAUGE_CUR_ADC_K0	0xb0
+
 #define RK817_POWER_EN_REG(i)		(0xb1 + (i))
 #define RK817_POWER_SLP_EN_REG(i)	(0xb5 + (i))
 
@@ -905,13 +1179,30 @@ enum rk809_reg_id {
 #define RK817_LDO_ON_VSEL_REG(idx)	(0xcc + (idx) * 2)
 #define RK817_BOOST_OTG_CFG		(0xde)
 
-#define RK817_CHRG_OUT			0xe4
-#define RK817_CHRG_IN			0xe5
-#define RK817_CHRG_STS			0xeb
+#define RK817_PMIC_CHRG_OUT		0xe4
+#define RK817_CHRG_VOL_SEL		(0x07 << 4)
+#define RK817_CHRG_CUR_SEL		(0x07 << 0)
+
+#define RK817_PMIC_CHRG_IN		0xe5
+#define RK817_USB_VLIM_EN		(0x01 << 7)
+#define RK817_USB_VLIM_SEL		(0x07 << 4)
+#define RK817_USB_ILIM_EN		(0x01 << 3)
+#define RK817_USB_ILIM_SEL		(0x07 << 0)
+#define RK817_PMIC_CHRG_TERM		0xe6
+#define RK817_CHRG_TERM_ANA_DIG		(0x01 << 2)
+#define RK817_CHRG_TERM_ANA_SEL		(0x03 << 0)
+#define RK817_CHRG_EN			(0x01 << 6)
+
+#define RK817_PMIC_CHRG_STS		0xeb
+#define RK817_BAT_EXS			BIT(7)
+#define RK817_CHG_STS			(0x07 << 4)
+
 #define RK817_ID_MSB			0xed
 #define RK817_ID_LSB			0xee
 
 #define RK817_SYS_STS			0xf0
+#define RK817_PLUG_IN_STS		(0x1 << 6)
+
 #define RK817_SYS_CFG(i)		(0xf1 + (i))
 
 #define RK817_ON_SOURCE_REG		0xf5
@@ -1052,6 +1343,7 @@ enum {
 };
 
 enum {
+	RK801_ID = 0x8010,
 	RK805_ID = 0x8050,
 	RK808_ID = 0x0000,
 	RK809_ID = 0x8090,
@@ -1067,16 +1359,30 @@ struct rk808_pin_info {
 	struct pinctrl_state *sleep;
 };
 
+struct rk808_pwrctrl {
+	struct gpio_desc *gpio;
+	bool req_pwrctrl_dvs;
+	bool act_low;
+};
+
 struct rk808 {
 	struct i2c_client		*i2c;
 	struct regmap_irq_chip_data	*irq_data;
 	struct regmap_irq_chip_data	*battery_irq_data;
 	struct regmap			*regmap;
 	long				variant;
+	int				vsel_table;
 	const struct regmap_config	*regmap_cfg;
 	const struct regmap_irq_chip	*regmap_irq_chip;
-	void				(*pm_pwroff_fn)(void);
 	void				(*pm_pwroff_prep_fn)(void);
 	struct rk808_pin_info *pins;
+	struct rk808_pwrctrl pwrctrl;
 };
+
+#if IS_REACHABLE(CONFIG_MFD_RK808)
+int rk8xx_suspend_sync(void);
+#else
+static inline int rk8xx_suspend_sync(void) { return -ENODEV; }
+#endif
+
 #endif /* __LINUX_REGULATOR_RK808_H */

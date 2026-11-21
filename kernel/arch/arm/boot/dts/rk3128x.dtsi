@@ -87,7 +87,7 @@
 			5   254   1
 		>;
 		nvmem-cells = <&cpu_leakage>;
-		nvmem-cell-names = "cpu_leakage";
+		nvmem-cell-names = "leakage";
 
 		opp-408000000 {
 			opp-hz = /bits/ 64 <408000000>;
@@ -181,7 +181,7 @@
 			6   254  1
 		>;
 		nvmem-cells = <&logic_leakage>;
-		nvmem-cell-names = "ddr_leakage";
+		nvmem-cell-names = "leakage";
 
 		opp-300000000 {
 			opp-hz = /bits/ 64 <300000000>;
@@ -806,7 +806,7 @@
 			6   254  1
 		>;
 		nvmem-cells = <&logic_leakage>;
-		nvmem-cell-names = "gpu_leakage";
+		nvmem-cell-names = "leakage";
 
 		opp-200000000 {
 			opp-hz = /bits/ 64 <200000000>;
@@ -896,7 +896,7 @@
 			6   254  1
 		>;
 		nvmem-cells = <&logic_leakage>;
-		nvmem-cell-names = "rkvdec_leakage";
+		nvmem-cell-names = "leakage";
 
 		opp-100000000 {
 			opp-hz = /bits/ 64 <100000000>;
@@ -1556,11 +1556,19 @@
 			pwm0_pin_pull_down: pwm0-pin-pull-down {
 				rockchip,pins = <3 RK_PC5 1 &pcfg_pull_down>;
 			};
+
+			pwm0_pin_pull_down: pwm0-pin-pull-down {
+				rockchip,pins = <3 RK_PC5 1 &pcfg_pull_down>;
+			};
 		};
 
 		pwm1 {
 			pwm1_pin: pwm1-pin {
 				rockchip,pins = <0 RK_PD6 2 &pcfg_pull_none>;
+			};
+
+			pwm1_pin_pull_down: pwm1-pin-pull-down {
+				rockchip,pins = <0 RK_PD6 2 &pcfg_pull_down>;
 			};
 
 			pwm1_pin_pull_down: pwm1-pin-pull-down {
@@ -1576,11 +1584,19 @@
 			pwm2_pin_pull_down: pwm2-pin-pull-down {
 				rockchip,pins = <1 RK_PB4 2 &pcfg_pull_down>;
 			};
+
+			pwm2_pin_pull_down: pwm2-pin-pull-down {
+				rockchip,pins = <1 RK_PB4 2 &pcfg_pull_down>;
+			};
 		};
 
 		pwm3 {
 			pwm3_pin: pwm3-pin {
 				rockchip,pins = <1 RK_PB3 2 &pcfg_pull_none>;
+			};
+
+			pwm3_pin_pull_down: pwm3-pin-pull-down {
+				rockchip,pins = <1 RK_PB3 2 &pcfg_pull_down>;
 			};
 
 			pwm3_pin_pull_down: pwm3-pin-pull-down {

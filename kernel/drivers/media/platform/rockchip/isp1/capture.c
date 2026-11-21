@@ -920,7 +920,7 @@ static int raw_config_mi(struct rkisp1_stream *stream)
 
 	if (!dev->active_sensor ||
 	    (dev->active_sensor &&
-	     dev->active_sensor->mbus.type != V4L2_MBUS_CSI2)) {
+	     dev->active_sensor->mbus.type != V4L2_MBUS_CSI2_DPHY)) {
 		if (stream->id == RKISP1_STREAM_RAW)
 			v4l2_err(&dev->v4l2_dev,
 				 "only mipi sensor support raw path\n");
@@ -1381,7 +1381,7 @@ static int rkisp1_create_dummy_buf(struct rkisp1_stream *stream)
 		stream->out_fmt.plane_fmt[1].sizeimage,
 		stream->out_fmt.plane_fmt[2].sizeimage);
 	if (dev->active_sensor &&
-	    dev->active_sensor->mbus.type == V4L2_MBUS_CSI2 &&
+	    dev->active_sensor->mbus.type == V4L2_MBUS_CSI2_DPHY &&
 	    (dev->isp_ver == ISP_V12 ||
 	     dev->isp_ver == ISP_V13)) {
 		u32 in_size;
@@ -1412,12 +1412,25 @@ static void rkisp1_destroy_dummy_buf(struct rkisp1_stream *stream)
 			  dummy_buf->vaddr, dummy_buf->dma_addr);
 }
 
-static void destroy_buf_queue(struct rkisp1_stream *stream,
-			      enum vb2_buffer_state state)
+static void rkisp1_stop_streaming(struct vb2_queue *queue)
 {
+	struct rkisp1_stream *stream = queue->drv_priv;
+	struct rkisp1_vdev_node *node = &stream->vnode;
+	struct rkisp1_device *dev = stream->ispdev;
+	struct v4l2_device *v4l2_dev = &dev->v4l2_dev;
 	struct rkisp1_buffer *buf;
 	unsigned long lock_flags = 0;
+	int ret;
 
+	rkisp1_stream_stop(stream);
+	/* call to the other devices */
+	video_device_pipeline_stop(&node->vdev);
+	ret = dev->pipe.set_stream(&dev->pipe, false);
+	if (ret < 0)
+		v4l2_err(v4l2_dev, "pipeline stream-off failed error:%d\n",
+			 ret);
+
+	/* release buffers */
 	spin_lock_irqsave(&stream->vbq_lock, lock_flags);
 	if (stream->curr_buf) {
 		list_add_tail(&stream->curr_buf->queue, &stream->buf_queue);
@@ -1433,29 +1446,9 @@ static void destroy_buf_queue(struct rkisp1_stream *stream,
 		buf = list_first_entry(&stream->buf_queue,
 				       struct rkisp1_buffer, queue);
 		list_del(&buf->queue);
-		vb2_buffer_done(&buf->vb.vb2_buf, state);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 	}
 	spin_unlock_irqrestore(&stream->vbq_lock, lock_flags);
-}
-
-static void rkisp1_stop_streaming(struct vb2_queue *queue)
-{
-	struct rkisp1_stream *stream = queue->drv_priv;
-	struct rkisp1_vdev_node *node = &stream->vnode;
-	struct rkisp1_device *dev = stream->ispdev;
-	struct v4l2_device *v4l2_dev = &dev->v4l2_dev;
-	int ret;
-
-	rkisp1_stream_stop(stream);
-	/* call to the other devices */
-	media_pipeline_stop(&node->vdev.entity);
-	ret = dev->pipe.set_stream(&dev->pipe, false);
-	if (ret < 0)
-		v4l2_err(v4l2_dev, "pipeline stream-off failed error:%d\n",
-			 ret);
-
-	/* release buffers */
-	destroy_buf_queue(stream, VB2_BUF_STATE_ERROR);
 
 	ret = dev->pipe.close(&dev->pipe);
 	if (ret < 0)
@@ -1506,6 +1499,7 @@ rkisp1_start_streaming(struct vb2_queue *queue, unsigned int count)
 	struct rkisp1_device *dev = stream->ispdev;
 	struct v4l2_device *v4l2_dev = &dev->v4l2_dev;
 	int ret;
+	unsigned int i;
 
 	if (WARN_ON(stream->streaming))
 		return -EBUSY;
@@ -1558,7 +1552,7 @@ rkisp1_start_streaming(struct vb2_queue *queue, unsigned int count)
 	if (ret < 0)
 		goto stop_stream;
 
-	ret = media_pipeline_start(&node->vdev.entity, &dev->pipe.pipe);
+	ret = video_device_pipeline_start(&node->vdev, &dev->pipe.pipe);
 	if (ret < 0) {
 		v4l2_err(&dev->v4l2_dev, "start pipeline failed %d\n", ret);
 		goto pipe_stream_off;
@@ -1575,8 +1569,14 @@ close_pipe:
 destroy_dummy_buf:
 	rkisp1_destroy_dummy_buf(stream);
 buffer_done:
-	destroy_buf_queue(stream, VB2_BUF_STATE_QUEUED);
-	stream->streaming = false;
+	for (i = 0; i < queue->num_buffers; ++i) {
+		struct vb2_buffer *vb;
+
+		vb = queue->bufs[i];
+		if (vb->state == VB2_BUF_STATE_ACTIVE)
+			vb2_buffer_done(vb, VB2_BUF_STATE_QUEUED);
+	}
+
 	return ret;
 }
 
@@ -1739,7 +1739,7 @@ int rkisp1_fh_open(struct file *filp)
 	ret = v4l2_fh_open(filp);
 	if (!ret) {
 		atomic_inc(&dev->open_cnt);
-		ret = v4l2_pipeline_pm_use(&stream->vnode.vdev.entity, 1);
+		ret = v4l2_pipeline_pm_get(&stream->vnode.vdev.entity);
 		if (ret < 0)
 			vb2_fop_release(filp);
 	}
@@ -1755,7 +1755,7 @@ int rkisp1_fop_release(struct file *file)
 
 	ret = vb2_fop_release(file);
 	if (!ret) {
-		ret = v4l2_pipeline_pm_use(&stream->vnode.vdev.entity, 0);
+		ret = v4l2_pipeline_pm_get(&stream->vnode.vdev.entity);
 		if (ret < 0)
 			v4l2_err(&dev->v4l2_dev,
 				"set pipeline power failed %d\n", ret);
@@ -1832,7 +1832,7 @@ static int rkisp1_enum_input(struct file *file, void *priv,
 		return -EINVAL;
 
 	input->type = V4L2_INPUT_TYPE_CAMERA;
-	strlcpy(input->name, "Camera", sizeof(input->name));
+	strscpy(input->name, "Camera", sizeof(input->name));
 
 	return 0;
 }
@@ -2053,7 +2053,7 @@ static int rkisp1_querycap(struct file *file, void *priv,
 	struct device *dev = stream->ispdev->dev;
 	struct video_device *vdev = video_devdata(file);
 
-	strlcpy(cap->card, vdev->name, sizeof(cap->card));
+	strscpy(cap->card, vdev->name, sizeof(cap->card));
 	snprintf(cap->driver, sizeof(cap->driver),
 		 "%s_v%d", dev->driver->name,
 		 stream->ispdev->isp_ver >> 4);
@@ -2075,7 +2075,7 @@ static const struct v4l2_ioctl_ops rkisp1_v4l2_ioctl_ops = {
 	.vidioc_streamoff = vb2_ioctl_streamoff,
 	.vidioc_enum_input = rkisp1_enum_input,
 	.vidioc_try_fmt_vid_cap_mplane = rkisp1_try_fmt_vid_cap_mplane,
-	.vidioc_enum_fmt_vid_cap_mplane = rkisp1_enum_fmt_vid_cap_mplane,
+	.vidioc_enum_fmt_vid_cap = rkisp1_enum_fmt_vid_cap_mplane,
 	.vidioc_s_fmt_vid_cap_mplane = rkisp1_s_fmt_vid_cap_mplane,
 	.vidioc_g_fmt_vid_cap_mplane = rkisp1_g_fmt_vid_cap_mplane,
 	.vidioc_s_selection = rkisp1_s_selection,
@@ -2141,9 +2141,9 @@ static int rkisp1_register_stream_vdev(struct rkisp1_stream *stream)
 		break;
 	default:
 		v4l2_err(v4l2_dev, "Invalid stream\n");
-		goto unreg;
+		return -EINVAL;
 	}
-	strlcpy(vdev->name, vdev_name, sizeof(vdev->name));
+	strscpy(vdev->name, vdev_name, sizeof(vdev->name));
 	node = vdev_to_node(vdev);
 
 	vdev->ioctl_ops = &rkisp1_v4l2_ioctl_ops;
@@ -2162,7 +2162,7 @@ static int rkisp1_register_stream_vdev(struct rkisp1_stream *stream)
 			     V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 	vdev->queue = &node->buf_queue;
 
-	ret = video_register_device(vdev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
 		v4l2_err(v4l2_dev,
 			 "video_register_device failed with error %d\n", ret);

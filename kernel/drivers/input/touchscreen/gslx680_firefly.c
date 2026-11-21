@@ -19,6 +19,7 @@
 #include <linux/platform_device.h>
 #include <linux/async.h>
 #include <linux/irq.h>
+#include <linux/workqueue.h>
 #include <linux/proc_fs.h>
 #include <linux/input/mt.h>
 
@@ -59,8 +60,11 @@ static u8 gsl_data_proc[8] = {0};
 static u8 gsl_proc_flag;
 #endif
 
-/* Panel type from gsl_identify_tp(): 0 = not identified, else 1..3. */
-static int gsl_tp_type;
+#ifdef GSLX680_COMPATIBLE
+static char chip_type = 0x36;
+#endif
+
+static char is_noid_version;
 static struct i2c_client *gsl_client;
 #define I2C_SPEED (200 * 1000)
 
@@ -124,6 +128,8 @@ static struct gsl_ts_data devices[] = {
 struct gsl_ts {
 	struct i2c_client *client;
 	struct input_dev *input;
+	struct work_struct work;
+	struct workqueue_struct *wq;
 	struct gsl_ts_data *dd;
 	u8 *touch_data;
 	u8 device_id;
@@ -229,19 +235,31 @@ static int gsl_ts_read(struct i2c_client *client, u8 addr, u8 *pdata, unsigned i
 	return i2c_master_recv(client, pdata, datalen);
 }
 
-static unsigned int *gsl_tp_config(void)
+#ifdef GSLX680_COMPATIBLE
+static void judge_chip_type(struct i2c_client *client)
 {
-	switch (gsl_tp_type) {
-	case 1:
-		return gsl_config_data_id_1;
-	case 2:
-		return gsl_config_data_id_2;
-	case 3:
-		return gsl_config_data_id_3;
-	default:
-		return gsl_config_data_id_check;
+	u8 read_buf[4]  = {0, 0, 0, 0};
+
+	printk("org chip_type=%x\n", chip_type);
+	msleep(50);
+	gsl_ts_read(client, 0xfc, read_buf, sizeof(read_buf));
+
+	if (read_buf[2] != 0x36 && read_buf[2] != 0x88) {
+		msleep(50);
+		gsl_ts_read(client, 0xfc, read_buf, sizeof(read_buf));
 	}
+
+	if (read_buf[2] == 0x36) {
+		chip_type = 0x36;
+		is_noid_version = 1;
+	} else {
+		chip_type = 0x88;
+		is_noid_version = 0;
+	}
+
+	print_info("chip_type=%x, reg=%x\n", chip_type, read_buf[2]);
 }
+#endif
 
 static __inline__ void fw2buf(u8 *buf, const u32 *fw)
 {
@@ -249,14 +267,21 @@ static __inline__ void fw2buf(u8 *buf, const u32 *fw)
 	*u32_buf = *fw;
 }
 
-static void gsl_load_fw(struct i2c_client *client, const struct fw_data *ptr_fw,
-			u32 source_len)
+static void gsl_load_fw(struct i2c_client *client)
 {
 	u8 buf[DMA_TRANS_LEN * 4 + 1] = {0};
 	u8 send_flag = 1;
 	u8 *cur = buf + 1;
 	u32 source_line = 0;
+	u32 source_len = 0;
+	const struct fw_data *ptr_fw = NULL;
 
+#ifdef GSLX680_COMPATIBLE
+	if (0x36 == chip_type) {
+		ptr_fw = GSL3680B_FW;
+		source_len = ARRAY_SIZE(GSL3680B_FW);
+	}
+#endif
 	for (source_line = 0; source_line < source_len; source_line++) {
 		/* init page trans, set the page val */
 		if (GSL_PAGE_REG == ptr_fw[source_line].offset) {
@@ -304,7 +329,8 @@ static void startup_chip(struct i2c_client *client)
 {
 	u8 tmp = 0x00;
 #ifdef GSL_NOID_VERSION
-	gsl_DataInit(gsl_tp_config());
+	if (is_noid_version)
+		gsl_DataInit(gsl_config_data_id_3680B);
 #endif
 	gsl_ts_write(client, 0xe0, &tmp, 1);
 	msleep(10);
@@ -342,42 +368,6 @@ static void clr_reg(struct i2c_client *client)
 	msleep(20);
 }
 
-/*
- * Stock panel identification: run the check firmware, then match the id
- * word at 0xb8 against the two known panel ids.
- */
-static void gsl_identify_tp(struct i2c_client *client)
-{
-	u8 buf[4] = {0};
-	u32 val, diff1, diff2;
-
-	clr_reg(client);
-	reset_chip(client);
-	gsl_load_fw(client, GSL_TP_CHECK_FW, ARRAY_SIZE(GSL_TP_CHECK_FW));
-	startup_chip(client);
-	msleep(200);
-
-	gsl_ts_read(client, 0xb4, buf, sizeof(buf));
-	if (((buf[3] << 8) | buf[2]) <= 1) {
-		dev_err(&client->dev, "gslX680: check firmware not running, panel not identified\n");
-		return;
-	}
-
-	msleep(20);
-	gsl_ts_read(client, 0xb8, buf, sizeof(buf));
-	val = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
-	diff1 = hweight32(val ^ 0x138010) + 100 * hweight32(~val & 0x138010);
-	diff2 = hweight32(val ^ 0x13c010) + 100 * hweight32(~val & 0x13c010);
-	if (diff1 > diff2)
-		gsl_tp_type = 2;
-	else if (diff1 == 0)
-		gsl_tp_type = 1;
-	else
-		gsl_tp_type = 3;
-
-	dev_info(&client->dev, "gslX680: panel id 0x%08x, type %d\n", val, gsl_tp_type);
-}
-
 static void init_chip(struct i2c_client *client)
 {
 	int rc;
@@ -393,21 +383,7 @@ static void init_chip(struct i2c_client *client)
 	}
 	clr_reg(client);
 	reset_chip(client);
-	if (!gsl_tp_type) {
-		gsl_identify_tp(client);
-		reset_chip(client);
-	}
-	switch (gsl_tp_type) {
-	case 1:
-		gsl_load_fw(client, GSLX680_FW_1, ARRAY_SIZE(GSLX680_FW_1));
-		break;
-	case 2:
-		gsl_load_fw(client, GSLX680_FW_2, ARRAY_SIZE(GSLX680_FW_2));
-		break;
-	case 3:
-		gsl_load_fw(client, GSLX680_FW_3, ARRAY_SIZE(GSLX680_FW_3));
-		break;
-	}
+	gsl_load_fw(client);
 	startup_chip(client);
 	reset_chip(client);
 	startup_chip(client);
@@ -450,8 +426,8 @@ static int gsl_config_read_proc(char *page, char **start, off_t off, int count, 
 		if ('i' == gsl_read[3]) {
 		tmp = (gsl_data_proc[5] << 8) | gsl_data_proc[4];
 		ptr += s printf(ptr, "gsl_config_data_id[%d] = ", tmp);
-		if (tmp >= 0 && tmp < GSL_CONFIG_LEN) {
-			ptr += sprintf(ptr, "%d\n", gsl_tp_config()[tmp]);
+		if (tmp >= 0 && tmp < ARRAY_SIZE(gsl_config_data_id_3680B)) {
+			ptr += sprintf(ptr, "%d\n", gsl_config_data_id_3680B[tmp]);
 		} else {
 			gsl_ts_write(gsl_client, 0Xf0, &gsl_data_proc[4], 4);
 			if (gsl_data_proc[0] < 0x80)
@@ -522,8 +498,8 @@ static int gsl_config_write_proc(struct file *file, const char *buffer, unsigned
 	else if ('i' == temp_buf[0] && 'd' == temp_buf[1]) {
 		tmp1 = (buf[7] << 24) | (buf[6] << 16) | (buf[5] << 8) | buf[4];
 		tmp = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
-		if (tmp1 >= 0 && tmp1 < GSL_CONFIG_LEN)
-			gsl_tp_config()[tmp1] = tmp;
+		if (tmp1 >= 0 && tmp1 < ARRAY_SIZE(gsl_config_data_id_3680B))
+			gsl_config_data_id_3680B[tmp1] = tmp;
 	}
 #endif
 exit_write_proc_out:
@@ -575,6 +551,59 @@ static void filter_point(u16 x, u16 y, u8 id)
 	x_old[id] = x_new;
 	y_old[id] = y_new;
 }
+#else
+static void record_point(u16 x, u16 y, u8 id)
+{
+	u16 x_err = 0;
+	u16 y_err = 0;
+
+	id_sign[id] = id_sign[id] + 1;
+
+	if (id_sign[id] == 1) {
+		x_old[id] = x;
+		y_old[id] = y;
+	}
+
+	x = (x_old[id] + x) / 2;
+	y = (y_old[id] + y) / 2;
+
+	if (x > x_old[id])
+		x_err = x - x_old[id];
+	else
+		x_err = x_old[id] - x;
+
+	if (y > y_old[id])
+		y_err = y - y_old[id];
+	else
+		y_err = y_old[id] - y;
+
+	if ((x_err > 3 && y_err > 1) || (x_err > 1 && y_err > 3)) {
+		x_new = x;
+		x_old[id] = x;
+		y_new = y;
+		y_old[id] = y;
+	} else {
+		if (x_err > 3) {
+			x_new = x;
+			x_old[id] = x;
+		} else {
+			x_new = x_old[id];
+		}
+
+		if (y_err > 3) {
+			y_new = y;
+			y_old[id] = y;
+		} else {
+			y_new = y_old[id];
+		}
+	}
+
+	if (id_sign[id] == 1) {
+		x_new = x_old[id];
+		y_new = y_old[id];
+	}
+}
+
 #endif
 
 #ifdef HAVE_TOUCH_KEY
@@ -596,14 +625,14 @@ static void report_key(struct gsl_ts *ts, u16 x, u16 y)
 
 static void report_data(struct gsl_ts *ts, u16 x, u16 y, u8 pressure, u8 id)
 {
-	if (ts->swap_xy == 1)
-		swap(x, y);
-
 	if (ts->flip_x == 1)
 		x = SCREEN_MAX_X - x;
 
 	if (ts->flip_y == 1)
 		y = SCREEN_MAX_Y - y;
+
+	if (ts->swap_xy == 1)
+		swap(x, y);
 
 	print_info("#####id=%d,x=%d,y=%d######\n", id, x, y);
 
@@ -635,7 +664,7 @@ static void report_data(struct gsl_ts *ts, u16 x, u16 y, u8 pressure, u8 id)
 #endif
 }
 
-static void gslX680_ts_read_frame(struct gsl_ts *ts)
+static void gslX680_ts_worker(struct work_struct *work)
 {
 	int rc, i;
 	u8 id, touches;
@@ -647,15 +676,17 @@ static void gslX680_ts_read_frame(struct gsl_ts *ts)
 	struct gsl_touch_info cinfo = {{0} };
 #endif
 
+	struct gsl_ts *ts = container_of(work, struct gsl_ts, work);
+
 #ifdef TPD_PROC_DEBUG
 	if (gsl_proc_flag == 1)
-		return;
+		goto schedule;
 #endif
 
 	rc = gsl_ts_read(ts->client, 0x80, ts->touch_data, ts->dd->data_size);
 	if (rc < 0) {
 		dev_err(&ts->client->dev, "read failed\n");
-		return;
+		goto schedule;
 	}
 
 	touches = ts->touch_data[ts->dd->touch_index];
@@ -711,8 +742,7 @@ static void gslX680_ts_read_frame(struct gsl_ts *ts)
 		#ifdef FILTER_POINT
 			filter_point(x, y, id);
 		#else
-			x_new = x;
-			y_new = y;
+			record_point(x, y, id);
 		#endif
 			report_data(ts, x_new, y_new, 10, id);
 			id_state_flag[id] = 1;
@@ -742,6 +772,9 @@ static void gslX680_ts_read_frame(struct gsl_ts *ts)
 	}
 #endif
 	input_sync(ts->input);
+
+schedule:
+	enable_irq(ts->irq);
 }
 
 extern void regulator_ctrl_vcc_tp(bool on);
@@ -752,7 +785,9 @@ static irqreturn_t gsl_ts_irq(int irq, void *dev_id)
 
 	print_info("========gslX680 Interrupt=========\n");
 
-	gslX680_ts_read_frame(ts);
+	disable_irq_nosync(ts->irq);
+	if (!work_pending(&ts->work))
+		queue_work(ts->wq, &ts->work);
 
 	return IRQ_HANDLED;
 }
@@ -820,6 +855,15 @@ static int gslX680_ts_init(struct i2c_client *client, struct gsl_ts *ts)
 
 	client->irq = gts->irq_pin;
 	ts->irq = client->irq;
+	ts->wq = create_singlethread_workqueue("kworkqueue_ts");
+	if (!ts->wq) {
+		dev_err(&client->dev, "Could not create workqueue\n");
+		goto error_wq_create;
+	}
+	flush_workqueue(ts->wq);
+
+	INIT_WORK(&ts->work, gslX680_ts_worker);
+
 	rc = input_register_device(input_device);
 	if (rc)
 		goto error_unreg_device;
@@ -827,6 +871,8 @@ static int gslX680_ts_init(struct i2c_client *client, struct gsl_ts *ts)
 	return 0;
 
 error_unreg_device:
+	destroy_workqueue(ts->wq);
+error_wq_create:
 	input_free_device(input_device);
 error_alloc_dev:
 	devm_kfree(&client->dev, ts->touch_data);
@@ -916,6 +962,18 @@ static int gsl_ts_probe(struct i2c_client *client,
 	char buffer = 0;
 	struct device_node *np = client->dev.of_node;
 	enum of_gpio_flags rst_flags;
+	unsigned long irq_flags;
+
+	while (timer > 0) {
+		ret = i2c_master_recv(client, &buffer, 1);
+		if (ret >= 0)
+			break;
+		timer--;
+		msleep(100);
+	}
+
+	if (ret < 0)
+		return ret;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		dev_err(&client->dev, "I2C functionality not supported\n");
@@ -931,8 +989,9 @@ static int gsl_ts_probe(struct i2c_client *client,
 	ts->device_id = 0;
 	ts->tp.tp_resume = rk_ts_early_resume;
 	ts->tp.tp_suspend = rk_ts_early_suspend;
+	tp_register_fb(&ts->tp);
 
-	ts->irq_pin = of_get_named_gpio(np, "touch-gpio", 0);
+	ts->irq_pin = of_get_named_gpio_flags(np, "touch-gpio", 0, (enum of_gpio_flags *)&irq_flags);
 	ts->rst_pin = of_get_named_gpio_flags(np, "reset-gpio", 0, &rst_flags);
 	if (of_property_read_u32(np, "flip-x", &ts->flip_x) < 0)
 		ts->flip_x = 0;
@@ -956,20 +1015,6 @@ static int gsl_ts_probe(struct i2c_client *client,
 	} else {
 		dev_info(&client->dev, "reset pin invalid\n");
 	}
-	while (timer > 0) {
-		ret = i2c_master_recv(client, &buffer, 1);
-		if (ret >= 0)
-			break;
-		timer--;
-		msleep(100);
-	}
-
-	if (ret < 0) {
-		dev_err(&client->dev, "no response from touch controller at 0x40: %d\n", ret);
-		return ret;
-	}
-
-	tp_register_fb(&ts->tp);
 	gts = ts;
 
 	rc = gslX680_ts_init(client, ts);
@@ -980,20 +1025,16 @@ static int gsl_ts_probe(struct i2c_client *client,
 
 	gsl_client = client;
 
+#ifdef GSLX680_COMPATIBLE
+	judge_chip_type(ts->client);
+#endif
 	init_chip(ts->client);
 	check_mem_data(ts->client);
 
 	ts->irq = gpio_to_irq(ts->irq_pin);		/*If not defined in client*/
 	if (ts->irq) {
-		/*
-		 * INT idles low and goes high when a frame is ready, so trigger
-		 * on the rising edge like the stock kernel.  The flag cell of
-		 * touch-gpio (8 = level-low in the reference DT) would keep the
-		 * line asserted while idle and make the worker read stale frames.
-		 */
 		rc = devm_request_threaded_irq(&client->dev, ts->irq, NULL,
-					       gsl_ts_irq, IRQF_TRIGGER_RISING | IRQF_ONESHOT,
-					       client->name, ts);
+					       gsl_ts_irq, irq_flags | IRQF_ONESHOT, client->name, ts);
 		if (rc != 0) {
 			print_info("Cannot allocate ts INT!ERRNO:%d\n", ret);
 			goto error_req_irq_fail;
@@ -1028,7 +1069,7 @@ error_mutex_destroy:
 	return rc;
 }
 
-static int gsl_ts_remove(struct i2c_client *client)
+static void gsl_ts_remove(struct i2c_client *client)
 {
 	struct gsl_ts *ts = i2c_get_clientdata(client);
 
@@ -1036,13 +1077,13 @@ static int gsl_ts_remove(struct i2c_client *client)
 	unregister_early_suspend(&ts->early_suspend);
 #endif
 	device_init_wakeup(&client->dev, 0);
+	cancel_work_sync(&ts->work);
 	free_irq(ts->irq, ts);
+	destroy_workqueue(ts->wq);
 	input_unregister_device(ts->input);
 
 	devm_kfree(&client->dev, ts->touch_data);
 	devm_kfree(&client->dev, ts);
-
-	return 0;
 }
 
 static const struct i2c_device_id gsl_ts_id[] = {

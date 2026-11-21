@@ -1,6 +1,6 @@
 /* drivers/input/sensors/access/angle_kxtik.c
  *
- * Copyright (C) 2012-2015 ROCKCHIP.
+ * Copyright (C) 2012-2015 Rockchip Electronics Co., Ltd.
  * Author: luowei <lw@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -343,7 +343,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return ret;
 }
 
-struct sensor_operate angle_kxtik_ops = {
+static struct sensor_operate angle_kxtik_ops = {
 	.name				= "angle_kxtik",
 	.type				= SENSOR_TYPE_ANGLE,		//sensor type and it should be correct
 	.id_i2c				= ANGLE_ID_KXTIK,		//i2c id number
@@ -368,9 +368,9 @@ static int angle_kxtik_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &angle_kxtik_ops);
 }
 
-static int angle_kxtik_remove(struct i2c_client *client)
+static void angle_kxtik_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &angle_kxtik_ops);
+	sensor_unregister_device(client, NULL, &angle_kxtik_ops);
 }
 
 static const struct i2c_device_id angle_kxtik_id[] = {
@@ -380,7 +380,7 @@ static const struct i2c_device_id angle_kxtik_id[] = {
 
 static struct i2c_driver angle_kxtik_driver = {
 	.probe = angle_kxtik_probe,
-	.remove = angle_kxtik_remove,
+	.remove = (void *)angle_kxtik_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = angle_kxtik_id,
 	.driver = {

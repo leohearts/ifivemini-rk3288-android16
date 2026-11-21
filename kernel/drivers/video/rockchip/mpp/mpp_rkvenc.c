@@ -12,7 +12,6 @@
 #include <asm/cacheflush.h>
 #include <linux/delay.h>
 #include <linux/devfreq.h>
-#include <linux/devfreq_cooling.h>
 #include <linux/iopoll.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -28,6 +27,7 @@
 #include <linux/nospec.h>
 #include <linux/workqueue.h>
 #include <soc/rockchip/pm_domains.h>
+#include <soc/rockchip/rockchip_iommu.h>
 #include <soc/rockchip/rockchip_ipa.h>
 #include <soc/rockchip/rockchip_opp_select.h>
 #include <soc/rockchip/rockchip_system_monitor.h>
@@ -197,9 +197,8 @@ struct rkvenc_dev {
 	unsigned long volt;
 	unsigned long core_rate_hz;
 	unsigned long core_last_rate_hz;
-	struct ipa_power_model_data *model_data;
-	struct thermal_cooling_device *devfreq_cooling;
 	struct monitor_dev_info *mdev_info;
+	struct rockchip_opp_info opp_info;
 #endif
 	/* for iommu pagefault handle */
 	struct work_struct iommu_work;
@@ -439,6 +438,7 @@ static int rkvenc_run(struct mpp_dev *mpp,
 		int i;
 		struct mpp_request *req;
 		u32 reg_en = mpp_task->hw_info->reg_en;
+		u32 timing_en = mpp->srv->timing_en;
 
 		/*
 		 * Tips: ensure osd plt clock is 0 before setting register,
@@ -466,11 +466,20 @@ static int rkvenc_run(struct mpp_dev *mpp,
 				rkvenc_write_req_backward(mpp, task->reg, s, e, reg_en);
 			}
 		}
+
+		/* flush tlb before starting hardware */
+		mpp_iommu_flush_tlb(mpp->iommu_info);
+
 		/* init current task */
 		mpp->cur_task = mpp_task;
+
+		mpp_task_run_begin(mpp_task, timing_en, MPP_WORK_TIMEOUT_DELAY);
+
 		/* Flush the register before the start the device */
 		wmb();
 		mpp_write(mpp, RKVENC_ENC_START_BASE, task->reg[reg_en]);
+
+		mpp_task_run_end(mpp_task, timing_en);
 	} break;
 	case RKVENC_MODE_LINKTABLE_FIX:
 	case RKVENC_MODE_LINKTABLE_UPDATE:
@@ -494,7 +503,6 @@ static int rkvenc_irq(struct mpp_dev *mpp)
 
 	mpp_write(mpp, RKVENC_INT_MSK_BASE, 0x100);
 	mpp_write(mpp, RKVENC_INT_CLR_BASE, 0xffffffff);
-	udelay(5);
 	mpp_write(mpp, RKVENC_INT_STATUS_BASE, 0);
 
 	mpp_debug_leave();
@@ -524,11 +532,10 @@ static int rkvenc_isr(struct mpp_dev *mpp)
 
 	if (task->irq_status & RKVENC_INT_ERROR_BITS) {
 		atomic_inc(&mpp->reset_request);
-		/* dump register */
 		if (mpp_debug_unlikely(DEBUG_DUMP_ERR_REG)) {
-			mpp_debug(DEBUG_DUMP_ERR_REG, "irq_status: %08x\n",
-				  task->irq_status);
-			mpp_task_dump_hw_reg(mpp, mpp_task);
+			/* dump error register */
+			mpp_debug(DEBUG_DUMP_ERR_REG, "irq_status: %08x\n", task->irq_status);
+			mpp_task_dump_hw_reg(mpp);
 		}
 	}
 
@@ -746,7 +753,7 @@ static int rkvenc_dump_session(struct mpp_session *session, struct seq_file *seq
 	}
 	seq_puts(seq, "\n");
 	/* item data*/
-	seq_printf(seq, "|%8p|", session);
+	seq_printf(seq, "|%8d|", session->index);
 	seq_printf(seq, "%8s|", mpp_device_name[session->device_type]);
 	for (i = ENC_INFO_BASE; i < ENC_INFO_BUTT; i++) {
 		u32 flag = priv->codec_info[i].flag;
@@ -779,7 +786,7 @@ static int rkvenc_show_session_info(struct seq_file *seq, void *offset)
 	mutex_lock(&mpp->srv->session_lock);
 	list_for_each_entry_safe(session, n,
 				 &mpp->srv->session_list,
-				 session_link) {
+				 service_link) {
 		if (session->device_type != MPP_DEVICE_RKVENC)
 			continue;
 		if (!session->priv)
@@ -802,6 +809,10 @@ static int rkvenc_procfs_init(struct mpp_dev *mpp)
 		enc->procfs = NULL;
 		return -EIO;
 	}
+
+	/* for common mpp_dev options */
+	mpp_procfs_create_common(enc->procfs, mpp);
+
 	/* for debug */
 	mpp_procfs_create_u32("aclk", 0644,
 			      enc->procfs, &enc->aclk_info.debug_rate_hz);
@@ -839,8 +850,8 @@ static int rkvenc_devfreq_target(struct device *dev,
 	struct dev_pm_opp *opp;
 	unsigned long target_volt, target_freq;
 	int ret = 0;
-
-	struct rkvenc_dev *enc = dev_get_drvdata(dev);
+	struct mpp_dev *mpp = dev_get_drvdata(dev);
+	struct rkvenc_dev *enc = to_rkvenc_dev(mpp);
 	struct devfreq *devfreq = enc->devfreq;
 	struct devfreq_dev_status *stat = &devfreq->last_status;
 	unsigned long old_clk_rate = stat->current_frequency;
@@ -902,7 +913,8 @@ static int rkvenc_devfreq_get_dev_status(struct device *dev,
 static int rkvenc_devfreq_get_cur_freq(struct device *dev,
 				       unsigned long *freq)
 {
-	struct rkvenc_dev *enc = dev_get_drvdata(dev);
+	struct mpp_dev *mpp = dev_get_drvdata(dev);
+	struct rkvenc_dev *enc = to_rkvenc_dev(mpp);
 
 	*freq = enc->core_last_rate_hz;
 
@@ -913,6 +925,7 @@ static struct devfreq_dev_profile rkvenc_devfreq_profile = {
 	.target	= rkvenc_devfreq_target,
 	.get_dev_status	= rkvenc_devfreq_get_dev_status,
 	.get_cur_freq = rkvenc_devfreq_get_cur_freq,
+	.is_cooling_device = true,
 };
 
 static int devfreq_venc_ondemand_func(struct devfreq *df, unsigned long *freq)
@@ -939,24 +952,8 @@ static struct devfreq_governor devfreq_venc_ondemand = {
 	.event_handler = devfreq_venc_ondemand_handler,
 };
 
-static unsigned long rkvenc_get_static_power(struct devfreq *devfreq,
-					     unsigned long voltage)
-{
-	struct rkvenc_dev *enc = devfreq->data;
-
-	if (!enc->model_data)
-		return 0;
-	else
-		return rockchip_ipa_get_static_power(enc->model_data,
-						     voltage);
-}
-
-static struct devfreq_cooling_power venc_cooling_power_data = {
-	.get_static_power = rkvenc_get_static_power,
-};
-
 static struct monitor_dev_profile enc_mdevp = {
-	.type = MONITOR_TPYE_DEV,
+	.type = MONITOR_TYPE_DEV,
 	.low_temp_adjust = rockchip_monitor_dev_low_temp_adjust,
 	.high_temp_adjust = rockchip_monitor_dev_high_temp_adjust,
 };
@@ -985,15 +982,19 @@ static int __maybe_unused rv1126_get_soc_info(struct device *dev,
 	return ret;
 }
 
+static const struct rockchip_opp_data __maybe_unused rv1126_rkvenc_opp_data = {
+	.get_soc_info = rv1126_get_soc_info,
+};
+
 static const struct of_device_id rockchip_rkvenc_of_match[] = {
 #ifdef CONFIG_CPU_RV1126
 	{
 		.compatible = "rockchip,rv1109",
-		.data = (void *)&rv1126_get_soc_info,
+		.data = (void *)&rv1126_rkvenc_opp_data,
 	},
 	{
 		.compatible = "rockchip,rv1126",
-		.data = (void *)&rv1126_get_soc_info,
+		.data = (void *)&rv1126_rkvenc_opp_data,
 	},
 #endif
 	{},
@@ -1003,7 +1004,7 @@ static int rkvenc_devfreq_init(struct mpp_dev *mpp)
 {
 	struct rkvenc_dev *enc = to_rkvenc_dev(mpp);
 	struct clk *clk_core = enc->core_clk_info.clk;
-	struct devfreq_cooling_power *venc_dcp = &venc_cooling_power_data;
+	struct rockchip_opp_info *opp_info = &enc->opp_info;
 	int ret = 0;
 
 	if (!clk_core)
@@ -1021,8 +1022,8 @@ static int rkvenc_devfreq_init(struct mpp_dev *mpp)
 		return 0;
 	}
 
-	ret = rockchip_init_opp_table(mpp->dev, rockchip_rkvenc_of_match,
-				      "leakage", "venc");
+	rockchip_get_opp_data(rockchip_rkvenc_of_match, opp_info);
+	ret = rockchip_init_opp_table(mpp->dev, opp_info, NULL, "venc");
 	if (ret) {
 		dev_err(mpp->dev, "failed to init_opp_table\n");
 		return ret;
@@ -1049,36 +1050,13 @@ static int rkvenc_devfreq_init(struct mpp_dev *mpp)
 
 	devfreq_register_opp_notifier(mpp->dev, enc->devfreq);
 
-	of_property_read_u32(mpp->dev->of_node, "dynamic-power-coefficient",
-			     (u32 *)&venc_dcp->dyn_power_coeff);
-	enc->model_data = rockchip_ipa_power_model_init(mpp->dev,
-							"venc_leakage");
-	if (IS_ERR_OR_NULL(enc->model_data)) {
-		enc->model_data = NULL;
-		dev_err(mpp->dev, "failed to initialize power model\n");
-	} else if (enc->model_data->dynamic_coefficient) {
-		venc_dcp->dyn_power_coeff =
-			enc->model_data->dynamic_coefficient;
-	}
-	if (!venc_dcp->dyn_power_coeff) {
-		dev_err(mpp->dev, "failed to get dynamic-coefficient\n");
-		goto out;
-	}
-
-	enc->devfreq_cooling =
-		of_devfreq_cooling_register_power(mpp->dev->of_node,
-						  enc->devfreq, venc_dcp);
-	if (IS_ERR_OR_NULL(enc->devfreq_cooling))
-		dev_err(mpp->dev, "failed to register cooling device\n");
-
 	enc_mdevp.data = enc->devfreq;
+	enc_mdevp.opp_info = opp_info;
 	enc->mdev_info = rockchip_system_monitor_register(mpp->dev, &enc_mdevp);
 	if (IS_ERR(enc->mdev_info)) {
 		dev_dbg(mpp->dev, "without system monitor\n");
 		enc->mdev_info = NULL;
 	}
-
-out:
 
 	return 0;
 
@@ -1096,11 +1074,10 @@ static int rkvenc_devfreq_remove(struct mpp_dev *mpp)
 
 	if (enc->mdev_info)
 		rockchip_system_monitor_unregister(enc->mdev_info);
-	if (enc->devfreq) {
+	if (enc->devfreq)
 		devfreq_unregister_opp_notifier(mpp->dev, enc->devfreq);
-		dev_pm_opp_of_remove_table(mpp->dev);
-		devfreq_remove_governor(&devfreq_venc_ondemand);
-	}
+	devfreq_remove_governor(&devfreq_venc_ondemand);
+	rockchip_uninit_opp_table(mpp->dev, &enc->opp_info);
 
 	return 0;
 }
@@ -1132,7 +1109,7 @@ static void rkvenc_iommu_handle_work(struct work_struct *work_s)
 	else
 		enc->aux_iova = page_iova;
 
-	rk_iommu_unmask_irq(mpp->dev);
+	rockchip_iommu_unmask_irq(mpp->dev);
 	mpp_iommu_up_write(mpp->iommu_info);
 
 	mpp_debug_leave();
@@ -1149,7 +1126,7 @@ static int rkvenc_iommu_fault_handle(struct iommu_domain *iommu,
 	mpp_debug(DEBUG_IOMMU, "IOMMU_GET_BUS_ID(status)=%d\n", IOMMU_GET_BUS_ID(status));
 	if (IOMMU_GET_BUS_ID(status)) {
 		enc->fault_iova = iova;
-		rk_iommu_mask_irq(mpp->dev);
+		rockchip_iommu_mask_irq(mpp->dev);
 		queue_work(enc->iommu_wq, &enc->iommu_work);
 	}
 	mpp_debug_leave();
@@ -1214,7 +1191,7 @@ static int rkvenc_init(struct mpp_dev *mpp)
 	}
 	INIT_WORK(&enc->iommu_work, rkvenc_iommu_handle_work);
 
-	mpp->iommu_info->hdl = rkvenc_iommu_fault_handle;
+	mpp->fault_handler = rkvenc_iommu_fault_handle;
 
 	return ret;
 }
@@ -1264,7 +1241,7 @@ static int rkvenc_reset(struct mpp_dev *mpp)
 	mpp_write(mpp, RKVENC_INT_STATUS_BASE, 0);
 	/* cru reset */
 	if (enc->rst_a && enc->rst_h && enc->rst_core) {
-		rockchip_pmu_idle_request(mpp->dev, true);
+		mpp_pmu_idle_request(mpp, true);
 		mpp_safe_reset(enc->rst_a);
 		mpp_safe_reset(enc->rst_h);
 		mpp_safe_reset(enc->rst_core);
@@ -1272,7 +1249,7 @@ static int rkvenc_reset(struct mpp_dev *mpp)
 		mpp_safe_unreset(enc->rst_a);
 		mpp_safe_unreset(enc->rst_h);
 		mpp_safe_unreset(enc->rst_core);
-		rockchip_pmu_idle_request(mpp->dev, false);
+		mpp_pmu_idle_request(mpp, false);
 	}
 #ifdef CONFIG_PM_DEVFREQ
 	if (enc->devfreq)
@@ -1429,7 +1406,7 @@ static int rkvenc_probe(struct platform_device *pdev)
 	if (!enc)
 		return -ENOMEM;
 	mpp = &enc->mpp;
-	platform_set_drvdata(pdev, enc);
+	platform_set_drvdata(pdev, mpp);
 
 	if (pdev->dev.of_node) {
 		match = of_match_node(mpp_rkvenc_dt_match, pdev->dev.of_node);
@@ -1443,7 +1420,7 @@ static int rkvenc_probe(struct platform_device *pdev)
 
 	ret = devm_request_threaded_irq(dev, mpp->irq,
 					mpp_dev_irq,
-					mpp_dev_isr_sched,
+					NULL,
 					IRQF_SHARED,
 					dev_name(dev), mpp);
 	if (ret) {
@@ -1468,41 +1445,22 @@ failed_get_irq:
 static int rkvenc_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct rkvenc_dev *enc = platform_get_drvdata(pdev);
+	struct mpp_dev *mpp = dev_get_drvdata(dev);
 
 	dev_info(dev, "remove device\n");
-	mpp_dev_remove(&enc->mpp);
-	rkvenc_procfs_remove(&enc->mpp);
+	mpp_dev_remove(mpp);
+	rkvenc_procfs_remove(mpp);
 
 	return 0;
-}
-
-static void rkvenc_shutdown(struct platform_device *pdev)
-{
-	int ret;
-	int val;
-	struct device *dev = &pdev->dev;
-	struct rkvenc_dev *enc = platform_get_drvdata(pdev);
-	struct mpp_dev *mpp = &enc->mpp;
-
-	dev_info(dev, "shutdown device\n");
-
-	atomic_inc(&mpp->srv->shutdown_request);
-	ret = readx_poll_timeout(atomic_read,
-				 &mpp->task_count,
-				 val, val == 0, 1000, 200000);
-	if (ret == -ETIMEDOUT)
-		dev_err(dev, "wait total running time out\n");
-
-	dev_info(dev, "shutdown success\n");
 }
 
 struct platform_driver rockchip_rkvenc_driver = {
 	.probe = rkvenc_probe,
 	.remove = rkvenc_remove,
-	.shutdown = rkvenc_shutdown,
+	.shutdown = mpp_dev_shutdown,
 	.driver = {
 		.name = RKVENC_DRIVER_NAME,
 		.of_match_table = of_match_ptr(mpp_rkvenc_dt_match),
+		.pm = &mpp_common_pm_ops,
 	},
 };

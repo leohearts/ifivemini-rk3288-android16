@@ -1,1 +1,0 @@
-obj-$(CONFIG_DRM_I2C_LT9211) += lt9211_drv.o

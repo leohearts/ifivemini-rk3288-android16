@@ -2,7 +2,7 @@
 /*
  * kernel/drivers/input/sensors/accel/icm2060x_acc.c
  *
- * Copyright (C) 2020 Rockchip Co.,Ltd.
+ * Copyright (C) 2020 Rockchip Electronics Co., Ltd.
  * Author: Wang Jie <dave.wang@rock-chips.com>
  */
 #include <linux/interrupt.h>
@@ -205,7 +205,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return ret;
 }
 
-struct sensor_operate gsensor_icm2060x_ops = {
+static struct sensor_operate gsensor_icm2060x_ops = {
 	.name		= "icm2060x_acc",
 	.type		= SENSOR_TYPE_ACCEL,
 	.id_i2c		= ACCEL_ID_ICM2060X,
@@ -230,9 +230,9 @@ static int gsensor_icm2060x_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &gsensor_icm2060x_ops);
 }
 
-static int gsensor_icm2060x_remove(struct i2c_client *client)
+static void gsensor_icm2060x_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &gsensor_icm2060x_ops);
+	sensor_unregister_device(client, NULL, &gsensor_icm2060x_ops);
 }
 
 static const struct i2c_device_id gsensor_icm2060x_id[] = {
@@ -242,7 +242,7 @@ static const struct i2c_device_id gsensor_icm2060x_id[] = {
 
 static struct i2c_driver gsensor_icm2060x_driver = {
 	.probe = gsensor_icm2060x_probe,
-	.remove = gsensor_icm2060x_remove,
+	.remove = (void *)gsensor_icm2060x_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = gsensor_icm2060x_id,
 	.driver = {

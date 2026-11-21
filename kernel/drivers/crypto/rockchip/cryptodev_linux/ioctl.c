@@ -48,7 +48,7 @@
 
 #include <linux/sysctl.h>
 
-#include "cryptodev.h"
+#include "cryptodev_int.h"
 #include "zc.h"
 #include "version.h"
 #include "cipherapi.h"
@@ -130,6 +130,8 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
 		ddebug(1, "Both 'cipher' and 'mac' unset.");
 		return -EINVAL;
 	}
+
+	memset(&keys, 0x00, sizeof(keys));
 
 	switch (sop->cipher) {
 	case 0:
@@ -322,8 +324,9 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
 		goto session_error;
 	}
 
-	/* Non-multithreaded can only create one session */
-	if (!rk_cryptodev_multi_thread(NULL) &&
+	/* Non-multithreaded can only create one session for hash */
+	if (ses_new->hdata.init &&
+	    !rk_cryptodev_multi_thread(NULL) &&
 	    !atomic_dec_and_test(&cryptodev_sess)) {
 		atomic_inc(&cryptodev_sess);
 		ddebug(2, "Non-multithreaded can only create one session. sess = %d",
@@ -377,6 +380,14 @@ crypto_destroy_session(struct csession *ses_ptr)
 		mutex_lock(&ses_ptr->sem);
 	}
 	ddebug(2, "Removed session 0x%08X", ses_ptr->sid);
+
+	/* Non-multithreaded can only create one session for hash */
+	if (ses_ptr->hdata.init &&
+	    !rk_cryptodev_multi_thread(NULL)) {
+		atomic_inc(&cryptodev_sess);
+		ddebug(2, "Release cryptodev_sess = %d", atomic_read(&cryptodev_sess));
+	}
+
 	cryptodev_cipher_deinit(&ses_ptr->cdata);
 	cryptodev_hash_deinit(&ses_ptr->hdata);
 	ddebug(2, "freeing space for %d user pages", ses_ptr->array_size);
@@ -385,12 +396,6 @@ crypto_destroy_session(struct csession *ses_ptr)
 	mutex_unlock(&ses_ptr->sem);
 	mutex_destroy(&ses_ptr->sem);
 	kfree(ses_ptr);
-
-	/* Non-multithreaded can only create one session */
-	if (!rk_cryptodev_multi_thread(NULL)) {
-		atomic_inc(&cryptodev_sess);
-		ddebug(2, "Release cryptodev_sess = %d", atomic_read(&cryptodev_sess));
-	}
 }
 
 /* Look up a session by ID and remove. */
@@ -519,7 +524,8 @@ out:
 static int
 crypto_copy_hash_state(struct fcrypt *fcr, uint32_t dst_sid, uint32_t src_sid)
 {
-	struct csession *src_ses, *dst_ses;
+	struct csession *src_ses = NULL;
+	struct csession *dst_ses = NULL;
 	int ret;
 
 	ret = crypto_get_sessions_by_sid(fcr, src_sid, &src_ses,
@@ -565,26 +571,12 @@ static void cryptask_routine(struct work_struct *work)
 }
 
 /* ====== /dev/crypto ====== */
-static atomic_t cryptodev_node = ATOMIC_INIT(1);
-
 static int
 cryptodev_open(struct inode *inode, struct file *filp)
 {
 	struct todo_list_item *tmp, *tmp_next;
 	struct crypt_priv *pcr;
 	int i;
-
-	/* Non-multithreaded can only be opened once */
-	if (!rk_cryptodev_multi_thread(NULL) &&
-	    !atomic_dec_and_test(&cryptodev_node)) {
-		atomic_inc(&cryptodev_node);
-		ddebug(2, "Non-multithreaded can only be opened once. node = %d",
-		       atomic_read(&cryptodev_node));
-		return -EBUSY;
-	}
-
-	/* make sure sess == 1 after open */
-	atomic_set(&cryptodev_sess, 1);
 
 	pcr = kzalloc(sizeof(*pcr), GFP_KERNEL);
 	if (!pcr)
@@ -644,12 +636,6 @@ cryptodev_release(struct inode *inode, struct file *filp)
 	if (!pcr)
 		return 0;
 
-	/* Non-multithreaded can only be opened once */
-	if (!rk_cryptodev_multi_thread(NULL)) {
-		atomic_inc(&cryptodev_node);
-		ddebug(2, "Release cryptodev_node = %d", atomic_read(&cryptodev_node));
-	}
-
 	cancel_work_sync(&pcr->cryptask);
 
 	list_splice_tail(&pcr->todo.list, &pcr->free.list);
@@ -686,10 +672,11 @@ static int
 clonefd(struct file *filp)
 {
 	int ret;
+
 	ret = get_unused_fd_flags(0);
 	if (ret >= 0) {
-			get_file(filp);
-			fd_install(ret, filp);
+		get_file(filp);
+		fd_install(ret, filp);
 	}
 
 	return ret;
@@ -966,7 +953,7 @@ cryptodev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg_)
 		if (unlikely(ret)) {
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0))
 			sys_close(fd);
-#elif (LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0))
+#elif (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 220))
 			ksys_close(fd);
 #else
 			close_fd(fd);
@@ -1279,6 +1266,7 @@ cryptodev_deregister(void)
 }
 
 /* ====== Module init/exit ====== */
+static const char verbosity_ctl_path[] = "ioctl";
 static struct ctl_table verbosity_ctl_dir[] = {
 	{
 		.procname       = "cryptodev_verbosity",
@@ -1287,17 +1275,21 @@ static struct ctl_table verbosity_ctl_dir[] = {
 		.mode           = 0644,
 		.proc_handler   = proc_dointvec,
 	},
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0))
 	{},
+#endif
 };
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 5, 0))
 static struct ctl_table verbosity_ctl_root[] = {
 	{
-		.procname       = "ioctl",
+		.procname       = verbosity_ctl_path,
 		.mode           = 0555,
 		.child          = verbosity_ctl_dir,
 	},
 	{},
 };
+#endif
 static struct ctl_table_header *verbosity_sysctl_header;
 static int __init init_cryptodev(void)
 {
@@ -1315,7 +1307,11 @@ static int __init init_cryptodev(void)
 		return rc;
 	}
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 5, 0))
 	verbosity_sysctl_header = register_sysctl_table(verbosity_ctl_root);
+#else
+	verbosity_sysctl_header = register_sysctl(verbosity_ctl_path, verbosity_ctl_dir);
+#endif
 
 	pr_info(PFX "driver %s loaded.\n", VERSION);
 

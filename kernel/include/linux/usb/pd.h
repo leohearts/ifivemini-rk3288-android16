@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright 2015-2017 Google, Inc
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef __LINUX_USB_PD_H
@@ -503,5 +494,43 @@ static inline unsigned int rdo_max_power(u32 rdo)
 #define PD_N_HARD_RESET_COUNT	2
 
 #define PD_P_SNK_STDBY_MW	2500	/* 2500 mW */
+
+#if IS_ENABLED(CONFIG_TYPEC)
+
+struct usb_power_delivery;
+
+/**
+ * usb_power_delivery_desc - USB Power Delivery Descriptor
+ * @revision: USB Power Delivery Specification Revision
+ * @version: USB Power Delivery Specicication Version - optional
+ */
+struct usb_power_delivery_desc {
+	u16 revision;
+	u16 version;
+};
+
+/**
+ * usb_power_delivery_capabilities_desc - Description of USB Power Delivery Capabilities Message
+ * @pdo: The Power Data Objects in the Capability Message
+ * @role: Power role of the capabilities
+ */
+struct usb_power_delivery_capabilities_desc {
+	u32 pdo[PDO_MAX_OBJECTS];
+	enum typec_role role;
+};
+
+struct usb_power_delivery_capabilities *
+usb_power_delivery_register_capabilities(struct usb_power_delivery *pd,
+					 struct usb_power_delivery_capabilities_desc *desc);
+void usb_power_delivery_unregister_capabilities(struct usb_power_delivery_capabilities *cap);
+
+struct usb_power_delivery *usb_power_delivery_register(struct device *parent,
+						       struct usb_power_delivery_desc *desc);
+void usb_power_delivery_unregister(struct usb_power_delivery *pd);
+
+int usb_power_delivery_link_device(struct usb_power_delivery *pd, struct device *dev);
+void usb_power_delivery_unlink_device(struct usb_power_delivery *pd, struct device *dev);
+
+#endif /* CONFIG_TYPEC */
 
 #endif /* __LINUX_USB_PD_H */

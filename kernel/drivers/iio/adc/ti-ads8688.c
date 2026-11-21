@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2015 Prevas A/S
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/device.h>
@@ -74,7 +71,7 @@ struct ads8688_state {
 	union {
 		__be32 d32;
 		u8 d8[4];
-	} data[2] ____cacheline_aligned;
+	} data[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 enum ads8688_id {
@@ -284,12 +281,10 @@ static int ads8688_write_reg_range(struct iio_dev *indio_dev,
 				   enum ads8688_range range)
 {
 	unsigned int tmp;
-	int ret;
 
 	tmp = ADS8688_PROG_REG_RANGE_CH(chan->channel);
-	ret = ads8688_prog_write(indio_dev, tmp, range);
 
-	return ret;
+	return ads8688_prog_write(indio_dev, tmp, range);
 }
 
 static int ads8688_write_raw(struct iio_dev *indio_dev,
@@ -387,7 +382,7 @@ static irqreturn_t ads8688_trigger_handler(int irq, void *p)
 	struct iio_poll_func *pf = p;
 	struct iio_dev *indio_dev = pf->indio_dev;
 	/* Ensure naturally aligned timestamp */
-	u16 buffer[ADS8688_MAX_CHANNELS + sizeof(s64)/sizeof(u16)] __aligned(8);
+	u16 buffer[ADS8688_MAX_CHANNELS + sizeof(s64)/sizeof(u16)] __aligned(8) = { };
 	int i, j = 0;
 
 	for (i = 0; i < indio_dev->masklength; i++) {
@@ -453,8 +448,6 @@ static int ads8688_probe(struct spi_device *spi)
 	st->spi = spi;
 
 	indio_dev->name = spi_get_device_id(spi)->name;
-	indio_dev->dev.parent = &spi->dev;
-	indio_dev->dev.of_node = spi->dev.of_node;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = st->chip_info->channels;
 	indio_dev->num_channels = st->chip_info->num_channels;
@@ -486,7 +479,7 @@ err_regulator_disable:
 	return ret;
 }
 
-static int ads8688_remove(struct spi_device *spi)
+static void ads8688_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ads8688_state *st = iio_priv(indio_dev);
@@ -496,8 +489,6 @@ static int ads8688_remove(struct spi_device *spi)
 
 	if (!IS_ERR(st->reg))
 		regulator_disable(st->reg);
-
-	return 0;
 }
 
 static const struct spi_device_id ads8688_id[] = {
@@ -517,6 +508,7 @@ MODULE_DEVICE_TABLE(of, ads8688_of_match);
 static struct spi_driver ads8688_driver = {
 	.driver = {
 		.name	= "ads8688",
+		.of_match_table = ads8688_of_match,
 	},
 	.probe		= ads8688_probe,
 	.remove		= ads8688_remove,
@@ -524,6 +516,6 @@ static struct spi_driver ads8688_driver = {
 };
 module_spi_driver(ads8688_driver);
 
-MODULE_AUTHOR("Sean Nyekjaer <sean.nyekjaer@prevas.dk>");
+MODULE_AUTHOR("Sean Nyekjaer <sean@geanix.dk>");
 MODULE_DESCRIPTION("Texas Instruments ADS8688 driver");
 MODULE_LICENSE("GPL v2");

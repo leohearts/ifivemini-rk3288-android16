@@ -9,7 +9,6 @@
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-subdev.h>
 #include <media/videobuf2-dma-contig.h>
-#include <linux/dma-iommu.h>
 #include "dev.h"
 #include "regs.h"
 
@@ -540,7 +539,7 @@ static int rkisp1_querycap(struct file *file, void *priv,
 	struct device *dev = stream->ispdev->dev;
 	struct video_device *vdev = video_devdata(file);
 
-	strlcpy(cap->card, vdev->name, sizeof(cap->card));
+	strscpy(cap->card, vdev->name, sizeof(cap->card));
 	snprintf(cap->driver, sizeof(cap->driver),
 		 "%s_v%d", dev->driver->name,
 		 stream->ispdev->isp_ver >> 4);
@@ -561,7 +560,7 @@ static const struct v4l2_ioctl_ops rkisp1_dmarx_ioctl = {
 	.vidioc_streamon = vb2_ioctl_streamon,
 	.vidioc_streamoff = vb2_ioctl_streamoff,
 	.vidioc_try_fmt_vid_out_mplane = rkisp1_try_fmt_vid_out_mplane,
-	.vidioc_enum_fmt_vid_out_mplane = rkisp1_enum_fmt_vid_out_mplane,
+	.vidioc_enum_fmt_vid_out = rkisp1_enum_fmt_vid_out_mplane,
 	.vidioc_s_fmt_vid_out_mplane = rkisp1_s_fmt_vid_out_mplane,
 	.vidioc_g_fmt_vid_out_mplane = rkisp1_g_fmt_vid_out_mplane,
 	.vidioc_querycap = rkisp1_querycap,
@@ -600,7 +599,7 @@ static int rkisp1_register_dmarx_video(struct rkisp1_stream *stream)
 		V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
 	vdev->queue = &node->buf_queue;
 
-	ret = video_register_device(vdev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
 		v4l2_err(v4l2_dev,
 			 "video register failed with error %d\n", ret);
@@ -660,7 +659,7 @@ int rkisp1_register_dmarx_vdev(struct rkisp1_device *dev)
 		stream->ops = &rkisp1_dmarx_streams_ops;
 		stream->config = &rkisp1_dmarx_stream_config;
 		vdev = &stream->vnode.vdev;
-		strlcpy(vdev->name, DMA_VDEV_NAME, sizeof(vdev->name));
+		strscpy(vdev->name, DMA_VDEV_NAME, sizeof(vdev->name));
 		ret = rkisp1_register_dmarx_video(stream);
 		if (ret < 0)
 			return ret;

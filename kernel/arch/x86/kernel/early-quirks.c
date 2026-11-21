@@ -18,6 +18,7 @@
 #include <linux/bcma/bcma_regs.h>
 #include <linux/platform_data/x86/apple.h>
 #include <drm/i915_drm.h>
+#include <drm/i915_pciids.h>
 #include <asm/pci-direct.h>
 #include <asm/dma.h>
 #include <asm/io_apic.h>
@@ -526,7 +527,8 @@ static const struct pci_device_id intel_early_ids[] __initconst = {
 	INTEL_I945G_IDS(&gen3_early_ops),
 	INTEL_I945GM_IDS(&gen3_early_ops),
 	INTEL_VLV_IDS(&gen6_early_ops),
-	INTEL_PINEVIEW_IDS(&gen3_early_ops),
+	INTEL_PINEVIEW_G_IDS(&gen3_early_ops),
+	INTEL_PINEVIEW_M_IDS(&gen3_early_ops),
 	INTEL_I965G_IDS(&gen3_early_ops),
 	INTEL_G33_IDS(&gen3_early_ops),
 	INTEL_I965GM_IDS(&gen3_early_ops),
@@ -548,6 +550,15 @@ static const struct pci_device_id intel_early_ids[] __initconst = {
 	INTEL_GLK_IDS(&gen9_early_ops),
 	INTEL_CNL_IDS(&gen9_early_ops),
 	INTEL_ICL_11_IDS(&gen11_early_ops),
+	INTEL_EHL_IDS(&gen11_early_ops),
+	INTEL_JSL_IDS(&gen11_early_ops),
+	INTEL_TGL_12_IDS(&gen11_early_ops),
+	INTEL_RKL_IDS(&gen11_early_ops),
+	INTEL_ADLS_IDS(&gen11_early_ops),
+	INTEL_ADLP_IDS(&gen11_early_ops),
+	INTEL_ADLN_IDS(&gen11_early_ops),
+	INTEL_RPLS_IDS(&gen11_early_ops),
+	INTEL_RPLP_IDS(&gen11_early_ops),
 };
 
 struct resource intel_graphics_stolen_res __ro_after_init = DEFINE_RES_MEM(0, 0);

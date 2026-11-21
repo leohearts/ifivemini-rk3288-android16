@@ -1,6 +1,6 @@
 /* drivers/input/sensors/lsensor/cm3218.c
  *
- * Copyright (C) 2012-2016 ROCKCHIP.
+ * Copyright (C) 2012-2016 Rockchip Electronics Co., Ltd.
  * Author: luowei <lw@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -350,7 +350,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return 0;
 }
 
-struct sensor_operate light_cm3218_ops = {
+static struct sensor_operate light_cm3218_ops = {
 	.name				= "cm3218",
 	/* sensor type and it should be correct */
 	.type				= SENSOR_TYPE_LIGHT,
@@ -385,9 +385,9 @@ static int light_cm3218_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &light_cm3218_ops);
 }
 
-static int light_cm3218_remove(struct i2c_client *client)
+static void light_cm3218_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &light_cm3218_ops);
+	sensor_unregister_device(client, NULL, &light_cm3218_ops);
 }
 
 static const struct i2c_device_id light_cm3218_id[] = {
@@ -397,7 +397,7 @@ static const struct i2c_device_id light_cm3218_id[] = {
 
 static struct i2c_driver light_cm3218_driver = {
 	.probe = light_cm3218_probe,
-	.remove = light_cm3218_remove,
+	.remove = (void *)light_cm3218_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = light_cm3218_id,
 	.driver = {

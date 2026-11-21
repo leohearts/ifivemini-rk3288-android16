@@ -1,5 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /*
- * Copyright 2014 Advanced Micro Devices, Inc.
+ * Copyright 2014-2022 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -41,8 +42,6 @@
 #define CRAT_OEMID_LENGTH	6
 #define CRAT_OEMTABLEID_LENGTH	8
 #define CRAT_RESERVED_LENGTH	6
-
-#define CRAT_OEMID_64BIT_MASK ((1ULL << (CRAT_OEMID_LENGTH * 8)) - 1)
 
 /* Compute Unit flags */
 #define COMPUTE_UNIT_CPU	(1 << 0)  /* Create Virtual CRAT for CPU */
@@ -232,7 +231,8 @@ struct crat_subtype_ccompute {
 #define CRAT_IOLINK_FLAGS_NO_ATOMICS_32_BIT	(1 << 2)
 #define CRAT_IOLINK_FLAGS_NO_ATOMICS_64_BIT	(1 << 3)
 #define CRAT_IOLINK_FLAGS_NO_PEER_TO_PEER_DMA	(1 << 4)
-#define CRAT_IOLINK_FLAGS_RESERVED_MASK		0xffffffe0
+#define CRAT_IOLINK_FLAGS_BI_DIRECTIONAL	(1 << 31)
+#define CRAT_IOLINK_FLAGS_RESERVED_MASK		0x7fffffe0
 
 /*
  * IO interface types
@@ -248,7 +248,12 @@ struct crat_subtype_ccompute {
 #define CRAT_IOLINK_TYPE_RAPID_IO	8
 #define CRAT_IOLINK_TYPE_INFINIBAND	9
 #define CRAT_IOLINK_TYPE_RESERVED3	10
-#define CRAT_IOLINK_TYPE_OTHER		11
+#define CRAT_IOLINK_TYPE_XGMI		11
+#define CRAT_IOLINK_TYPE_XGOP		12
+#define CRAT_IOLINK_TYPE_GZ		13
+#define CRAT_IOLINK_TYPE_ETHERNET_RDMA	14
+#define CRAT_IOLINK_TYPE_RDMA_OTHER	15
+#define CRAT_IOLINK_TYPE_OTHER		16
 #define CRAT_IOLINK_TYPE_MAX		255
 
 #define CRAT_IOLINK_RESERVED_LENGTH	24
@@ -268,7 +273,8 @@ struct crat_subtype_iolink {
 	uint32_t	minimum_bandwidth_mbs;
 	uint32_t	maximum_bandwidth_mbs;
 	uint32_t	recommended_transfer_size;
-	uint8_t		reserved2[CRAT_IOLINK_RESERVED_LENGTH];
+	uint8_t		reserved2[CRAT_IOLINK_RESERVED_LENGTH - 1];
+	uint8_t		num_hops_xgmi;
 };
 
 /*
@@ -308,6 +314,18 @@ struct cdit_header {
 #pragma pack()
 
 struct kfd_dev;
+
+/* Static table to describe GPU Cache information */
+struct kfd_gpu_cache_info {
+	uint32_t	cache_size;
+	uint32_t	cache_level;
+	uint32_t	flags;
+	/* Indicates how many Compute Units share this cache
+	 * within a SA. Value = 1 indicates the cache is not shared
+	 */
+	uint32_t	num_cu_shared;
+};
+int kfd_get_gpu_cache_info(struct kfd_dev *kdev, struct kfd_gpu_cache_info **pcache_info);
 
 int kfd_create_crat_image_acpi(void **crat_image, size_t *size);
 void kfd_destroy_crat_image(void *crat_image);

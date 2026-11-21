@@ -678,14 +678,16 @@ wl_iw_get_freq(
 	struct dhd_pub *dhd = dhd_get_pub(dev);
 	struct iw_freq *fwrq = &wrqu->freq;
 	int error;
+	u32 val;
 	chanspec_t chanspec = 0;
 	int ctl_chan;
 
 	WL_TRACE(("%s: SIOCGIWFREQ\n", dev->name));
 
 	DHD_CHECK(dhd, dev);
-	if ((error = dev_wlc_intvar_get(dev, "chanspec", (s32 *)&chanspec)))
+	if ((error = dev_wlc_intvar_get(dev, "chanspec", &val)))
 		return error;
+	chanspec = val;
 	chanspec = wl_ext_chspec_driver_to_host(dhd, chanspec);
 	ctl_chan = wf_chspec_ctlchan(chanspec);
 
@@ -1181,7 +1183,7 @@ static int
 wl_iw_get_aplist(
 	struct net_device *dev,
 	struct iw_request_info *info,
-	union iwreq_data *wrqu,
+	struct iw_point *wrqu,
 	char *extra
 )
 {
@@ -1213,7 +1215,7 @@ wl_iw_get_aplist(
 	list->buflen = dtoh32(list->buflen);
 	list->version = dtoh32(list->version);
 	list->count = dtoh32(list->count);
-	ASSERT(list->version == WL_BSS_INFO_VERSION);
+	ASSERT(list->version == WL_BSS_INFO_VER_109);
 
 	for (i = 0, dwrq->length = 0; i < list->count && dwrq->length < IW_MAX_AP; i++) {
 		bi = bi ? (wl_bss_info_v109_t *)((uintptr)bi + dtoh32(bi->length)) : list->bss_info;
@@ -1290,8 +1292,8 @@ wl_iw_iscan_get_aplist(
 	buf = iscan->list_hdr;
 	/* Get scan results (too large to put on the stack) */
 	while (buf) {
-	    list = &((wl_iscan_results_t*)buf->iscan_buf)->results;
-	    ASSERT(list->version == WL_BSS_INFO_VERSION);
+	    list = &((wl_iscan_results_v109_t*)buf->iscan_buf)->results;
+	    ASSERT(list->version == WL_BSS_INFO_VER_109);
 
 	    bi = NULL;
 	for (i = 0, dwrq->length = 0; i < list->count && dwrq->length < IW_MAX_AP; i++) {
@@ -1379,7 +1381,8 @@ wl_iw_iscan_set_scan(
 	struct dhd_pub *dhd = dhd_get_pub(dev);
 	wlc_ssid_t ssid;
 #ifdef WL_ESCAN
-	wl_scan_info_t scan_info;
+	wl_scan_info_t *scan_info = NULL;
+	int err;
 #else
 	wl_wext_info_t *wext_info = NULL;
 	iscan_info_t *iscan;
@@ -1403,11 +1406,18 @@ wl_iw_iscan_set_scan(
 		}
 	}
 #endif
-	memset(&scan_info, 0, sizeof(wl_scan_info_t));
-	scan_info.bcast_ssid = TRUE;
-	memcpy(scan_info.ssid.SSID, ssid.SSID, ssid.SSID_len);
-	scan_info.ssid.SSID_len = ssid.SSID_len;
-	return wl_escan_set_scan(dev, &scan_info);
+	scan_info = kmalloc(sizeof(wl_scan_info_t), GFP_KERNEL);
+	if (scan_info == NULL) {
+		WL_ERROR(("kzalloc failed\n"));
+		return -ENOMEM;
+	}
+	memset(scan_info, 0, sizeof(wl_scan_info_t));
+	scan_info->bcast_ssid = TRUE;
+	memcpy(scan_info->ssid.SSID, ssid.SSID, ssid.SSID_len);
+	scan_info->ssid.SSID_len = ssid.SSID_len;
+	err = wl_escan_set_scan(dev, scan_info);
+	kfree(scan_info);
+	return err;
 #else
 	wext_info = dhd->wext_info;
 	iscan = &wext_info->iscan;
@@ -1558,17 +1568,20 @@ wl_iw_handle_scanresults_ies(char **event_p, char *end,
 	if (bi->ie_length) {
 		/* look for wpa/rsn ies in the ie list... */
 		bcm_tlv_t *ie;
-		uint8 *ptr = ((uint8 *)bi) + bi->ie_offset;
+		uint8 *ptr = ((uint8 *)bi) + bi->ie_offset, *ie_data;
 		int ptr_len = bi->ie_length;
 
 		/* OSEN IE */
-		if ((ie = bcm_parse_tlvs(ptr, ptr_len, DOT11_MNG_VS_ID)) &&
-			ie->len > WFA_OUI_LEN + 1 &&
-			!bcmp((const void *)&ie->data[0], (const void *)WFA_OUI, WFA_OUI_LEN) &&
-			ie->data[WFA_OUI_LEN] == WFA_OUI_TYPE_OSEN) {
-			iwe.cmd = IWEVGENIE;
-			iwe.u.data.length = ie->len + 2;
-			event = IWE_STREAM_ADD_POINT(info, event, end, &iwe, (char *)ie);
+		ie = bcm_parse_tlvs(ptr, ptr_len, DOT11_MNG_VS_ID);
+		if (ie) {
+			ie_data = ie->data;
+			if (ie->len > WFA_OUI_LEN + 1 &&
+				!bcmp((const void *)&ie->data[0], (const void *)WFA_OUI, WFA_OUI_LEN) &&
+				ie_data[WFA_OUI_LEN] == WFA_OUI_TYPE_OSEN) {
+					iwe.cmd = IWEVGENIE;
+					iwe.u.data.length = ie->len + 2;
+					event = IWE_STREAM_ADD_POINT(info, event, end, &iwe, (char *)ie);
+			}
 		}
 		ptr = ((uint8 *)bi) + bi->ie_offset;
 
@@ -1651,7 +1664,7 @@ static int
 wl_iw_get_scan(
 	struct net_device *dev,
 	struct iw_request_info *info,
-	union iwreq_data *wrqu,
+	struct iw_point *wrqu,
 	char *extra
 )
 {
@@ -1692,7 +1705,7 @@ wl_iw_get_scan(
 	list->version = dtoh32(list->version);
 	list->count = dtoh32(list->count);
 
-	ASSERT(list->version == WL_BSS_INFO_VERSION);
+	ASSERT(list->version == WL_BSS_INFO_VER_109);
 
 	for (i = 0; i < list->count && i < IW_MAX_AP; i++) {
 		bi = bi ? (wl_bss_info_v109_t *)((uintptr)bi + dtoh32(bi->length)) : list->bss_info;
@@ -1828,10 +1841,10 @@ wl_iw_iscan_get_scan(
 	p_buf = iscan->list_hdr;
 	/* Get scan results */
 	while (p_buf != iscan->list_cur) {
-		list = &((wl_iscan_results_t*)p_buf->iscan_buf)->results;
+		list = &((wl_iscan_results_v109_t*)p_buf->iscan_buf)->results;
 
-		if (list->version != WL_BSS_INFO_VERSION) {
-			WL_ERROR(("list->version %d != WL_BSS_INFO_VERSION\n", list->version));
+		if (list->version != WL_BSS_INFO_VER_109) {
+			WL_ERROR(("list->version %d != WL_BSS_INFO_VER_109\n", list->version));
 		}
 
 		bi = NULL;
@@ -4076,7 +4089,7 @@ wl_iw_iscan(iscan_info_t *iscan, wlc_ssid_t *ssid, uint16 action)
 	err = wl_iw_iscan_prep(&params->params, ssid);
 
 	if (!err) {
-		params->version = htod32(ISCAN_REQ_VERSION);
+		params->version = htod32(ISCAN_REQ_VERSION_V1);
 		params->action = htod16(action);
 		params->scan_duration = htod16(0);
 
@@ -4094,8 +4107,8 @@ wl_iw_iscan_get(iscan_info_t *iscan)
 {
 	iscan_buf_t * buf;
 	iscan_buf_t * ptr;
-	wl_iscan_results_t * list_buf;
-	wl_iscan_results_t list;
+	wl_iscan_results_v109_t * list_buf;
+	wl_iscan_results_v109_t list;
 	wl_scan_results_v109_t *results;
 	uint32 status;
 
@@ -4120,9 +4133,9 @@ wl_iw_iscan_get(iscan_info_t *iscan)
 		}
 	}
 	memset(buf->iscan_buf, 0, WLC_IW_ISCAN_MAXLEN);
-	list_buf = (wl_iscan_results_t*)buf->iscan_buf;
+	list_buf = (wl_iscan_results_v109_t*)buf->iscan_buf;
 	results = &list_buf->results;
-	results->buflen = WL_ISCAN_RESULTS_FIXED_SIZE;
+	results->buflen = WL_ISCAN_RESULTS_V109_FIXED_SIZE;
 	results->version = 0;
 	results->count = 0;
 
@@ -4132,7 +4145,7 @@ wl_iw_iscan_get(iscan_info_t *iscan)
 		iscan->dev,
 		"iscanresults",
 		&list,
-		WL_ISCAN_RESULTS_FIXED_SIZE,
+		WL_ISCAN_RESULTS_V109_FIXED_SIZE,
 		buf->iscan_buf,
 		WLC_IW_ISCAN_MAXLEN);
 	results->buflen = dtoh32(results->buflen);

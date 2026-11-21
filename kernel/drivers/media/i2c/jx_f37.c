@@ -93,14 +93,6 @@ struct regval {
 	u8 val;
 };
 
-enum jx_f37_max_pad {
-	PAD0, /* link to isp */
-	PAD1, /* link to csi wr0 | hdr x2:L x3:M */
-	PAD2, /* link to csi wr1 | hdr      x3:L */
-	PAD3, /* link to csi wr2 | hdr x2:M x3:S */
-	PAD_MAX,
-};
-
 struct jx_f37_mode {
 	u32 width;
 	u32 height;
@@ -386,7 +378,7 @@ static const struct jx_f37_mode supported_modes[] = {
 		.vts_def = 0x0465,
 		.reg_list = jx_f37_1080p_linear_1lane_30fps,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 	{
 		.width = 1920,
@@ -400,10 +392,10 @@ static const struct jx_f37_mode supported_modes[] = {
 		.vts_def = 0x08ca,
 		.reg_list = jx_f37_1080p_hdr_1lane_15fps,
 		.hdr_mode = HDR_X2,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD1] = V4L2_MBUS_CSI2_CHANNEL_0,//L->csi wr0
-		.vc[PAD2] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD3] = V4L2_MBUS_CSI2_CHANNEL_1,//M->csi wr2
+		.vc[PAD0] = 1,
+		.vc[PAD1] = 0,//L->csi wr0
+		.vc[PAD2] = 1,
+		.vc[PAD3] = 1,//M->csi wr2
 	},
 };
 
@@ -617,7 +609,7 @@ jx_f37_find_best_fit(struct jx_f37 *jx_f37, struct v4l2_subdev_format *fmt)
 }
 
 static int jx_f37_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct jx_f37 *jx_f37 = to_jx_f37(sd);
@@ -632,7 +624,7 @@ static int jx_f37_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&jx_f37->mutex);
 		return -ENOTTY;
@@ -647,7 +639,7 @@ static int jx_f37_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int jx_f37_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct jx_f37 *jx_f37 = to_jx_f37(sd);
@@ -656,7 +648,7 @@ static int jx_f37_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&jx_f37->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&jx_f37->mutex);
 		return -ENOTTY;
@@ -677,7 +669,7 @@ static int jx_f37_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int jx_f37_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index != 0)
@@ -688,7 +680,7 @@ static int jx_f37_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int jx_f37_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	if (fse->index >= ARRAY_SIZE(supported_modes))
@@ -709,10 +701,10 @@ static void jx_f37_get_module_inf(struct jx_f37 *jx_f37,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, JX_F37_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, jx_f37->module_name,
+	strscpy(inf->base.sensor, JX_F37_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, jx_f37->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, jx_f37->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, jx_f37->len_name, sizeof(inf->base.lens));
 }
 
 static int jx_f37_set_hdrae(struct jx_f37 *jx_f37,
@@ -940,25 +932,11 @@ static int jx_f37_g_frame_interval(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int jx_f37_g_mbus_config(struct v4l2_subdev *sd,
+static int jx_f37_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
 				struct v4l2_mbus_config *config)
 {
-	struct jx_f37 *jx_f37 = to_jx_f37(sd);
-	const struct jx_f37_mode *mode = jx_f37->cur_mode;
-	u32 val = 0;
-
-	if (mode->hdr_mode == NO_HDR)
-		val = 1 << (JX_F37_LANES - 1) |
-		      V4L2_MBUS_CSI2_CHANNEL_0 |
-		      V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	else if (mode->hdr_mode == HDR_X2)
-		val = 1 << (JX_F37_LANES - 1) |
-		      V4L2_MBUS_CSI2_CHANNEL_0 |
-		      V4L2_MBUS_CSI2_CONTINUOUS_CLOCK |
-		      V4L2_MBUS_CSI2_CHANNEL_1;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = JX_F37_LANES;
 
 	return 0;
 }
@@ -1166,7 +1144,7 @@ static int jx_f37_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct jx_f37 *jx_f37 = to_jx_f37(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct jx_f37_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&jx_f37->mutex);
@@ -1184,7 +1162,7 @@ static int jx_f37_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int jx_f37_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	if (fie->index >= ARRAY_SIZE(supported_modes))
@@ -1221,7 +1199,6 @@ static const struct v4l2_subdev_core_ops jx_f37_core_ops = {
 static const struct v4l2_subdev_video_ops jx_f37_video_ops = {
 	.s_stream = jx_f37_s_stream,
 	.g_frame_interval = jx_f37_g_frame_interval,
-	.g_mbus_config = jx_f37_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops jx_f37_pad_ops = {
@@ -1230,6 +1207,7 @@ static const struct v4l2_subdev_pad_ops jx_f37_pad_ops = {
 	.enum_frame_interval = jx_f37_enum_frame_interval,
 	.get_fmt = jx_f37_get_fmt,
 	.set_fmt = jx_f37_set_fmt,
+	.get_mbus_config = jx_f37_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops jx_f37_subdev_ops = {
@@ -1526,7 +1504,7 @@ static int jx_f37_probe(struct i2c_client *client,
 		 jx_f37->module_index, facing,
 		 JX_F37_NAME, dev_name(sd->dev));
 
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1559,7 +1537,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int jx_f37_remove(struct i2c_client *client)
+static void jx_f37_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct jx_f37 *jx_f37 = to_jx_f37(sd);
@@ -1575,8 +1553,6 @@ static int jx_f37_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__jx_f37_power_off(jx_f37);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *	IEEE 802.1D Generic Attribute Registration Protocol (GARP)
  *
  *	Copyright (c) 2008 Patrick McHardy <kaber@trash.net>
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	version 2 as published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
 #include <linux/timer.h>
@@ -410,7 +407,7 @@ static void garp_join_timer_arm(struct garp_applicant *app)
 {
 	unsigned long delay;
 
-	delay = (u64)msecs_to_jiffies(garp_join_time) * prandom_u32() >> 32;
+	delay = prandom_u32_max(msecs_to_jiffies(garp_join_time));
 	mod_timer(&app->join_timer, jiffies + delay);
 }
 

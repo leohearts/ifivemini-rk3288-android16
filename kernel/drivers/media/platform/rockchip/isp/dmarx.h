@@ -6,14 +6,22 @@
 
 #include "capture.h"
 #include "common.h"
+#include "isp_external.h"
 
-#define RKISP_STREAM_DMARX		0
-#define RKISP_STREAM_RAWRD0		1
-#define RKISP_STREAM_RAWRD1		2
-#define RKISP_STREAM_RAWRD2		3
-#define RKISP_MAX_DMARX_STREAM		4
+#define DMA_VDEV_NAME DRIVER_NAME	"_dmapath"
+#define DMARX0_VDEV_NAME DRIVER_NAME	"_rawrd0_m"
+#define DMARX1_VDEV_NAME DRIVER_NAME	"_rawrd1_l"
+#define DMARX2_VDEV_NAME DRIVER_NAME	"_rawrd2_s"
 
 struct rkisp_dmarx_device;
+
+enum {
+	RKISP_STREAM_DMARX,
+	RKISP_STREAM_RAWRD0,
+	RKISP_STREAM_RAWRD1,
+	RKISP_STREAM_RAWRD2,
+	RKISP_MAX_DMARX_STREAM,
+};
 
 enum rkisp_dmarx_pad {
 	RKISP_DMARX_PAD_SINK,
@@ -32,18 +40,27 @@ struct rkisp_dmarx_frame {
 	u32 id;
 };
 
+struct rkisp_rx_buf_pool {
+	struct rkisp_buffer buf;
+	struct rkisp_rx_buf *dbufs;
+	struct dma_buf_attachment *dba;
+	struct sg_table *sgt;
+};
+
 /*
  * struct rkisp_dmarx_device
  * trigger: read back mode
- * cur_frame: current frame id and timestamp in ns
  * pre_frame: previous frame id and timestamp in ns
+ * cur_frame: current frame (front end BNR) id and timestamp in ns
+ * cur_be_frame: current back end BNR frame id and timestamp in ns
  */
 struct rkisp_dmarx_device {
 	struct rkisp_device *ispdev;
 	struct rkisp_stream stream[RKISP_MAX_DMARX_STREAM];
 	enum rkisp_dmarx_trigger trigger;
-	struct rkisp_dmarx_frame cur_frame;
 	struct rkisp_dmarx_frame pre_frame;
+	struct rkisp_dmarx_frame cur_frame;
+	struct rkisp_dmarx_frame cur_be_frame;
 };
 
 void rkisp_dmarx_isr(u32 mis_val, struct rkisp_device *dev);

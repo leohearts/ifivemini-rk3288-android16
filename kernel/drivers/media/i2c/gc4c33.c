@@ -107,14 +107,6 @@ static const char * const gc4c33_supply_names[] = {
 
 #define GC4C33_NUM_SUPPLIES ARRAY_SIZE(gc4c33_supply_names)
 
-enum gc4c33_max_pad {
-	PAD0, /* link to isp */
-	PAD1, /* link to csi wr0 | hdr x2:L x3:M */
-	PAD2, /* link to csi wr1 | hdr      x3:L */
-	PAD3, /* link to csi wr2 | hdr x2:M x3:S */
-	PAD_MAX,
-};
-
 struct regval {
 	u16 addr;
 	u8 val;
@@ -1116,7 +1108,7 @@ static const struct gc4c33_mode supported_modes[] = {
 		.reg_list = gc4c33_linear10bit_2560x1440_regs,
 		.bus_fmt = MEDIA_BUS_FMT_SRGGB10_1X10,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	}, {
 		.width = 1920,
 		.height = 1080,
@@ -1130,7 +1122,7 @@ static const struct gc4c33_mode supported_modes[] = {
 		.reg_list = gc4c33_linear10bit_1920x1080_regs,
 		.bus_fmt = MEDIA_BUS_FMT_SRGGB10_1X10,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	}, {
 		.width = 1280,
 		.height = 720,
@@ -1144,7 +1136,7 @@ static const struct gc4c33_mode supported_modes[] = {
 		.reg_list = gc4c33_linear10bit_1280x720_regs,
 		.bus_fmt = MEDIA_BUS_FMT_SRGGB10_1X10,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 };
 
@@ -1265,7 +1257,7 @@ gc4c33_find_best_fit(struct gc4c33 *gc4c33, struct v4l2_subdev_format *fmt)
 }
 
 static int gc4c33_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct gc4c33 *gc4c33 = to_gc4c33(sd);
@@ -1281,7 +1273,7 @@ static int gc4c33_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&gc4c33->mutex);
 		return -ENOTTY;
@@ -1303,7 +1295,7 @@ static int gc4c33_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int gc4c33_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct gc4c33 *gc4c33 = to_gc4c33(sd);
@@ -1312,7 +1304,7 @@ static int gc4c33_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&gc4c33->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&gc4c33->mutex);
 		return -ENOTTY;
@@ -1322,11 +1314,6 @@ static int gc4c33_get_fmt(struct v4l2_subdev *sd,
 		fmt->format.height = mode->height;
 		fmt->format.code = mode->bus_fmt;
 		fmt->format.field = V4L2_FIELD_NONE;
-		/* format info: width/height/data type/virctual channel */
-		if (fmt->pad < PAD_MAX && mode->hdr_mode != NO_HDR)
-			fmt->reserved[0] = mode->vc[fmt->pad];
-		else
-			fmt->reserved[0] = mode->vc[PAD0];
 	}
 	mutex_unlock(&gc4c33->mutex);
 
@@ -1334,7 +1321,7 @@ static int gc4c33_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int gc4c33_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct gc4c33 *gc4c33 = to_gc4c33(sd);
@@ -1347,7 +1334,7 @@ static int gc4c33_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int gc4c33_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct gc4c33 *gc4c33 = to_gc4c33(sd);
@@ -1523,29 +1510,16 @@ static int gc4c33_g_frame_interval(struct v4l2_subdev *sd,
 	struct gc4c33 *gc4c33 = to_gc4c33(sd);
 	const struct gc4c33_mode *mode = gc4c33->cur_mode;
 
-	mutex_lock(&gc4c33->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&gc4c33->mutex);
 
 	return 0;
 }
 
-static int gc4c33_g_mbus_config(struct v4l2_subdev *sd,
+static int gc4c33_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
-	struct gc4c33 *gc4c33 = to_gc4c33(sd);
-	const struct gc4c33_mode *mode = gc4c33->cur_mode;
-	u32 val = 1 << (GC4C33_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-
-	if (mode->hdr_mode != NO_HDR)
-		val |= V4L2_MBUS_CSI2_CHANNEL_1;
-	if (mode->hdr_mode == HDR_X3)
-		val |= V4L2_MBUS_CSI2_CHANNEL_2;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = GC4C33_LANES;
 
 	return 0;
 }
@@ -1554,10 +1528,21 @@ static void gc4c33_get_module_inf(struct gc4c33 *gc4c33,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, GC4C33_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, gc4c33->module_name,
+	strscpy(inf->base.sensor, GC4C33_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, gc4c33->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, gc4c33->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, gc4c33->len_name, sizeof(inf->base.lens));
+}
+
+static int gc4c33_get_channel_info(struct gc4c33 *gc4c33, struct rkmodule_channel_info *ch_info)
+{
+	if (ch_info->index < PAD0 || ch_info->index >= PAD_MAX)
+		return -EINVAL;
+	ch_info->vc = gc4c33->cur_mode->vc[ch_info->index];
+	ch_info->width = gc4c33->cur_mode->width;
+	ch_info->height = gc4c33->cur_mode->height;
+	ch_info->bus_fmt = gc4c33->cur_mode->bus_fmt;
+	return 0;
 }
 
 static long gc4c33_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -1568,6 +1553,7 @@ static long gc4c33_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	u32 i, h, w;
 	long ret = 0;
 	u32 stream = 0;
+	struct rkmodule_channel_info *ch_info;
 
 	switch (cmd) {
 	case RKMODULE_GET_MODULE_INFO:
@@ -1629,6 +1615,10 @@ static long gc4c33_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 			ret = gc4c33_write_reg(gc4c33->client, GC4C33_REG_CTRL_MODE,
 				GC4C33_REG_VALUE_08BIT, GC4C33_MODE_SW_STANDBY);
 		break;
+	case RKMODULE_GET_CHANNEL_INFO:
+		ch_info = (struct rkmodule_channel_info *)arg;
+		ret = gc4c33_get_channel_info(gc4c33, ch_info);
+		break;
 	default:
 		ret = -ENOIOCTLCMD;
 		break;
@@ -1650,6 +1640,7 @@ static long gc4c33_compat_ioctl32(struct v4l2_subdev *sd,
 	struct rkmodule_nr_switch_threshold *nr_switch;
 	long ret;
 	u32 stream = 0;
+	struct rkmodule_channel_info *ch_info;
 
 	switch (cmd) {
 	case RKMODULE_GET_MODULE_INFO:
@@ -1660,8 +1651,11 @@ static long gc4c33_compat_ioctl32(struct v4l2_subdev *sd,
 		}
 
 		ret = gc4c33_ioctl(sd, cmd, inf);
-		if (!ret)
+		if (!ret) {
 			ret = copy_to_user(up, inf, sizeof(*inf));
+			if (ret)
+				ret = -EFAULT;
+		}
 		kfree(inf);
 		break;
 	case RKMODULE_AWB_CFG:
@@ -1674,6 +1668,8 @@ static long gc4c33_compat_ioctl32(struct v4l2_subdev *sd,
 		ret = copy_from_user(cfg, up, sizeof(*cfg));
 		if (!ret)
 			ret = gc4c33_ioctl(sd, cmd, cfg);
+		else
+			ret = -EFAULT;
 		kfree(cfg);
 		break;
 	case RKMODULE_GET_HDR_CFG:
@@ -1684,8 +1680,11 @@ static long gc4c33_compat_ioctl32(struct v4l2_subdev *sd,
 		}
 
 		ret = gc4c33_ioctl(sd, cmd, hdr);
-		if (!ret)
+		if (!ret) {
 			ret = copy_to_user(up, hdr, sizeof(*hdr));
+			if (ret)
+				ret = -EFAULT;
+		}
 		kfree(hdr);
 		break;
 	case RKMODULE_SET_HDR_CFG:
@@ -1698,6 +1697,8 @@ static long gc4c33_compat_ioctl32(struct v4l2_subdev *sd,
 		ret = copy_from_user(hdr, up, sizeof(*hdr));
 		if (!ret)
 			ret = gc4c33_ioctl(sd, cmd, hdr);
+		else
+			ret = -EFAULT;
 		kfree(hdr);
 		break;
 	case RKMODULE_SET_DPCC_CFG:
@@ -1710,6 +1711,8 @@ static long gc4c33_compat_ioctl32(struct v4l2_subdev *sd,
 		ret = copy_from_user(dpcc, up, sizeof(*dpcc));
 		if (!ret)
 			ret = gc4c33_ioctl(sd, cmd, dpcc);
+		else
+			ret = -EFAULT;
 		kfree(dpcc);
 		break;
 	case PREISP_CMD_SET_HDRAE_EXP:
@@ -1722,6 +1725,8 @@ static long gc4c33_compat_ioctl32(struct v4l2_subdev *sd,
 		ret = copy_from_user(hdrae, up, sizeof(*hdrae));
 		if (!ret)
 			ret = gc4c33_ioctl(sd, cmd, hdrae);
+		else
+			ret = -EFAULT;
 		kfree(hdrae);
 		break;
 	case RKMODULE_GET_NR_SWITCH_THRESHOLD:
@@ -1732,14 +1737,34 @@ static long gc4c33_compat_ioctl32(struct v4l2_subdev *sd,
 		}
 
 		ret = gc4c33_ioctl(sd, cmd, nr_switch);
-		if (!ret)
+		if (!ret) {
 			ret = copy_to_user(up, nr_switch, sizeof(*nr_switch));
+			if (ret)
+				ret = -EFAULT;
+		}
 		kfree(nr_switch);
 		break;
 	case RKMODULE_SET_QUICK_STREAM:
 		ret = copy_from_user(&stream, up, sizeof(u32));
 		if (!ret)
 			ret = gc4c33_ioctl(sd, cmd, &stream);
+		else
+			ret = -EFAULT;
+		break;
+	case RKMODULE_GET_CHANNEL_INFO:
+		ch_info = kzalloc(sizeof(*ch_info), GFP_KERNEL);
+		if (!ch_info) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = gc4c33_ioctl(sd, cmd, ch_info);
+		if (!ret) {
+			ret = copy_to_user(up, ch_info, sizeof(*ch_info));
+			if (ret)
+				ret = -EFAULT;
+		}
+		kfree(ch_info);
 		break;
 	default:
 		ret = -ENOIOCTLCMD;
@@ -2046,7 +2071,7 @@ static void __gc4c33_power_off(struct gc4c33 *gc4c33)
 		gpiod_set_value_cansleep(gc4c33->pwren_gpio, 0);
 }
 
-static int gc4c33_runtime_resume(struct device *dev)
+static int __maybe_unused gc4c33_runtime_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
@@ -2055,7 +2080,7 @@ static int gc4c33_runtime_resume(struct device *dev)
 	return __gc4c33_power_on(gc4c33);
 }
 
-static int gc4c33_runtime_suspend(struct device *dev)
+static int __maybe_unused gc4c33_runtime_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
@@ -2071,7 +2096,7 @@ static int gc4c33_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct gc4c33 *gc4c33 = to_gc4c33(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct gc4c33_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&gc4c33->mutex);
@@ -2089,7 +2114,7 @@ static int gc4c33_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int gc4c33_enum_frame_interval(struct v4l2_subdev *sd,
-				      struct v4l2_subdev_pad_config *cfg,
+				      struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct gc4c33 *gc4c33 = to_gc4c33(sd);
@@ -2127,7 +2152,6 @@ static const struct v4l2_subdev_core_ops gc4c33_core_ops = {
 static const struct v4l2_subdev_video_ops gc4c33_video_ops = {
 	.s_stream = gc4c33_s_stream,
 	.g_frame_interval = gc4c33_g_frame_interval,
-	.g_mbus_config = gc4c33_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops gc4c33_pad_ops = {
@@ -2136,6 +2160,7 @@ static const struct v4l2_subdev_pad_ops gc4c33_pad_ops = {
 	.enum_frame_interval = gc4c33_enum_frame_interval,
 	.get_fmt = gc4c33_get_fmt,
 	.set_fmt = gc4c33_set_fmt,
+	.get_mbus_config = gc4c33_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops gc4c33_subdev_ops = {
@@ -2476,7 +2501,7 @@ static int gc4c33_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 gc4c33->module_index, facing,
 		 GC4C33_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -2502,7 +2527,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int gc4c33_remove(struct i2c_client *client)
+static void gc4c33_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct gc4c33 *gc4c33 = to_gc4c33(sd);
@@ -2518,8 +2543,6 @@ static int gc4c33_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__gc4c33_power_off(gc4c33);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

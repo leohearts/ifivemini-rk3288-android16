@@ -118,7 +118,6 @@ enum usb_dr_mode {
 	USB_DR_MODE_HOST,
 	USB_DR_MODE_PERIPHERAL,
 	USB_DR_MODE_OTG,
-	USB_DR_MODE_DRD,
 };
 
 /**
@@ -129,5 +128,6 @@ enum usb_dr_mode {
  * and returns the corresponding enum usb_dr_mode
  */
 extern enum usb_dr_mode usb_get_dr_mode(struct device *dev);
+extern enum usb_dr_mode usb_get_role_switch_default_mode(struct device *dev);
 
 #endif /* __LINUX_USB_OTG_H */

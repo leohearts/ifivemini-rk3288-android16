@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * AppArmor security module
  *
@@ -5,11 +6,6 @@
  *
  * Copyright (C) 1998-2008 Novell/SUSE
  * Copyright 2009-2010 Canonical Ltd.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
  */
 
 #ifndef __AA_POLICY_H
@@ -51,6 +47,10 @@ extern const char *const aa_profile_mode_names[];
 #define KILL_MODE(_profile) PROFILE_MODE((_profile), APPARMOR_KILL)
 
 #define PROFILE_IS_HAT(_profile) ((_profile)->label.flags & FLAG_HAT)
+
+#define CHECK_DEBUG1(_profile) ((_profile)->label.flags & FLAG_DEBUG1)
+
+#define CHECK_DEBUG2(_profile) ((_profile)->label.flags & FLAG_DEBUG2)
 
 #define profile_is_stale(_profile) (label_is_stale(&(_profile)->label))
 
@@ -139,7 +139,7 @@ struct aa_profile {
 
 	const char *attach;
 	struct aa_dfa *xmatch;
-	int xmatch_len;
+	unsigned int xmatch_len;
 	enum audit_mode audit;
 	long mode;
 	u32 path_flags;
@@ -154,6 +154,9 @@ struct aa_profile {
 	char **xattrs;
 
 	struct aa_rlimit rlimits;
+
+	int secmark_count;
+	struct aa_secmark *secmark;
 
 	struct aa_loaddata *rawdata;
 	unsigned char *hash;
@@ -244,7 +247,7 @@ static inline unsigned int PROFILE_MEDIATES_AF(struct aa_profile *profile,
 static inline struct aa_profile *aa_get_profile(struct aa_profile *p)
 {
 	if (p)
-		kref_get(&(p->label.count));
+		kref_get(&(p->label.count.count));
 
 	return p;
 }
@@ -258,7 +261,7 @@ static inline struct aa_profile *aa_get_profile(struct aa_profile *p)
  */
 static inline struct aa_profile *aa_get_profile_not0(struct aa_profile *p)
 {
-	if (p && kref_get_unless_zero(&p->label.count))
+	if (p && kref_get_unless_zero(&p->label.count.count))
 		return p;
 
 	return NULL;
@@ -278,7 +281,7 @@ static inline struct aa_profile *aa_get_profile_rcu(struct aa_profile __rcu **p)
 	rcu_read_lock();
 	do {
 		c = rcu_dereference(*p);
-	} while (c && !kref_get_unless_zero(&c->label.count));
+	} while (c && !kref_get_unless_zero(&c->label.count.count));
 	rcu_read_unlock();
 
 	return c;
@@ -291,7 +294,7 @@ static inline struct aa_profile *aa_get_profile_rcu(struct aa_profile __rcu **p)
 static inline void aa_put_profile(struct aa_profile *p)
 {
 	if (p)
-		kref_put(&p->label.count, aa_label_kref);
+		kref_put(&p->label.count.count, aa_label_kref);
 }
 
 static inline int AUDIT_MODE(struct aa_profile *profile)
@@ -302,9 +305,12 @@ static inline int AUDIT_MODE(struct aa_profile *profile)
 	return profile->audit;
 }
 
-bool policy_view_capable(struct aa_ns *ns);
-bool policy_admin_capable(struct aa_ns *ns);
-int aa_may_manage_policy(struct aa_label *label, struct aa_ns *ns,
-			 u32 mask);
+bool aa_policy_view_capable(struct aa_label *label, struct aa_ns *ns);
+bool aa_policy_admin_capable(struct aa_label *label, struct aa_ns *ns);
+int aa_may_manage_policy(const struct cred *subj_cred,
+			 struct aa_label *label, struct aa_ns *ns,
+			 const struct cred *ocred, u32 mask);
+bool aa_current_policy_view_capable(struct aa_ns *ns);
+bool aa_current_policy_admin_capable(struct aa_ns *ns);
 
 #endif /* __AA_POLICY_H */

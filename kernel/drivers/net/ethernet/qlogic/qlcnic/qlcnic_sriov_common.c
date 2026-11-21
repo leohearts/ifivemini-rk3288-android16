@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QLogic qlcnic NIC Driver
  * Copyright (c) 2009-2013 QLogic Corporation
- *
- * See LICENSE.qlcnic for copyright and licensing details.
  */
 
 #include <linux/types.h>
@@ -222,6 +221,8 @@ int qlcnic_sriov_init(struct qlcnic_adapter *adapter, int num_vfs)
 	return 0;
 
 qlcnic_destroy_async_wq:
+	while (i--)
+		kfree(sriov->vf_info[i].vp);
 	destroy_workqueue(bc->bc_async_wq);
 
 qlcnic_destroy_trans_wq:
@@ -453,8 +454,10 @@ static int qlcnic_sriov_set_guest_vlan_mode(struct qlcnic_adapter *adapter,
 
 	num_vlans = sriov->num_allowed_vlans;
 	sriov->allowed_vlans = kcalloc(num_vlans, sizeof(u16), GFP_KERNEL);
-	if (!sriov->allowed_vlans)
+	if (!sriov->allowed_vlans) {
+		qlcnic_sriov_free_vlans(adapter);
 		return -ENOMEM;
+	}
 
 	vlans = (u16 *)&cmd->rsp.arg[3];
 	for (i = 0; i < num_vlans; i++)
@@ -526,8 +529,7 @@ static int qlcnic_sriov_vf_init_driver(struct qlcnic_adapter *adapter)
 	return 0;
 }
 
-static int qlcnic_sriov_setup_vf(struct qlcnic_adapter *adapter,
-				 int pci_using_dac)
+static int qlcnic_sriov_setup_vf(struct qlcnic_adapter *adapter)
 {
 	int err;
 
@@ -572,7 +574,7 @@ static int qlcnic_sriov_setup_vf(struct qlcnic_adapter *adapter,
 	if (err)
 		goto err_out_send_channel_term;
 
-	err = qlcnic_setup_netdev(adapter, adapter->netdev, pci_using_dac);
+	err = qlcnic_setup_netdev(adapter, adapter->netdev);
 	if (err)
 		goto err_out_send_channel_term;
 
@@ -615,7 +617,7 @@ static int qlcnic_sriov_check_dev_ready(struct qlcnic_adapter *adapter)
 	return 0;
 }
 
-int qlcnic_sriov_vf_init(struct qlcnic_adapter *adapter, int pci_using_dac)
+int qlcnic_sriov_vf_init(struct qlcnic_adapter *adapter)
 {
 	struct qlcnic_hardware_context *ahw = adapter->ahw;
 	int err;
@@ -632,7 +634,7 @@ int qlcnic_sriov_vf_init(struct qlcnic_adapter *adapter, int pci_using_dac)
 	if (err)
 		return err;
 
-	err = qlcnic_sriov_setup_vf(adapter, pci_using_dac);
+	err = qlcnic_sriov_setup_vf(adapter);
 	if (err)
 		return err;
 
@@ -906,13 +908,11 @@ static void qlcnic_sriov_pull_bc_msg(struct qlcnic_adapter *adapter,
 				     u32 *hdr, u32 *pay, u32 size)
 {
 	struct qlcnic_hardware_context *ahw = adapter->ahw;
-	u32 fw_mbx;
 	u8 i, max = 2, hdr_size, j;
 
 	hdr_size = (sizeof(struct qlcnic_bc_hdr) / sizeof(u32));
 	max = (size / sizeof(u32)) + hdr_size;
 
-	fw_mbx = readl(QLCNIC_MBX_FW(ahw, 0));
 	for (i = 2, j = 0; j < hdr_size; i++, j++)
 		*(hdr++) = readl(QLCNIC_MBX_FW(ahw, i));
 	for (; j < max; i++, j++)
@@ -938,7 +938,7 @@ static int __qlcnic_sriov_issue_bc_post(struct qlcnic_vf_info *vf)
 static int qlcnic_sriov_issue_bc_post(struct qlcnic_bc_trans *trans, u8 type)
 {
 	struct qlcnic_vf_info *vf = trans->vf;
-	u32 pay_size, hdr_size;
+	u32 pay_size;
 	u32 *hdr, *pay;
 	int ret;
 	u8 pci_func = trans->func_id;
@@ -949,14 +949,12 @@ static int qlcnic_sriov_issue_bc_post(struct qlcnic_bc_trans *trans, u8 type)
 	if (type == QLC_BC_COMMAND) {
 		hdr = (u32 *)(trans->req_hdr + trans->curr_req_frag);
 		pay = (u32 *)(trans->req_pay + trans->curr_req_frag);
-		hdr_size = (sizeof(struct qlcnic_bc_hdr) / sizeof(u32));
 		pay_size = qlcnic_sriov_get_bc_paysize(trans->req_pay_size,
 						       trans->curr_req_frag);
 		pay_size = (pay_size / sizeof(u32));
 	} else {
 		hdr = (u32 *)(trans->rsp_hdr + trans->curr_rsp_frag);
 		pay = (u32 *)(trans->rsp_pay + trans->curr_rsp_frag);
-		hdr_size = (sizeof(struct qlcnic_bc_hdr) / sizeof(u32));
 		pay_size = qlcnic_sriov_get_bc_paysize(trans->rsp_pay_size,
 						       trans->curr_rsp_frag);
 		pay_size = (pay_size / sizeof(u32));
@@ -1486,8 +1484,11 @@ static int qlcnic_sriov_channel_cfg_cmd(struct qlcnic_adapter *adapter, u8 cmd_o
 	}
 
 	cmd_op = (cmd.rsp.arg[0] & 0xff);
-	if (cmd.rsp.arg[0] >> 25 == 2)
-		return 2;
+	if (cmd.rsp.arg[0] >> 25 == 2) {
+		ret = 2;
+		goto out;
+	}
+
 	if (cmd_op == QLCNIC_BC_CMD_CHANNEL_INIT)
 		set_bit(QLC_BC_VF_STATE, &vf->state);
 	else
@@ -1588,10 +1589,10 @@ void qlcnic_sriov_vf_set_multi(struct net_device *netdev)
 		if (mode == VPORT_MISS_MODE_ACCEPT_ALL &&
 		    !adapter->fdb_mac_learn) {
 			qlcnic_alloc_lb_filters_mem(adapter);
-			adapter->drv_mac_learn = 1;
+			adapter->drv_mac_learn = true;
 			adapter->rx_mac_learn = true;
 		} else {
-			adapter->drv_mac_learn = 0;
+			adapter->drv_mac_learn = false;
 			adapter->rx_mac_learn = false;
 		}
 	}
@@ -2119,7 +2120,6 @@ static int qlcnic_sriov_vf_shutdown(struct pci_dev *pdev)
 {
 	struct qlcnic_adapter *adapter = pci_get_drvdata(pdev);
 	struct net_device *netdev = adapter->netdev;
-	int retval;
 
 	netif_device_detach(netdev);
 	qlcnic_cancel_idc_work(adapter);
@@ -2132,11 +2132,7 @@ static int qlcnic_sriov_vf_shutdown(struct pci_dev *pdev)
 	qlcnic_83xx_disable_mbx_intr(adapter);
 	cancel_delayed_work_sync(&adapter->idc_aen_work);
 
-	retval = pci_save_state(pdev);
-	if (retval)
-		return retval;
-
-	return 0;
+	return pci_save_state(pdev);
 }
 
 static int qlcnic_sriov_vf_resume(struct qlcnic_adapter *adapter)
@@ -2176,8 +2172,10 @@ int qlcnic_sriov_alloc_vlans(struct qlcnic_adapter *adapter)
 		vf = &sriov->vf_info[i];
 		vf->sriov_vlans = kcalloc(sriov->num_allowed_vlans,
 					  sizeof(*vf->sriov_vlans), GFP_KERNEL);
-		if (!vf->sriov_vlans)
+		if (!vf->sriov_vlans) {
+			qlcnic_sriov_free_vlans(adapter);
 			return -ENOMEM;
+		}
 	}
 
 	return 0;

@@ -31,8 +31,9 @@ static const struct dev_pm_ops gt1x_ts_pm_ops;
 #endif
 #ifdef GTP_CONFIG_OF
 bool gt1x_gt5688;
-int gt1x_rst_gpio;
-int gt1x_int_gpio;
+struct gpio_desc *gt1x_rst_gpio;
+struct gpio_desc *gt1x_int_gpio;
+static bool power_invert;
 #endif
 
 static int gt1x_register_powermanger(void);
@@ -51,7 +52,7 @@ s32 gt1x_i2c_write(u16 addr, u8 *buffer, s32 len)
 		.flags = 0,
 		.addr = gt1x_i2c_client->addr,
 	};
-	return _do_i2c_write(&msg, addr, buffer, len);
+	return gt1x_do_i2c_write(&msg, addr, buffer, len);
 }
 
 /**
@@ -74,7 +75,7 @@ s32 gt1x_i2c_read(u16 addr, u8 *buffer, s32 len)
 		 .addr = gt1x_i2c_client->addr,
 		 .flags = I2C_M_RD}
 	};
-	return _do_i2c_read(msgs, addr, buffer, len);
+	return gt1x_do_i2c_read(msgs, addr, buffer, len);
 }
 
 static spinlock_t irq_lock;
@@ -218,7 +219,7 @@ static void gt1x_ts_work_func(struct work_struct *work)
 	s32 ret = 0;
 	u8 point_data[11] = { 0 };
 
-	if (update_info.status) {
+	if (gt1x_update_info.status) {
 		GTP_DEBUG("Ignore interrupts during fw update.");
 		return;
 	}
@@ -320,13 +321,16 @@ static int gt1x_parse_dt(struct device *dev)
 			gt1x_gt5688 = true;
 	}
 
-	gt1x_int_gpio = of_get_named_gpio(np, "goodix,irq-gpio", 0);
-	gt1x_rst_gpio = of_get_named_gpio(np, "goodix,rst-gpio", 0);
+	gt1x_int_gpio = devm_gpiod_get(dev, "goodix,irq", GPIOD_IN);
+	if (IS_ERR(gt1x_int_gpio)) {
+		GTP_ERROR("Failed to get irq GPIO");
+		return PTR_ERR(gt1x_int_gpio);
+	}
 
-	if (!gpio_is_valid(gt1x_int_gpio) || !gpio_is_valid(gt1x_rst_gpio)) {
-		GTP_ERROR("Invalid GPIO, irq-gpio:%d, rst-gpio:%d",
-				gt1x_int_gpio, gt1x_rst_gpio);
-		return -EINVAL;
+	gt1x_rst_gpio = devm_gpiod_get_optional(dev, "goodix,rst", GPIOD_OUT_LOW);
+	if (IS_ERR(gt1x_rst_gpio)) {
+		GTP_ERROR("Failed to get reset GPIO");
+		return PTR_ERR(gt1x_rst_gpio);
 	}
 
 	vdd_ana = devm_regulator_get_optional(dev, "vdd_ana");
@@ -336,6 +340,9 @@ static int gt1x_parse_dt(struct device *dev)
 		if (PTR_ERR(vdd_ana) == -ENODEV) {
 			GTP_ERROR("power not specified, ignore power ctrl");
 			vdd_ana = NULL;
+		} else {
+			power_invert = of_property_read_bool(np, "power-invert");
+			GTP_INFO("Power Invert,%s ", power_invert ? "yes" : "no");
 		}
 	}
 	if (IS_ERR(vdd_ana)) {
@@ -364,7 +371,7 @@ static int gt1x_parse_dt(struct device *dev)
  */
 int gt1x_power_switch(int on)
 {
-	int ret;
+	int ret = 0;
 	struct i2c_client *client = gt1x_i2c_client;
 
 	if (!client || !vdd_ana)
@@ -372,10 +379,20 @@ int gt1x_power_switch(int on)
 
 	if (on) {
 		GTP_DEBUG("GTP power on.");
-		ret = regulator_enable(vdd_ana);
+		if (power_invert) {
+			if (regulator_is_enabled(vdd_ana) > 0)
+				ret = regulator_disable(vdd_ana);
+		} else {
+			ret = regulator_enable(vdd_ana);
+		}
 	} else {
 		GTP_DEBUG("GTP power off.");
-		ret = regulator_disable(vdd_ana);
+		if (power_invert) {
+			if (!regulator_is_enabled(vdd_ana))
+				ret = regulator_enable(vdd_ana);
+		} else {
+			ret = regulator_disable(vdd_ana);
+		}
 	}
 	return ret;
 }
@@ -383,12 +400,6 @@ int gt1x_power_switch(int on)
 
 static void gt1x_remove_gpio_and_power(void)
 {
-	if (gpio_is_valid(gt1x_int_gpio))
-		gpio_free(gt1x_int_gpio);
-
-	if (gpio_is_valid(gt1x_rst_gpio))
-		gpio_free(gt1x_rst_gpio);
-
 	if (gt1x_i2c_client && gt1x_i2c_client->irq)
 		free_irq(gt1x_i2c_client->irq, gt1x_i2c_client);
 }
@@ -399,26 +410,17 @@ static void gt1x_remove_gpio_and_power(void)
  */
 static s32 gt1x_request_io_port(void)
 {
-	s32 ret = 0;
-
 	GTP_DEBUG_FUNC();
-	ret = gpio_request(GTP_INT_PORT, "GTP_INT_IRQ");
-	if (ret < 0) {
-		GTP_ERROR("Failed to request GPIO:%d, ERRNO:%d", (s32) GTP_INT_PORT, ret);
-		return ret;
-	}
 
+	if (IS_ERR_OR_NULL(gt1x_int_gpio))
+		return -1;
 	GTP_GPIO_AS_INT(GTP_INT_PORT);
 	gt1x_i2c_client->irq = GTP_INT_IRQ;
-
-	ret = gpio_request(GTP_RST_PORT, "GTP_RST_PORT");
-	if (ret < 0) {
-		GTP_ERROR("Failed to request GPIO:%d, ERRNO:%d", (s32) GTP_RST_PORT, ret);
-		gpio_free(GTP_INT_PORT);
-		return ret;
+	if (gt1x_i2c_client->irq < 0) {
+		GTP_ERROR("Failed to get IRQ from GPIO");
+		return gt1x_i2c_client->irq;
 	}
 
-	GTP_GPIO_AS_INPUT(GTP_RST_PORT);
 	return 0;
 }
 
@@ -435,11 +437,12 @@ static s32 gt1x_request_irq(void)
 	GTP_DEBUG_FUNC();
 	GTP_DEBUG("INT trigger type:%x", gt1x_int_type);
 
+	if (IS_ERR_OR_NULL(gt1x_int_gpio))
+		return -1;
 	ret = request_irq(gt1x_i2c_client->irq, gt1x_ts_irq_handler, irq_table[gt1x_int_type], gt1x_i2c_client->name, gt1x_i2c_client);
 	if (ret) {
 		GTP_ERROR("Request IRQ failed!ERRNO:%d.", ret);
 		GTP_GPIO_AS_INPUT(GTP_INT_PORT);
-		gpio_free(GTP_INT_PORT);
 
 		return -1;
 	} else {
@@ -613,7 +616,7 @@ static int gt1x_ts_probe(struct i2c_client *client, const struct i2c_device_id *
  * @client: i2c device struct.
  * Return  0: succeed, -1: failed.
  */
-static int gt1x_ts_remove(struct i2c_client *client)
+static void gt1x_ts_remove(struct i2c_client *client)
 {
 	GTP_DEBUG_FUNC();
 	GTP_DEBUG("GTP driver removing...");
@@ -628,11 +631,21 @@ static int gt1x_ts_remove(struct i2c_client *client)
 	if (gt1x_wq) {
 		destroy_workqueue(gt1x_wq);
 	}
-
-	return 0;
 }
 
 #if defined(CONFIG_FB)
+#include <linux/async.h>
+
+static void gt1x_resume_async(void *data, async_cookie_t cookie)
+{
+	gt1x_resume();
+}
+
+static void gt1x_suspend_async(void *data, async_cookie_t cookie)
+{
+	gt1x_suspend();
+}
+
 /* frame buffer notifier block control the suspend/resume procedure */
 static struct notifier_block gt1x_fb_notifier;
 static int tp_status;
@@ -663,7 +676,7 @@ static int gtp_fb_notifier_callback(struct notifier_block *noti, unsigned long e
 		if (*blank == FB_BLANK_UNBLANK) {
 			tp_status = *blank;
 			GTP_DEBUG("Resume by fb notifier.");
-			gt1x_resume();
+			async_schedule(gt1x_resume_async, NULL);
 		}
 	}
 #endif
@@ -674,22 +687,31 @@ static int gtp_fb_notifier_callback(struct notifier_block *noti, unsigned long e
 		if (*blank == FB_BLANK_POWERDOWN) {
 			tp_status = *blank;
 			GTP_DEBUG("Suspend by fb notifier.");
-			gt1x_suspend();
+			async_schedule(gt1x_suspend_async, NULL);
 		}
 	}
 
 	return 0;
 }
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
+static void gt1x_resume_workfn(struct work_struct *work);
+static DECLARE_WORK(gt1x_resume_work, gt1x_resume_workfn);
+
+static void gt1x_resume_workfn(struct work_struct *work)
+{
+	gt1x_resume();
+}
+
 /* earlysuspend module the suspend/resume procedure */
 static void gt1x_ts_early_suspend(struct early_suspend *h)
 {
+	flush_work(&gt1x_resume_work);
 	gt1x_suspend();
 }
 
 static void gt1x_ts_late_resume(struct early_suspend *h)
 {
-	gt1x_resume();
+	queue_work(gt1x_wq, &gt1x_resume_work);
 }
 
 static struct early_suspend gt1x_early_suspend = {
@@ -697,9 +719,7 @@ static struct early_suspend gt1x_early_suspend = {
 	.suspend = gt1x_ts_early_suspend,
 	.resume = gt1x_ts_late_resume,
 };
-#endif
-
-#ifdef CONFIG_PM
+#elif defined(CONFIG_PM)
 /**
  * gt1x_ts_suspend - i2c suspend callback function.
  * @dev: i2c device.
@@ -772,10 +792,12 @@ static struct i2c_driver gt1x_ts_driver = {
 #ifdef GTP_CONFIG_OF
 		   .of_match_table = gt1x_match_table,
 #endif
-#if !defined(CONFIG_FB) && defined(CONFIG_PM)
+#if !defined(CONFIG_FB) && !defined(CONFIG_HAS_EARLYSUSPEND) && defined(CONFIG_PM)
 		   .pm = &gt1x_ts_pm_ops,
 #endif
+#if !IS_REACHABLE(CONFIG_TOUCHSCREEN_HYN)
 		   .probe_type = PROBE_PREFER_ASYNCHRONOUS,
+#endif
 		   },
 };
 
@@ -802,8 +824,9 @@ static void __exit gt1x_ts_exit(void)
 	i2c_del_driver(&gt1x_ts_driver);
 }
 
-module_init(gt1x_ts_init);
+late_initcall(gt1x_ts_init);
 module_exit(gt1x_ts_exit);
 
 MODULE_DESCRIPTION("GTP Series Driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);

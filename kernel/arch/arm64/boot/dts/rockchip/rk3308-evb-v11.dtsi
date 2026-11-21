@@ -88,6 +88,7 @@
 	};
 
 	acodec_sound: acodec-sound {
+		status = "disabled";
 		compatible = "rockchip,multicodecs-card";
 		rockchip,card-name = "rockchip,rk3308-acodec";
 		rockchip,codec-hp-det;
@@ -108,28 +109,27 @@
 		rockchip,wait-card-locked = <0>;
 	};
 
+	spdif_dummy_codec: spdif-dummy-codec {
+		compatible = "rockchip,dummy-codec";
+		#sound-dai-cells = <0>;
+	};
+
 	spdif_rx_sound: spdif-rx-sound {
 		status = "disabled";
-		compatible = "simple-audio-card";
-		simple-audio-card,name = "rockchip,spdif-rx-sound";
-		simple-audio-card,cpu {
-			sound-dai = <&spdif_rx>;
-		};
-		simple-audio-card,codec {
-			sound-dai = <&dummy_codec>;
-		};
+		compatible = "rockchip,multicodecs-card";
+		rockchip,card-name = "rockchip,spdif-rx";
+		rockchip,mclk-fs = <128>;
+		rockchip,cpu = <&spdif_rx>;
+		rockchip,codec = <&dummy_codec>;
 	};
 
 	spdif_tx_sound: spdif-tx-sound {
 		status = "disabled";
-		compatible = "simple-audio-card";
-		simple-audio-card,name = "rockchip,spdif-tx-sound";
-		simple-audio-card,cpu {
-			sound-dai = <&spdif_tx>;
-		};
-		simple-audio-card,codec {
-			sound-dai = <&dummy_codec>;
-		};
+		compatible = "rockchip,multicodecs-card";
+		rockchip,card-name = "rockchip,spdif-tx";
+		rockchip,mclk-fs = <128>;
+		rockchip,cpu = <&spdif_tx>;
+		rockchip,codec = <&spdif_dummy_codec>;
 	};
 
 	tas5731_sound: tas5731-sound {
@@ -263,7 +263,7 @@
 		uart_rts_gpios = <&gpio4 RK_PA7 GPIO_ACTIVE_LOW>;
 		pinctrl-names = "default", "rts_gpio";
 		pinctrl-0 = <&uart4_rts>;
-		pinctrl-1 = <&uart4_rts_gpio>;
+		pinctrl-1 = <&uart4_rts_pin>;
 		BT,power_gpio    = <&gpio4 RK_PB3 GPIO_ACTIVE_HIGH>;
 		BT,wake_host_irq = <&gpio4 RK_PB4 GPIO_ACTIVE_HIGH>;
 		status = "okay";
@@ -273,7 +273,7 @@
 		compatible = "wlan-platdata";
 		rockchip,grf = <&grf>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&wifi_wake_host>;
+		pinctrl-0 = <&wifi_wake_host>, <&rtc_32k>;
 		wifi_chip_type = "ap6255";
 		WIFI,host_wake_irq = <&gpio0 RK_PA0 GPIO_ACTIVE_LOW>;
 		status = "okay";
@@ -302,16 +302,21 @@
 	};
 };
 
-&dmc {
-	center-supply = <&vdd_log>;
-	status = "okay";
+&rk3308bs_cpu0_opp_table {
+	opp-1008000000 {
+		status = "okay";
+	};
+	opp-1104000000 {
+		status = "okay";
+	};
 };
 
 &emmc {
 	bus-width = <8>;
 	cap-mmc-highspeed;
 	mmc-hs200-1_8v;
-	supports-emmc;
+	no-sdio;
+	no-sd;
 	disable-wp;
 	non-removable;
 	num-slots = <1>;
@@ -362,9 +367,9 @@
 		reset-gpios = <&gpio1 RK_PA1 GPIO_ACTIVE_LOW>;
 	};
 
-	is31fl3236: led-controller@3c {
+	is31fl3236: led-controller@3f {
 		compatible = "issi,is31fl3236";
-		reg = <0x3c>;
+		reg = <0x3f>;
 		#address-cells = <1>;
 		#size-cells = <0>;
 		reset-gpios = <&gpio0 RK_PB0 GPIO_ACTIVE_HIGH>;
@@ -736,7 +741,8 @@
 &sdio {
 	bus-width = <4>;
 	cap-sd-highspeed;
-	supports-sdio;
+	no-sd;
+	no-mmc;
 	ignore-pm-notify;
 	keep-power-in-suspend;
 	non-removable;
@@ -749,7 +755,8 @@
 	bus-width = <4>;
 	cap-mmc-highspeed;
 	cap-sd-highspeed;
-	supports-sd;
+	no-sdio;
+	no-mmc;
 	card-detect-delay = <300>;
 	sd-uhs-sdr25;
 	sd-uhs-sdr50;
@@ -759,6 +766,16 @@
 	status = "disabled";
 };
 
+&spdif_rx {
+	status = "disabled";
+	#sound-dai-cells = <0>;
+};
+
+&spdif_tx {
+	status = "disabled";
+	#sound-dai-cells = <0>;
+};
+
 &tsadc {
 	rockchip,hw-tshut-mode = <0>; /* tshut mode 0:CRU 1:GPIO */
 	rockchip,hw-tshut-polarity = <1>; /* tshut polarity 0:LOW 1:HIGH */
@@ -766,9 +783,6 @@
 };
 
 &pinctrl {
-	pinctrl-names = "default";
-	pinctrl-0 = <&rtc_32k>;
-
 	buttons {
 		pwr_key: pwr-key {
 			rockchip,pins = <0 RK_PA6 RK_FUNC_GPIO &pcfg_pull_up>;
@@ -784,6 +798,12 @@
 	sdio-pwrseq {
 		wifi_enable_h: wifi-enable-h {
 			rockchip,pins = <0 RK_PA2 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
+	wireless-bluetooth {
+		uart4_gpios: uart4-gpios {
+			rockchip,pins = <4 RK_PA7 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
 

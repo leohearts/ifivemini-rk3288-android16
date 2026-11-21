@@ -33,9 +33,7 @@ struct rksdmmc_gpio_wifi_moudle {
     struct rksdmmc_pmu    mregulator;
     struct rksdmmc_pmu    ioregulator;
     struct rksdmmc_gpio   vbat_n;
-    struct rksdmmc_gpio   power_n;  //PMU_EN
-    struct rksdmmc_gpio   poweron1; // M2E_W_DIS1_N
-    struct rksdmmc_gpio   poweron2; // M2E_W_DIS2_N
+    struct rksdmmc_gpio   power_n;  //PMU_EN  
     struct rksdmmc_gpio   reset_n;  //SYSRET_B, DAIRST 
     struct rksdmmc_gpio   vddio;
     struct rksdmmc_gpio   bgf_int_b;
@@ -48,7 +46,14 @@ struct rksdmmc_gpio_wifi_moudle {
 	struct clk *ext_clk;
 };
 
+#if IS_REACHABLE(CONFIG_RFKILL_RK)
 int rfkill_get_wifi_power_state(int *power);
+#else
+static inline int rfkill_get_wifi_power_state(int *power)
+{
+	return -1;
+}
+#endif
 void *rockchip_mem_prealloc(int section, unsigned long size);
 int rfkill_set_wifi_bt_power(int on);
 int rockchip_wifi_power(int on);

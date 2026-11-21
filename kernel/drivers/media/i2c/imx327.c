@@ -709,7 +709,7 @@ static int imx327_read_reg(struct i2c_client *client, u16 reg,
 }
 
 static int imx327_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct imx327 *imx327 = to_imx327(sd);
@@ -730,7 +730,7 @@ static int imx327_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&imx327->mutex);
 		return -ENOTTY;
@@ -764,7 +764,7 @@ static int imx327_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int imx327_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct imx327 *imx327 = to_imx327(sd);
@@ -773,7 +773,7 @@ static int imx327_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&imx327->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&imx327->mutex);
 		return -ENOTTY;
@@ -789,7 +789,7 @@ static int imx327_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int imx327_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct imx327 *imx327 = to_imx327(sd);
@@ -803,7 +803,7 @@ static int imx327_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int imx327_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct imx327 *imx327 = to_imx327(sd);
@@ -865,28 +865,21 @@ static int imx327_g_frame_interval(struct v4l2_subdev *sd,
 	struct imx327 *imx327 = to_imx327(sd);
 	const struct imx327_mode *mode = imx327->cur_mode;
 
-	mutex_lock(&imx327->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&imx327->mutex);
 
 	return 0;
 }
 
-static int imx327_g_mbus_config(struct v4l2_subdev *sd,
+static int imx327_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
 	struct imx327 *imx327 = to_imx327(sd);
-	u32 val = 0;
 
-	val = 1 << (IMX327_4LANES - 1) |
-			V4L2_MBUS_CSI2_CHANNEL_0 |
-			V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	if (imx327->bus_cfg.bus_type == 3)
-		config->type = V4L2_MBUS_CCP2;
-	else
-		config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
-
+	config->type = imx327->bus_cfg.bus_type;
+	if (imx327->bus_cfg.bus_type == V4L2_MBUS_CCP2)
+		config->bus.mipi_csi1 = imx327->bus_cfg.bus.mipi_csi1;
+	else if (imx327->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY)
+		config->bus.mipi_csi2 = imx327->bus_cfg.bus.mipi_csi2;
 	return 0;
 }
 
@@ -994,10 +987,10 @@ static void imx327_get_module_inf(struct imx327 *imx327,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, IMX327_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, imx327->module_name,
+	strscpy(inf->base.sensor, IMX327_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, imx327->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, imx327->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, imx327->len_name, sizeof(inf->base.lens));
 }
 
 static int imx327_set_conversion_gain(struct imx327 *imx327, u32 *cg)
@@ -1145,7 +1138,7 @@ static long imx327_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		break;
 	case RKMODULE_GET_LVDS_CFG:
 		lvds_cfg = (struct rkmodule_lvds_cfg *)arg;
-		if (imx327->bus_cfg.bus_type == 3)
+		if (imx327->bus_cfg.bus_type == V4L2_MBUS_CCP2)
 			memcpy(lvds_cfg, &imx327->cur_mode->lvds_cfg,
 				sizeof(struct rkmodule_lvds_cfg));
 		else
@@ -1501,7 +1494,7 @@ static int imx327_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct imx327 *imx327 = to_imx327(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct imx327_mode *def_mode = &imx327->support_modes[0];
 
 	mutex_lock(&imx327->mutex);
@@ -1519,7 +1512,7 @@ static int imx327_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int imx327_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct imx327 *imx327 = to_imx327(sd);
@@ -1550,7 +1543,7 @@ static int imx327_enum_frame_interval(struct v4l2_subdev *sd,
  */
 
 static int imx327_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
 	struct imx327 *imx327 = to_imx327(sd);
@@ -1558,7 +1551,7 @@ static int imx327_get_selection(struct v4l2_subdev *sd,
 	if (sel->target == V4L2_SEL_TGT_CROP_BOUNDS) {
 		sel->r.left = CROP_START(imx327->cur_mode->width, DST_WIDTH);
 		sel->r.width = DST_WIDTH;
-		if (imx327->bus_cfg.bus_type == 3) {
+		if (imx327->bus_cfg.bus_type == V4L2_MBUS_CCP2) {
 			if (imx327->cur_mode->hdr_mode == NO_HDR)
 				sel->r.top = 21;
 			else
@@ -1594,7 +1587,6 @@ static const struct v4l2_subdev_core_ops imx327_core_ops = {
 static const struct v4l2_subdev_video_ops imx327_video_ops = {
 	.s_stream = imx327_s_stream,
 	.g_frame_interval = imx327_g_frame_interval,
-	.g_mbus_config = imx327_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops imx327_pad_ops = {
@@ -1604,6 +1596,7 @@ static const struct v4l2_subdev_pad_ops imx327_pad_ops = {
 	.get_fmt = imx327_get_fmt,
 	.set_fmt = imx327_set_fmt,
 	.get_selection = imx327_get_selection,
+	.get_mbus_config = imx327_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops imx327_subdev_ops = {
@@ -1640,29 +1633,33 @@ static int imx327_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
-		shs1 = imx327->cur_vts - ctrl->val - 1;
-		ret = imx327_write_reg(imx327->client,
-			IMX327_REG_SHS1_H,
-			IMX327_REG_VALUE_08BIT,
-			IMX327_FETCH_HIGH_BYTE_EXP(shs1));
-		ret |= imx327_write_reg(imx327->client,
-			IMX327_REG_SHS1_M,
-			IMX327_REG_VALUE_08BIT,
-			IMX327_FETCH_MID_BYTE_EXP(shs1));
-		ret |= imx327_write_reg(imx327->client,
-			IMX327_REG_SHS1_L,
-			IMX327_REG_VALUE_08BIT,
-			IMX327_FETCH_LOW_BYTE_EXP(shs1));
-		dev_dbg(&client->dev, "set exposure 0x%x, cur_vts 0x%x,shs1 0x%x\n",
-			ctrl->val, imx327->cur_vts, shs1);
+		if (imx327->cur_mode->hdr_mode == NO_HDR) {
+			shs1 = imx327->cur_vts - ctrl->val - 1;
+			ret = imx327_write_reg(imx327->client,
+				IMX327_REG_SHS1_H,
+				IMX327_REG_VALUE_08BIT,
+				IMX327_FETCH_HIGH_BYTE_EXP(shs1));
+			ret |= imx327_write_reg(imx327->client,
+				IMX327_REG_SHS1_M,
+				IMX327_REG_VALUE_08BIT,
+				IMX327_FETCH_MID_BYTE_EXP(shs1));
+			ret |= imx327_write_reg(imx327->client,
+				IMX327_REG_SHS1_L,
+				IMX327_REG_VALUE_08BIT,
+				IMX327_FETCH_LOW_BYTE_EXP(shs1));
+			dev_dbg(&client->dev, "set exposure 0x%x, cur_vts 0x%x,shs1 0x%x\n",
+				ctrl->val, imx327->cur_vts, shs1);
+		}
 		break;
 	case V4L2_CID_ANALOGUE_GAIN:
-		ret = imx327_write_reg(imx327->client,
-			IMX327_REG_LF_GAIN,
-			IMX327_REG_VALUE_08BIT,
-			ctrl->val);
-		dev_dbg(&client->dev, "set analog gain 0x%x\n",
-			ctrl->val);
+		if (imx327->cur_mode->hdr_mode == NO_HDR) {
+			ret = imx327_write_reg(imx327->client,
+				IMX327_REG_LF_GAIN,
+				IMX327_REG_VALUE_08BIT,
+				ctrl->val);
+			dev_dbg(&client->dev, "set analog gain 0x%x\n",
+				ctrl->val);
+		}
 		break;
 	case V4L2_CID_VBLANK:
 		vts = ctrl->val + imx327->cur_mode->height;
@@ -1893,7 +1890,7 @@ static int imx327_probe(struct i2c_client *client,
 
 	ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(endpoint),
 		&imx327->bus_cfg);
-	if (imx327->bus_cfg.bus_type == 3) {
+	if (imx327->bus_cfg.bus_type == V4L2_MBUS_CCP2) {
 		imx327->support_modes = lvds_supported_modes;
 		imx327->support_modes_num = ARRAY_SIZE(lvds_supported_modes);
 	} else {
@@ -1978,7 +1975,7 @@ static int imx327_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 imx327->module_index, facing,
 		 IMX327_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -2008,7 +2005,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int imx327_remove(struct i2c_client *client)
+static void imx327_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx327 *imx327 = to_imx327(sd);
@@ -2024,8 +2021,6 @@ static int imx327_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__imx327_power_off(imx327);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

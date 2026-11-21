@@ -119,7 +119,7 @@ static int kbase_platform_rk_init(struct kbase_device *kbdev)
 		ret = -ENOMEM;
 		goto err_wq;
 	}
-	INIT_DELAYED_WORK(&platform->work, rk_pm_power_off_delay_work);
+	INIT_DEFERRABLE_WORK(&platform->work, rk_pm_power_off_delay_work);
 
 	wake_lock_init(&platform->wake_lock, WAKE_LOCK_SUSPEND, "gpu");
 
@@ -169,12 +169,12 @@ struct kbase_platform_funcs_conf platform_funcs = {
 
 /*---------------------------------------------------------------------------*/
 
-static int rk_pm_callback_runtime_on(struct kbase_device *kbdev)
+static __maybe_unused int rk_pm_callback_runtime_on(struct kbase_device *kbdev)
 {
 	return 0;
 }
 
-static void rk_pm_callback_runtime_off(struct kbase_device *kbdev)
+static __maybe_unused void rk_pm_callback_runtime_off(struct kbase_device *kbdev)
 {
 }
 
@@ -248,17 +248,10 @@ void rk_kbase_device_runtime_disable(struct kbase_device *kbdev)
 struct kbase_pm_callback_conf pm_callbacks = {
 	.power_on_callback = rk_pm_callback_power_on,
 	.power_off_callback = rk_pm_callback_power_off,
-#ifdef CONFIG_PM
-	.power_runtime_init_callback = rk_kbase_device_runtime_init,
-	.power_runtime_term_callback = rk_kbase_device_runtime_disable,
-	.power_runtime_on_callback = rk_pm_callback_runtime_on,
-	.power_runtime_off_callback = rk_pm_callback_runtime_off,
-#else				/* CONFIG_PM */
-	.power_runtime_init_callback = NULL,
-	.power_runtime_term_callback = NULL,
-	.power_runtime_on_callback = NULL,
-	.power_runtime_off_callback = NULL,
-#endif				/* CONFIG_PM */
+	.power_runtime_init_callback = pm_ptr(rk_kbase_device_runtime_init),
+	.power_runtime_term_callback = pm_ptr(rk_kbase_device_runtime_disable),
+	.power_runtime_on_callback = pm_ptr(rk_pm_callback_runtime_on),
+	.power_runtime_off_callback = pm_ptr(rk_pm_callback_runtime_off),
 };
 
 int kbase_platform_early_init(void)
@@ -378,19 +371,13 @@ static ssize_t utilisation_show(struct device *dev,
 	struct rk_context *platform = get_rk_context(kbdev);
 	ssize_t ret = 0;
 	unsigned long period_in_us = platform->utilisation_period * 1000;
-	unsigned long total_time = 0;
-	unsigned long busy_time = 0;
-	unsigned long utilisation = 0;
+	unsigned long total_time;
+	unsigned long busy_time;
+	unsigned long utilisation;
 
-#ifdef CONFIG_MALI_DEVFREQ
 	kbase_pm_reset_dvfs_utilisation(kbdev);
-#endif
 	usleep_range(period_in_us, period_in_us + 100);
-#ifdef CONFIG_MALI_DEVFREQ
 	kbase_pm_get_dvfs_utilisation(kbdev, &total_time, &busy_time);
-#else
-	dev_warn(dev, "can not get 'total_time' and 'busy_time', for CONFIG_MALI_DEVFREQ is disabled");
-#endif
 	/* 'devfreq_dev_profile' instance registered to devfreq
 	 * also uses kbase_pm_reset_dvfs_utilisation
 	 * and kbase_pm_get_dvfs_utilisation.
@@ -398,8 +385,7 @@ static ssize_t utilisation_show(struct device *dev,
 	 */
 	D("total_time : %lu, busy_time : %lu.", total_time, busy_time);
 
-	if (total_time != 0)
-		utilisation = busy_time * 100 / total_time;
+	utilisation = busy_time * 100 / total_time;
 	ret += snprintf(buf, PAGE_SIZE, "%ld\n", utilisation);
 
 	return ret;
@@ -474,30 +460,26 @@ out:
 	return ret;
 }
 
+static const struct rockchip_opp_data rk3288_gpu_opp_data = {
+	.get_soc_info = rk3288_get_soc_info,
+};
+
 static const struct of_device_id rockchip_mali_of_match[] = {
 	{
 		.compatible = "rockchip,rk3288",
-		.data = (void *)&rk3288_get_soc_info,
+		.data = (void *)&rk3288_gpu_opp_data,
 	},
 	{
 		.compatible = "rockchip,rk3288w",
-		.data = (void *)&rk3288_get_soc_info,
+		.data = (void *)&rk3288_gpu_opp_data,
 	},
 	{},
 };
 
 int kbase_platform_rk_init_opp_table(struct kbase_device *kbdev)
 {
-#if IS_ENABLED(CONFIG_REGULATOR_TINKER)
-	char *name = NULL;
+	rockchip_get_opp_data(rockchip_mali_of_match, &kbdev->opp_info);
 
-	if (!(of_property_read_string(kbdev->dev->of_node, "reg-name", (const char **)&name)))
-		dev_info(kbdev->dev, "get regulator name: %s\n", name);
-
-	return rockchip_init_opp_table(kbdev->dev, rockchip_mali_of_match,
-				       "gpu_leakage", name);
-#else
-	return rockchip_init_opp_table(kbdev->dev, rockchip_mali_of_match,
-				       "gpu_leakage", "mali");
-#endif
+	return rockchip_init_opp_table(kbdev->dev, &kbdev->opp_info,
+				       NULL, "mali");
 }

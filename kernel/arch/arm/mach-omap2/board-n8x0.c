@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-omap2/board-n8x0.c
  *
@@ -5,10 +6,6 @@
  * Author: Juha Yrjola <juha.yrjola@nokia.com>
  *
  * Modified from mach-omap2/board-generic.c
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
@@ -25,7 +22,6 @@
 #include <linux/platform_data/spi-omap2-mcspi.h>
 #include <linux/platform_data/mmc-omap.h>
 #include <linux/mfd/menelaus.h>
-#include <sound/tlv320aic3x.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach-types.h>
@@ -568,10 +564,6 @@ static int n8x0_menelaus_late_init(struct device *dev)
 
 struct menelaus_platform_data n8x0_menelaus_platform_data = {
 	.late_init = n8x0_menelaus_late_init,
-};
-
-struct aic3x_pdata n810_aic33_data = {
-	.gpio_reset = 118,
 };
 
 static int __init n8x0_late_initcall(void)

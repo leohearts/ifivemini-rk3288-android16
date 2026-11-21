@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * File:	mca_drv.c
  * Purpose:	Generic MCA handling layer
@@ -14,7 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/kallsyms.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/acpi.h>
 #include <linux/timer.h>
 #include <linux/module.h>
@@ -25,7 +26,6 @@
 #include <linux/slab.h>
 
 #include <asm/delay.h>
-#include <asm/machvec.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
 #include <asm/sal.h>
@@ -176,7 +176,7 @@ mca_handler_bh(unsigned long paddr, void *iip, unsigned long ipsr)
 	spin_unlock(&mca_bh_lock);
 
 	/* This process is about to be killed itself */
-	do_exit(SIGKILL);
+	make_task_dead(SIGKILL);
 }
 
 /**
@@ -496,7 +496,7 @@ recover_from_read_error(slidx_table_t *slidx,
 			struct ia64_sal_os_state *sos)
 {
 	u64 target_identifier;
-	pal_min_state_area_t *pmsa;
+	struct pal_min_state_area *pmsa;
 	struct ia64_psr *psr1, *psr2;
 	ia64_fptr_t *mca_hdlr_bh = (ia64_fptr_t*)mca_handler_bhhook;
 

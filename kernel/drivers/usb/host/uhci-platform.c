@@ -41,7 +41,7 @@ static const struct hc_driver uhci_platform_hc_driver = {
 
 	/* Generic hardware linkage */
 	.irq =			uhci_irq,
-	.flags =		HCD_MEMORY | HCD_USB11,
+	.flags =		HCD_MEMORY | HCD_DMA | HCD_USB11,
 
 	/* Basic lifecycle operations */
 	.reset =		uhci_platform_init,
@@ -122,7 +122,7 @@ static int uhci_hcd_platform_probe(struct platform_device *pdev)
 	}
 
 	/* Get and enable clock if any specified */
-	uhci->clk = devm_clk_get(&pdev->dev, NULL);
+	uhci->clk = devm_clk_get_optional(&pdev->dev, NULL);
 	if (IS_ERR(uhci->clk)) {
 		ret = PTR_ERR(uhci->clk);
 		goto err_rmr;
@@ -133,7 +133,11 @@ static int uhci_hcd_platform_probe(struct platform_device *pdev)
 		goto err_rmr;
 	}
 
-	ret = usb_add_hcd(hcd, pdev->resource[1].start, IRQF_SHARED);
+	ret = platform_get_irq(pdev, 0);
+	if (ret < 0)
+		goto err_clk;
+
+	ret = usb_add_hcd(hcd, ret, IRQF_SHARED);
 	if (ret)
 		goto err_clk;
 
@@ -190,3 +194,4 @@ static struct platform_driver uhci_platform_driver = {
 		.of_match_table = platform_uhci_ids,
 	},
 };
+MODULE_SOFTDEP("pre: ehci_platform");

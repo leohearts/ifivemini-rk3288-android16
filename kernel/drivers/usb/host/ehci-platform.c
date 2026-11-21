@@ -36,7 +36,6 @@
 #include <linux/usb/hcd.h>
 #include <linux/usb/ehci_pdriver.h>
 #include <linux/usb/of.h>
-#include <linux/gpio.h>
 
 #include "ehci.h"
 
@@ -44,16 +43,17 @@
 #define EHCI_MAX_CLKS 4
 #define hcd_to_ehci_priv(h) ((struct ehci_platform_priv *)hcd_to_ehci(h)->priv)
 
+#define BCM_USB_FIFO_THRESHOLD	0x00800040
+
 struct ehci_platform_priv {
 	struct clk *clks[EHCI_MAX_CLKS];
 	struct reset_control *rsts;
 	bool reset_on_resume;
 	bool quirk_poll;
+	bool device_link;
 	struct timer_list poll_timer;
 	struct delayed_work poll_work;
 };
-
-static const char hcd_name[] = "ehci-platform";
 
 static void ehci_rockchip_relinquish_port(struct usb_hcd *hcd, int portnum)
 {
@@ -67,7 +67,14 @@ static void ehci_rockchip_relinquish_port(struct usb_hcd *hcd, int portnum)
 	ehci_writel(ehci, portsc, status_reg);
 }
 
-static void ehci_rockchip_usic_init(struct usb_hcd *hcd)
+#define USIC_MICROFRAME_OFFSET	0x90
+#define USIC_SCALE_DOWN_OFFSET	0xa0
+#define USIC_ENABLE_OFFSET	0xb0
+#define USIC_ENABLE		BIT(0)
+#define USIC_SCALE_DOWN		BIT(2)
+#define USIC_MICROFRAME_COUNT	0x1d4d
+
+static void ehci_usic_init(struct usb_hcd *hcd)
 {
 	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
 
@@ -101,6 +108,11 @@ static int ehci_platform_reset(struct usb_hcd *hcd)
 
 	if (pdata->no_io_watchdog)
 		ehci->need_io_watchdog = 0;
+
+	if (of_device_is_compatible(pdev->dev.of_node, "brcm,xgs-iproc-ehci"))
+		ehci_writel(ehci, BCM_USB_FIFO_THRESHOLD,
+			    &ehci->regs->brcm_insnreg[1]);
+
 	return 0;
 }
 
@@ -262,6 +274,8 @@ static int ehci_platform_probe(struct platform_device *dev)
 	struct ehci_platform_priv *priv;
 	struct ehci_hcd *ehci;
 	int err, irq, clk = 0;
+	struct device *companion_dev;
+	struct device_link *link;
 
 	if (usb_disabled())
 		return -ENODEV;
@@ -281,10 +295,8 @@ static int ehci_platform_probe(struct platform_device *dev)
 	}
 
 	irq = platform_get_irq(dev, 0);
-	if (irq < 0) {
-		dev_err(&dev->dev, "no irq provided");
+	if (irq < 0)
 		return irq;
-	}
 
 	hcd = usb_create_hcd(&ehci_platform_hc_driver, &dev->dev,
 			     dev_name(&dev->dev));
@@ -306,6 +318,9 @@ static int ehci_platform_probe(struct platform_device *dev)
 		if (of_property_read_bool(dev->dev.of_node, "big-endian"))
 			ehci->big_endian_mmio = ehci->big_endian_desc = 1;
 
+		if (of_property_read_bool(dev->dev.of_node, "spurious-oc"))
+			ehci->spurious_oc = 1;
+
 		if (of_property_read_bool(dev->dev.of_node,
 					  "needs-reset-on-resume"))
 			priv->reset_on_resume = true;
@@ -325,15 +340,13 @@ static int ehci_platform_probe(struct platform_device *dev)
 
 		if (of_machine_is_compatible("rockchip,rk3288") &&
 		    of_property_read_bool(dev->dev.of_node,
-					  "rockchip-relinquish-port")) {
+					  "rockchip-relinquish-port"))
 			ehci_platform_hc_driver.relinquish_port =
 					  ehci_rockchip_relinquish_port;
-			hcd->rk3288_relinquish_port_quirk = 1;
-		}
 
-		if (of_property_read_bool(dev->dev.of_node,
-					  "rockchip-has-usic"))
-			ehci->has_usic = 1;
+		if (of_device_is_compatible(dev->dev.of_node,
+					    "rockchip,rk3588-ehci"))
+			priv->device_link = true;
 
 		for (clk = 0; clk < EHCI_MAX_CLKS; clk++) {
 			priv->clks[clk] = of_clk_get(dev->dev.of_node, clk);
@@ -346,22 +359,6 @@ static int ehci_platform_probe(struct platform_device *dev)
 			}
 		}
 	}
-
-	ehci->gpio_hub_reset = devm_gpiod_get_index_optional(&dev->dev, "hub-reset", 0, GPIOD_OUT_HIGH);
-	if (IS_ERR(ehci->gpio_hub_reset)) {
-		dev_info(&dev->dev, "Could not get named GPIO for hub-reset-gpios.\n");
-		ehci->gpio_hub_reset = NULL;
-	}
-	if (ehci->gpio_hub_reset)
-		gpiod_set_value(ehci->gpio_hub_reset, 1);
-
-	ehci->gpio_hub_vbus = devm_gpiod_get_index_optional(&dev->dev, "hub-vbus", 0, GPIOD_OUT_HIGH);
-	if (IS_ERR(ehci->gpio_hub_vbus)) {
-		ehci->gpio_hub_vbus = NULL;
-		dev_info(&dev->dev, "Could not get named GPIO for hub-vbus-gpios.\n");
-	}
-	if (ehci->gpio_hub_vbus)
-		gpiod_set_value(ehci->gpio_hub_vbus, 1);
 
 	priv->rsts = devm_reset_control_array_get_optional_shared(&dev->dev);
 	if (IS_ERR(priv->rsts)) {
@@ -381,6 +378,8 @@ static int ehci_platform_probe(struct platform_device *dev)
 		hcd->has_tt = 1;
 	if (pdata->reset_on_resume)
 		priv->reset_on_resume = true;
+	if (pdata->spurious_oc)
+		ehci->spurious_oc = 1;
 
 #ifndef CONFIG_USB_EHCI_BIG_ENDIAN_MMIO
 	if (ehci->big_endian_mmio) {
@@ -417,12 +416,29 @@ static int ehci_platform_probe(struct platform_device *dev)
 	hcd->rsrc_start = res_mem->start;
 	hcd->rsrc_len = resource_size(res_mem);
 
+	hcd->tpl_support = of_usb_host_tpl_support(dev->dev.of_node);
+
 	err = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (err)
 		goto err_power;
 
-	if (ehci->has_usic)
-		ehci_rockchip_usic_init(hcd);
+	if (of_usb_get_phy_mode(dev->dev.of_node) == USBPHY_INTERFACE_MODE_HSIC)
+		ehci_usic_init(hcd);
+
+	if (priv->device_link) {
+		companion_dev = usb_of_get_companion_dev(hcd->self.controller);
+		if (companion_dev) {
+			link = device_link_add(companion_dev, hcd->self.controller,
+					       DL_FLAG_STATELESS);
+			put_device(companion_dev);
+			if (!link) {
+				dev_err(&dev->dev, "Unable to link %s\n",
+					dev_name(companion_dev));
+				err = -EINVAL;
+				goto err_power;
+			}
+		}
+	}
 
 	device_wakeup_enable(hcd->self.controller);
 	device_enable_async_suspend(hcd->self.controller);
@@ -455,16 +471,21 @@ err_put_clks:
 static int ehci_platform_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
 	struct usb_ehci_pdata *pdata = dev_get_platdata(&dev->dev);
 	struct ehci_platform_priv *priv = hcd_to_ehci_priv(hcd);
+	struct device *companion_dev;
 	int clk;
 
 	if (priv->quirk_poll)
 		quirk_poll_end(priv);
 
-	if (ehci->gpio_hub_vbus)
-		gpiod_set_value(ehci->gpio_hub_vbus, 0);
+	if (priv->device_link) {
+		companion_dev = usb_of_get_companion_dev(hcd->self.controller);
+		if (companion_dev) {
+			device_link_remove(companion_dev, hcd->self.controller);
+			put_device(companion_dev);
+		}
+	}
 
 	usb_remove_hcd(hcd);
 
@@ -487,8 +508,7 @@ static int ehci_platform_remove(struct platform_device *dev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int ehci_platform_suspend(struct device *dev)
+static int __maybe_unused ehci_platform_suspend(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct usb_ehci_pdata *pdata = dev_get_platdata(dev);
@@ -510,7 +530,7 @@ static int ehci_platform_suspend(struct device *dev)
 	return ret;
 }
 
-static int ehci_platform_resume(struct device *dev)
+static int __maybe_unused ehci_platform_resume(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct usb_ehci_pdata *pdata = dev_get_platdata(dev);
@@ -526,18 +546,22 @@ static int ehci_platform_resume(struct device *dev)
 
 	companion_dev = usb_of_get_companion_dev(hcd->self.controller);
 	if (companion_dev) {
-		device_pm_wait_for_dev(hcd->self.controller, companion_dev);
+		if (!priv->device_link)
+			device_pm_wait_for_dev(hcd->self.controller, companion_dev);
 		put_device(companion_dev);
 	}
 
 	ehci_resume(hcd, priv->reset_on_resume);
+
+	pm_runtime_disable(dev);
+	pm_runtime_set_active(dev);
+	pm_runtime_enable(dev);
 
 	if (priv->quirk_poll)
 		quirk_poll_init(priv);
 
 	return 0;
 }
-#endif /* CONFIG_PM_SLEEP */
 
 static const struct of_device_id vt8500_ehci_ids[] = {
 	{ .compatible = "via,vt8500-ehci", },
@@ -548,11 +572,13 @@ static const struct of_device_id vt8500_ehci_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, vt8500_ehci_ids);
 
+#ifdef CONFIG_ACPI
 static const struct acpi_device_id ehci_acpi_match[] = {
 	{ "PNP0D20", 0 }, /* EHCI controller without debug */
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, ehci_acpi_match);
+#endif
 
 static const struct platform_device_id ehci_platform_table[] = {
 	{ "ehci-platform", 0 },
@@ -570,9 +596,10 @@ static struct platform_driver ehci_platform_driver = {
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver		= {
 		.name	= "ehci-platform",
-		.pm	= &ehci_platform_pm_ops,
+		.pm	= pm_ptr(&ehci_platform_pm_ops),
 		.of_match_table = vt8500_ehci_ids,
 		.acpi_match_table = ACPI_PTR(ehci_acpi_match),
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	}
 };
 
@@ -580,8 +607,6 @@ static int __init ehci_platform_init(void)
 {
 	if (usb_disabled())
 		return -ENODEV;
-
-	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
 
 	ehci_init_driver(&ehci_platform_hc_driver, &platform_overrides);
 	return platform_driver_register(&ehci_platform_driver);

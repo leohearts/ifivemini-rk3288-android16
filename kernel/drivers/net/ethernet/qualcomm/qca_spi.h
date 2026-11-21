@@ -73,6 +73,9 @@ struct qcaspi_stats {
 	u64 write_buf_miss;
 	u64 ring_full;
 	u64 spi_err;
+	u64 write_verify_failed;
+	u64 buf_avail_err;
+	u64 bad_signature;
 };
 
 struct qcaspi {
@@ -90,8 +93,7 @@ struct qcaspi {
 	struct qcafrm_handle frm_handle;
 	struct sk_buff *rx_skb;
 
-	unsigned int intr_req;
-	unsigned int intr_svc;
+	unsigned long intr;
 	u16 reset_count;
 
 #ifdef CONFIG_DEBUG_FS
@@ -99,7 +101,6 @@ struct qcaspi {
 #endif
 
 	/* user configurable options */
-	u32 clkspeed;
 	u8 legacy_mode;
 	u16 burst_len;
 };

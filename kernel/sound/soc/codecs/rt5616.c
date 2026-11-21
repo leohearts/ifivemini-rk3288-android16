@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * rt5616.c  --  RT5616 ALSA SoC audio codec driver
  *
  * Copyright 2015 Realtek Semiconductor Corp.
  * Author: Bard Liao <bardliao@realtek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -16,7 +13,6 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/i2c.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <sound/core.h>
@@ -144,11 +140,7 @@ static const struct reg_default rt5616_reg[] = {
 
 struct rt5616_priv {
 	struct snd_soc_component *component;
-	struct delayed_work unmute_work;
-	struct delayed_work hpf_work;
-	bool hpf_fast;
-	unsigned int hpf_ctrl1;
-	unsigned int hpf_ctrl2;
+	struct delayed_work patch_work;
 	struct regmap *regmap;
 	struct clk *mclk;
 
@@ -356,7 +348,7 @@ static int is_sys_clk_from_pll(struct snd_soc_dapm_widget *source,
 {
 	unsigned int val;
 
-	val = snd_soc_component_read32(snd_soc_dapm_to_component(source->dapm), RT5616_GLB_CLK);
+	val = snd_soc_component_read(snd_soc_dapm_to_component(source->dapm), RT5616_GLB_CLK);
 	val &= RT5616_SCLK_SRC_MASK;
 	if (val == RT5616_SCLK_SRC_PLL1)
 		return 1;
@@ -468,97 +460,21 @@ static const struct snd_kcontrol_new rt5616_lout_mix[] = {
 			RT5616_M_OV_R_LM_SFT, 1, 1),
 };
 
-/*
- * Capture start: mic bias, BST2 and the ADC power up together, and the mic
- * coupling capacitor charging shows up as a full-scale step followed by a
- * slow DC tail. As in the Qualcomm TX macro (lpass-tx-macro.c), keep the ADC
- * muted for adc_unmute_ms and raise the wind filter (an adjustable ADC high
- * pass filter, MX-D3/D4) to about 170 Hz for adc_hpf_ms so the DC settles
- * faster. The work runs on system_freezable_wq, so DAPM is never blocked.
- */
-static unsigned int adc_unmute_ms = 85;
-module_param(adc_unmute_ms, uint, 0644);
-MODULE_PARM_DESC(adc_unmute_ms, "ADC mute after capture power-up (ms)");
-static unsigned int adc_hpf_ms = 300;
-module_param(adc_hpf_ms, uint, 0644);
-MODULE_PARM_DESC(adc_hpf_ms, "Raised wind filter after capture power-up (ms)");
-
-/*
- * 44.1/48 kHz coefficient set, n = 5: Fc 166 / 181 Hz (datasheet table 12).
- * The frequency is written with the filter left enabled, in both directions:
- * the datasheet's disable/set/enable order bypasses the filter for a moment,
- * which recorded as a 0.18 full-scale click when done mid-stream.
- */
-#define RT5616_HPF_FAST_CTRL1	((1 << 15) | (2 << 12) | (2 << 8))
-#define RT5616_HPF_FAST_CTRL2	((5 << 8) | 5)
-
-static void rt5616_hpf_restore(struct rt5616_priv *rt5616)
-{
-	struct snd_soc_component *component = rt5616->component;
-
-	if (!rt5616->hpf_fast)
-		return;
-	snd_soc_component_write(component, RT5616_ADJ_HPF_CTRL2,
-				rt5616->hpf_ctrl2);
-	snd_soc_component_write(component, RT5616_ADJ_HPF_CTRL1,
-				rt5616->hpf_ctrl1);
-	rt5616->hpf_fast = false;
-}
-
-static void rt5616_unmute_work(struct work_struct *work)
-{
-	struct rt5616_priv *rt5616 = container_of(work, struct rt5616_priv,
-						  unmute_work.work);
-
-	snd_soc_component_update_bits(rt5616->component, RT5616_ADC_DIG_VOL,
-				      RT5616_L_MUTE | RT5616_R_MUTE, 0);
-}
-
-static void rt5616_hpf_work(struct work_struct *work)
-{
-	rt5616_hpf_restore(container_of(work, struct rt5616_priv,
-					hpf_work.work));
-}
-
 static int rt5616_adc_event(struct snd_soc_dapm_widget *w,
 			    struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
-	struct rt5616_priv *rt5616 = snd_soc_component_get_drvdata(component);
 
-	/* "ADC L" and "ADC R" both land here; each step is idempotent */
 	switch (event) {
-	case SND_SOC_DAPM_PRE_PMU:
-		snd_soc_component_update_bits(component, RT5616_ADC_DIG_VOL,
-				    RT5616_L_MUTE | RT5616_R_MUTE,
-				    RT5616_L_MUTE | RT5616_R_MUTE);
-		if (rt5616->hpf_fast)
-			break;
-		rt5616->hpf_ctrl1 = snd_soc_component_read32(component,
-						RT5616_ADJ_HPF_CTRL1);
-		rt5616->hpf_ctrl2 = snd_soc_component_read32(component,
-						RT5616_ADJ_HPF_CTRL2);
-		snd_soc_component_write(component, RT5616_ADJ_HPF_CTRL2,
-					RT5616_HPF_FAST_CTRL2);
-		snd_soc_component_update_bits(component, RT5616_ADJ_HPF_CTRL1,
-					      0xf700, RT5616_HPF_FAST_CTRL1);
-		rt5616->hpf_fast = true;
-		break;
-
 	case SND_SOC_DAPM_POST_PMU:
-		mod_delayed_work(system_freezable_wq, &rt5616->unmute_work,
-				 msecs_to_jiffies(adc_unmute_ms));
-		mod_delayed_work(system_freezable_wq, &rt5616->hpf_work,
-				 msecs_to_jiffies(adc_hpf_ms));
+		snd_soc_component_update_bits(component, RT5616_ADC_DIG_VOL,
+				    RT5616_L_MUTE | RT5616_R_MUTE, 0);
 		break;
 
 	case SND_SOC_DAPM_POST_PMD:
-		cancel_delayed_work_sync(&rt5616->unmute_work);
-		cancel_delayed_work_sync(&rt5616->hpf_work);
 		snd_soc_component_update_bits(component, RT5616_ADC_DIG_VOL,
 				    RT5616_L_MUTE | RT5616_R_MUTE,
 				    RT5616_L_MUTE | RT5616_R_MUTE);
-		rt5616_hpf_restore(rt5616);
 		break;
 
 	default:
@@ -821,12 +737,10 @@ static const struct snd_soc_dapm_widget rt5616_dapm_widgets[] = {
 	/* ADCs */
 	SND_SOC_DAPM_ADC_E("ADC L", NULL, RT5616_PWR_DIG1,
 			   RT5616_PWR_ADC_L_BIT, 0, rt5616_adc_event,
-			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD |
-			   SND_SOC_DAPM_POST_PMU),
+			   SND_SOC_DAPM_POST_PMD | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_ADC_E("ADC R", NULL, RT5616_PWR_DIG1,
 			   RT5616_PWR_ADC_R_BIT, 0, rt5616_adc_event,
-			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD |
-			   SND_SOC_DAPM_POST_PMU),
+			   SND_SOC_DAPM_POST_PMD | SND_SOC_DAPM_POST_PMU),
 
 	/* ADC Mixer */
 	SND_SOC_DAPM_SUPPLY("stereo1 filter", RT5616_PWR_DIG2,
@@ -1219,7 +1133,7 @@ static int rt5616_set_dai_pll(struct snd_soc_dai *dai, int pll_id, int source,
 
 	ret = rl6231_pll_calc(freq_in, freq_out, &pll_code);
 	if (ret < 0) {
-		dev_err(component->dev, "Unsupport input clock %d\n", freq_in);
+		dev_err(component->dev, "Unsupported input clock %d\n", freq_in);
 		return ret;
 	}
 
@@ -1316,8 +1230,6 @@ static int rt5616_probe(struct snd_soc_component *component)
 		return -EPROBE_DEFER;
 
 	rt5616->component = component;
-	INIT_DELAYED_WORK(&rt5616->unmute_work, rt5616_unmute_work);
-	INIT_DELAYED_WORK(&rt5616->hpf_work, rt5616_hpf_work);
 
 	return 0;
 }
@@ -1392,13 +1304,13 @@ static const struct snd_soc_component_driver soc_component_dev_rt5616 = {
 	.num_dapm_routes	= ARRAY_SIZE(rt5616_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt5616_regmap = {
 	.reg_bits = 8,
 	.val_bits = 16,
-	.use_single_rw = true,
+	.use_single_read = true,
+	.use_single_write = true,
 	.max_register = RT5616_DEVICE_ID + 1 + (ARRAY_SIZE(rt5616_ranges) *
 					       RT5616_PR_SPACING),
 	.volatile_reg = rt5616_volatile_register,
@@ -1424,8 +1336,7 @@ static const struct of_device_id rt5616_of_match[] = {
 MODULE_DEVICE_TABLE(of, rt5616_of_match);
 #endif
 
-static int rt5616_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int rt5616_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt5616_priv *rt5616;
 	unsigned int val;
@@ -1472,54 +1383,13 @@ static int rt5616_i2c_probe(struct i2c_client *i2c,
 	regmap_update_bits(rt5616->regmap, RT5616_PWR_ANLG1,
 			   RT5616_PWR_LDO_DVO_MASK, RT5616_PWR_LDO_DVO_1_2V);
 
-	/*
-	 * Boards whose audio HAL never programs the codec mixer get a usable
-	 * playback path at boot: IF1 DAC -> stereo DAC mixer -> HPO and LOUT
-	 * mixers, HP/LOUT unmuted at 0 dB.  DAPM picks these up as the
-	 * initial switch states, so they stay user-adjustable.
-	 */
-	if (of_property_read_bool(i2c->dev.of_node,
-				  "realtek,default-dac-routing")) {
-		regmap_update_bits(rt5616->regmap, RT5616_AD_DA_MIXER,
-				   RT5616_M_IF1_DAC_L | RT5616_M_IF1_DAC_R, 0);
-		regmap_update_bits(rt5616->regmap, RT5616_STO_DAC_MIXER,
-				   RT5616_M_DAC_L1_MIXL | RT5616_M_DAC_R1_MIXR,
-				   0);
-		regmap_update_bits(rt5616->regmap, RT5616_HPO_MIXER,
-				   RT5616_M_DAC1_HM, 0);
-		regmap_update_bits(rt5616->regmap, RT5616_LOUT_MIXER,
-				   RT5616_M_DAC_L1_LM | RT5616_M_DAC_R1_LM, 0);
-		regmap_write(rt5616->regmap, RT5616_HP_VOL, 0x0808);
-		regmap_write(rt5616->regmap, RT5616_LOUT_CTRL1, 0x0808);
-	}
-
-	/*
-	 * Same for capture: IN2 (BST2) -> RECMIXL/R -> ADC -> Stereo1 ADC
-	 * mixer, with the ADC boost/volume the vendor HAL used for its main
-	 * mic (+36 dB boost, 0x20 digital).
-	 */
-	if (of_property_read_bool(i2c->dev.of_node,
-				  "realtek,default-adc-routing")) {
-		regmap_update_bits(rt5616->regmap, RT5616_REC_L2_MIXER,
-				   RT5616_M_BST2_RM_L, 0);
-		regmap_update_bits(rt5616->regmap, RT5616_REC_R2_MIXER,
-				   RT5616_M_BST2_RM_R, 0);
-		regmap_update_bits(rt5616->regmap, RT5616_STO1_ADC_MIXER,
-				   RT5616_M_STO1_ADC_L1 | RT5616_M_STO1_ADC_R1,
-				   0);
-		regmap_write(rt5616->regmap, RT5616_ADC_BST_VOL, 0xf000);
-		regmap_write(rt5616->regmap, RT5616_ADC_DIG_VOL, 0x2020);
-	}
-
 	return devm_snd_soc_register_component(&i2c->dev,
 				      &soc_component_dev_rt5616,
 				      rt5616_dai, ARRAY_SIZE(rt5616_dai));
 }
 
-static int rt5616_i2c_remove(struct i2c_client *i2c)
-{
-	return 0;
-}
+static void rt5616_i2c_remove(struct i2c_client *i2c)
+{}
 
 static void rt5616_i2c_shutdown(struct i2c_client *client)
 {
@@ -1534,7 +1404,7 @@ static struct i2c_driver rt5616_i2c_driver = {
 		.name = "rt5616",
 		.of_match_table = of_match_ptr(rt5616_of_match),
 	},
-	.probe = rt5616_i2c_probe,
+	.probe_new = rt5616_i2c_probe,
 	.remove = rt5616_i2c_remove,
 	.shutdown = rt5616_i2c_shutdown,
 	.id_table = rt5616_i2c_id,

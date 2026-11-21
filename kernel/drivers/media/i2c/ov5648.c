@@ -623,7 +623,7 @@ ov5648_find_best_fit(struct ov5648 *ov5648,
 }
 
 static int ov5648_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov5648 *ov5648 = to_ov5648(sd);
@@ -639,7 +639,7 @@ static int ov5648_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&ov5648->mutex);
 		return -ENOTTY;
@@ -661,7 +661,7 @@ static int ov5648_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov5648_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov5648 *ov5648 = to_ov5648(sd);
@@ -670,7 +670,7 @@ static int ov5648_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&ov5648->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&ov5648->mutex);
 		return -ENOTTY;
@@ -687,7 +687,7 @@ static int ov5648_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov5648_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index != 0)
@@ -698,7 +698,7 @@ static int ov5648_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov5648_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct ov5648 *ov5648 = to_ov5648(sd);
@@ -736,9 +736,7 @@ static int ov5648_g_frame_interval(struct v4l2_subdev *sd,
 	struct ov5648 *ov5648 = to_ov5648(sd);
 	const struct ov5648_mode *mode = ov5648->cur_mode;
 
-	mutex_lock(&ov5648->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&ov5648->mutex);
 
 	return 0;
 }
@@ -747,10 +745,10 @@ static void ov5648_get_module_inf(struct ov5648 *ov5648,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, OV5648_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, ov5648->module_name,
+	strscpy(inf->base.sensor, OV5648_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, ov5648->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, ov5648->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, ov5648->len_name, sizeof(inf->base.lens));
 }
 
 static long ov5648_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -1056,7 +1054,7 @@ static int ov5648_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ov5648 *ov5648 = to_ov5648(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct ov5648_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&ov5648->mutex);
@@ -1074,7 +1072,7 @@ static int ov5648_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int ov5648_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct ov5648 *ov5648 = to_ov5648(sd);
@@ -1082,25 +1080,18 @@ static int ov5648_enum_frame_interval(struct v4l2_subdev *sd,
 	if (fie->index >= ov5648->cfg_num)
 		return -EINVAL;
 
-	if (fie->code != MEDIA_BUS_FMT_SBGGR10_1X10)
-		return -EINVAL;
-
+	fie->code = MEDIA_BUS_FMT_SBGGR10_1X10;
 	fie->width = supported_modes[fie->index].width;
 	fie->height = supported_modes[fie->index].height;
 	fie->interval = supported_modes[fie->index].max_fps;
 	return 0;
 }
 
-static int ov5648_g_mbus_config(struct v4l2_subdev *sd,
+static int ov5648_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
 				struct v4l2_mbus_config *config)
 {
-	u32 val = 0;
-
-	val = 1 << (OV5648_LANES - 1) |
-	      V4L2_MBUS_CSI2_CHANNEL_0 |
-	      V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = OV5648_LANES;
 
 	return 0;
 }
@@ -1127,7 +1118,6 @@ static const struct v4l2_subdev_core_ops ov5648_core_ops = {
 static const struct v4l2_subdev_video_ops ov5648_video_ops = {
 	.s_stream = ov5648_s_stream,
 	.g_frame_interval = ov5648_g_frame_interval,
-	.g_mbus_config = ov5648_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops ov5648_pad_ops = {
@@ -1136,6 +1126,7 @@ static const struct v4l2_subdev_pad_ops ov5648_pad_ops = {
 	.enum_frame_interval = ov5648_enum_frame_interval,
 	.get_fmt = ov5648_get_fmt,
 	.set_fmt = ov5648_set_fmt,
+	.get_mbus_config = ov5648_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops ov5648_subdev_ops = {
@@ -1474,7 +1465,7 @@ static int ov5648_probe(struct i2c_client *client,
 		 ov5648->module_index, facing,
 		 OV5648_NAME, dev_name(sd->dev));
 
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1500,7 +1491,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int ov5648_remove(struct i2c_client *client)
+static void ov5648_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov5648 *ov5648 = to_ov5648(sd);
@@ -1516,8 +1507,6 @@ static int ov5648_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__ov5648_power_off(ov5648);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

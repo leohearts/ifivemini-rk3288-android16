@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Clkout driver for Rockchip RK808
  *
  * Copyright (c) 2014, Fuzhou Rockchip Electronics Co., Ltd
  *
  * Author:Chris Zhong <zyw@rock-chips.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/clk-provider.h>
@@ -189,6 +181,10 @@ static int rk808_clkout_probe(struct platform_device *pdev)
 		return ret;
 
 	init.name = "rk808-clkout2";
+
+	if (of_property_read_bool(node, "rockchip,clk-32k-always-on"))
+		init.flags |= CLK_IS_CRITICAL;
+
 	init.ops = rkpmic_get_ops(rk808->variant);
 	rk808_clkout->clkout2_hw.init = &init;
 
@@ -200,23 +196,23 @@ static int rk808_clkout_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return of_clk_add_hw_provider(node, of_clk_rk808_get, rk808_clkout);
+	return devm_of_clk_add_hw_provider(&pdev->dev, of_clk_rk808_get,
+					   rk808_clkout);
 }
 
-static int rk808_clkout_remove(struct platform_device *pdev)
-{
-	struct rk808 *rk808 = dev_get_drvdata(pdev->dev.parent);
-	struct i2c_client *client = rk808->i2c;
-	struct device_node *node = client->dev.of_node;
-
-	of_clk_del_provider(node);
-
-	return 0;
-}
+static const struct platform_device_id rk8xx_clk_id_table[] = {
+	{ "rk805-clk", 0 },
+	{ "rk809-clk", 0 },
+	{ "rk816-clk", 0 },
+	{ "rk817-clk", 0 },
+	{ "rk818-clk", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, rk8xx_clk_id_table);
 
 static struct platform_driver rk808_clkout_driver = {
 	.probe = rk808_clkout_probe,
-	.remove = rk808_clkout_remove,
+	.id_table = rk8xx_clk_id_table,
 	.driver		= {
 		.name	= "rk808-clkout",
 	},

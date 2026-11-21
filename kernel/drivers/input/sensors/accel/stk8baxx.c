@@ -901,7 +901,7 @@ static int sensor_init(struct i2c_client *client)
 	return 0;
 }
 
-struct sensor_operate gsensor_stk8baxx_ops = {
+static struct sensor_operate gsensor_stk8baxx_ops = {
 	.name				= "gs_stk8baxx",
 	.type				= SENSOR_TYPE_ACCEL,			/*sensor type and it should be correct*/
 	.id_i2c				= ACCEL_ID_STK8BAXX,			/*i2c id number*/
@@ -926,9 +926,9 @@ static int gsensor_stk8baxx_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &gsensor_stk8baxx_ops);
 }
 
-static int gsensor_stk8baxx_remove(struct i2c_client *client)
+static void gsensor_stk8baxx_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &gsensor_stk8baxx_ops);
+	sensor_unregister_device(client, NULL, &gsensor_stk8baxx_ops);
 }
 
 static const struct i2c_device_id gsensor_stk8baxx_id[] = {
@@ -938,7 +938,7 @@ static const struct i2c_device_id gsensor_stk8baxx_id[] = {
 
 static struct i2c_driver gsensor_stk8baxx_driver = {
 	.probe = gsensor_stk8baxx_probe,
-	.remove = gsensor_stk8baxx_remove,
+	.remove = (void *)gsensor_stk8baxx_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = gsensor_stk8baxx_id,
 	.driver = {

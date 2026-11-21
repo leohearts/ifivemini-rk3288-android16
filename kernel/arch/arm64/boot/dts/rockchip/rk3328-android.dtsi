@@ -23,6 +23,11 @@
 
 	firmware {
 		firmware_android: android {};
+
+		optee: optee {
+			compatible = "linaro,optee-tz";
+			method = "smc";
+		};
 	};
 
 	reserved-memory {
@@ -30,7 +35,7 @@
 		#size-cells = <2>;
 		ranges;
 
-		drm_logo: drm-logo@00000000 {
+		drm_logo: drm-logo@0 {
 			compatible = "rockchip,drm-logo";
 			reg = <0x0 0x0 0x0 0x0>;
 		};

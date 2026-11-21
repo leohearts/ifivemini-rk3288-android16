@@ -17,11 +17,6 @@ Required properties:
 - clock-names: required clock name.
 - iommus: required a iommu node.
 
-Optional properties:
-- rockchip,bls-offset: value added to every fixed black level subtraction the
-	3A sends (12-bit ISP domain), for sensors whose black pedestal differs
-	from the tuning file. Defaults to 0.
-
 port node
 -------------------
 

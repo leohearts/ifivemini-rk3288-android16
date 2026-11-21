@@ -480,11 +480,14 @@ es7243e_pcm_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int es7243e_mute(struct snd_soc_dai *dai, int mute)
+static int es7243e_mute(struct snd_soc_dai *dai, int mute, int stream)
 {
 	//struct snd_soc_codec *codec = dai->codec;
 	u8 i;
 	printk("Enter into %s()\n", __func__);
+	if (stream == SNDRV_PCM_STREAM_PLAYBACK)
+		return 0;
+
 	for (i = 0; i < (ES7243E_CHANNELS_MAX) / 2; i++) {
 		if (mute)
 			es7243e_update_bits(0x0b, 0xc0, 0xc0, i2c_clt[i]);
@@ -1671,7 +1674,7 @@ static struct snd_soc_dai_ops es7243e_ops = {
 	.hw_params = es7243e_pcm_hw_params,
 	.set_fmt = es7243e_set_dai_fmt,
 	.set_sysclk = es7243e_set_dai_sysclk,
-	.digital_mute = es7243e_mute,
+	.mute_stream = es7243e_mute,
 };
 
 #if ES7243E_CHANNELS_MAX > 0
@@ -1685,7 +1688,7 @@ static struct snd_soc_dai_driver es7243e_dai0 = {
 		    .formats = es7243e_FORMATS,
 		    },
 	.ops = &es7243e_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 #endif
 #if ES7243E_CHANNELS_MAX > 2
@@ -1699,7 +1702,7 @@ static struct snd_soc_dai_driver es7243e_dai1 = {
 		    .formats = es7243e_FORMATS,
 		    },
 	.ops = &es7243e_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 #endif
 #if ES7243E_CHANNELS_MAX > 4
@@ -1713,7 +1716,7 @@ static struct snd_soc_dai_driver es7243e_dai2 = {
 		    .formats = es7243e_FORMATS,
 		    },
 	.ops = &es7243e_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 #endif
 #if ES7243E_CHANNELS_MAX > 6
@@ -1727,7 +1730,7 @@ static struct snd_soc_dai_driver es7243e_dai3 = {
 		    .formats = es7243e_FORMATS,
 		    },
 	.ops = &es7243e_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 #endif
 #if ES7243E_CHANNELS_MAX > 8
@@ -1741,7 +1744,7 @@ static struct snd_soc_dai_driver es7243e_dai5 = {
 		    .formats = es7243e_FORMATS,
 		    },
 	.ops = &es7243e_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 #endif
 #if ES7243E_CHANNELS_MAX > 10
@@ -1755,7 +1758,7 @@ static struct snd_soc_dai_driver es7243e_dai6 = {
 		    .formats = es7243e_FORMATS,
 		    },
 	.ops = &es7243e_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 #endif
 #if ES7243E_CHANNELS_MAX > 12
@@ -1769,7 +1772,7 @@ static struct snd_soc_dai_driver es7243e_dai7 = {
 		    .formats = es7243e_FORMATS,
 		    },
 	.ops = &es7243e_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 #endif
 #if ES7243E_CHANNELS_MAX > 14
@@ -1783,7 +1786,7 @@ static struct snd_soc_dai_driver es7243e_dai8 = {
 		    .formats = es7243e_FORMATS,
 		    },
 	.ops = &es7243e_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 #endif
 static struct snd_soc_dai_driver *es7243e_dai[] = {
@@ -2260,7 +2263,6 @@ static struct snd_soc_component_driver soc_codec_dev_es7243e = {
 	.idle_bias_on = 1,
 	.use_pmdown_time = 1,
 	.endianness = 1,
-	.non_legacy_dai_naming = 1,
 #if ES7243E_CODEC_RW_TEST_EN
 	.read = es7243e_codec_read,
 	.write = es7243e_codec_write,
@@ -2389,11 +2391,9 @@ es7243e_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *i2c_id)
 	return ret;
 }
 
-static int __exit es7243e_i2c_remove(struct i2c_client *i2c)
+static void es7243e_i2c_remove(struct i2c_client *i2c)
 {
 	sysfs_remove_group(&i2c->dev.kobj, &es7243e_debug_attr_group);
-
-	return 0;
 }
 
 #if !ES7243E_MATCH_DTS_EN
@@ -2405,49 +2405,49 @@ es7243e_i2c_detect(struct i2c_client *client, struct i2c_board_info *info)
 	if (adapter->nr == ES7243E_I2C_BUS_NUM) {
 #if ES7243E_CHANNELS_MAX > 0
 		if (client->addr == ES7243E_I2C_CHIP_ADDRESS_0) {
-			strlcpy(info->type, "ES7243E_MicArray_0", I2C_NAME_SIZE);
+			strscpy(info->type, "ES7243E_MicArray_0", I2C_NAME_SIZE);
 			return 0;
 		}
 #endif
 #if ES7243E_CHANNELS_MAX > 2
 		else if (client->addr == ES7243E_I2C_CHIP_ADDRESS_1) {
-			strlcpy(info->type, "ES7243E_MicArray_1", I2C_NAME_SIZE);
+			strscpy(info->type, "ES7243E_MicArray_1", I2C_NAME_SIZE);
 			return 0;
 		}
 #endif
 #if ES7243E_CHANNELS_MAX > 4
 		else if (client->addr == ES7243E_I2C_CHIP_ADDRESS_2) {
-			strlcpy(info->type, "ES7243E_MicArray_2", I2C_NAME_SIZE);
+			strscpy(info->type, "ES7243E_MicArray_2", I2C_NAME_SIZE);
 			return 0;
 		}
 #endif
 #if ES7243E_CHANNELS_MAX > 6
 		else if (client->addr == ES7243E_I2C_CHIP_ADDRESS_3) {
-			strlcpy(info->type, "ES7243E_MicArray_3", I2C_NAME_SIZE);
+			strscpy(info->type, "ES7243E_MicArray_3", I2C_NAME_SIZE);
 			return 0;
 		}
 #endif
 #if ES7243E_CHANNELS_MAX > 8
 		else if (client->addr == ES7243E_I2C_CHIP_ADDRESS_4) {
-			strlcpy(info->type, "ES7243E_MicArray_4", I2C_NAME_SIZE);
+			strscpy(info->type, "ES7243E_MicArray_4", I2C_NAME_SIZE);
 			return 0;
 		}
 #endif
 #if ES7243E_CHANNELS_MAX > 10
 		else if (client->addr == ES7243E_I2C_CHIP_ADDRESS_5) {
-			strlcpy(info->type, "ES7243E_MicArray_5", I2C_NAME_SIZE);
+			strscpy(info->type, "ES7243E_MicArray_5", I2C_NAME_SIZE);
 			return 0;
 		}
 #endif
 #if ES7243E_CHANNELS_MAX > 12
 		else if (client->addr == ES7243E_I2C_CHIP_ADDRESS_6) {
-			strlcpy(info->type, "ES7243E_MicArray_6", I2C_NAME_SIZE);
+			strscpy(info->type, "ES7243E_MicArray_6", I2C_NAME_SIZE);
 			return 0;
 		}
 #endif
 #if ES7243E_CHANNELS_MAX > 14
 		else if (client->addr == ES7243E_I2C_CHIP_ADDRESS_7) {
-			strlcpy(info->type, "ES7243E_MicArray_7", I2C_NAME_SIZE);
+			strscpy(info->type, "ES7243E_MicArray_7", I2C_NAME_SIZE);
 			return 0;
 		}
 #endif
@@ -2613,7 +2613,7 @@ static struct i2c_driver es7243e_i2c_driver = {
 #endif
 		   },
 	.probe = es7243e_i2c_probe,
-	.remove = __exit_p(es7243e_i2c_remove),
+	.remove = es7243e_i2c_remove,
 	.class = I2C_CLASS_HWMON,
 	.id_table = es7243e_i2c_id,
 

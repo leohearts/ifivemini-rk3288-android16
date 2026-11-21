@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifdef WL_EXT_GENL
 #include <bcmendian.h>
 #include <wl_android.h>

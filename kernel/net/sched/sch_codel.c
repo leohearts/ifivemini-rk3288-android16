@@ -95,10 +95,7 @@ static struct sk_buff *codel_qdisc_dequeue(struct Qdisc *sch)
 			    &q->stats, qdisc_pkt_len, codel_get_enqueue_time,
 			    drop_func, dequeue_func);
 
-	/* We cant call qdisc_tree_reduce_backlog() if our qlen is 0,
-	 * or HTB crashes. Defer it for next round.
-	 */
-	if (q->stats.drop_count && sch->q.qlen) {
+	if (q->stats.drop_count) {
 		qdisc_tree_reduce_backlog(sch, q->stats.drop_count, q->stats.drop_len);
 		q->stats.drop_count = 0;
 		q->stats.drop_len = 0;
@@ -138,10 +135,8 @@ static int codel_change(struct Qdisc *sch, struct nlattr *opt,
 	unsigned int qlen, dropped = 0;
 	int err;
 
-	if (!opt)
-		return -EINVAL;
-
-	err = nla_parse_nested(tb, TCA_CODEL_MAX, opt, codel_policy, NULL);
+	err = nla_parse_nested_deprecated(tb, TCA_CODEL_MAX, opt,
+					  codel_policy, NULL);
 	if (err < 0)
 		return err;
 
@@ -173,7 +168,7 @@ static int codel_change(struct Qdisc *sch, struct nlattr *opt,
 
 	qlen = sch->q.qlen;
 	while (sch->q.qlen > sch->limit) {
-		struct sk_buff *skb = __qdisc_dequeue_head(&sch->q);
+		struct sk_buff *skb = qdisc_dequeue_internal(sch, true);
 
 		dropped += qdisc_pkt_len(skb);
 		qdisc_qstats_backlog_dec(sch, skb);
@@ -217,7 +212,7 @@ static int codel_dump(struct Qdisc *sch, struct sk_buff *skb)
 	struct codel_sched_data *q = qdisc_priv(sch);
 	struct nlattr *opts;
 
-	opts = nla_nest_start(skb, TCA_OPTIONS);
+	opts = nla_nest_start_noflag(skb, TCA_OPTIONS);
 	if (opts == NULL)
 		goto nla_put_failure;
 

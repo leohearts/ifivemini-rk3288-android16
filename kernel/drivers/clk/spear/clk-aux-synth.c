@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 ST Microelectronics
  * Viresh Kumar <vireshk@kernel.org>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  *
  * Auxiliary Synthesizer clock implementation
  */
@@ -140,7 +137,7 @@ struct clk *clk_register_aux(const char *aux_name, const char *gate_name,
 		u8 rtbl_cnt, spinlock_t *lock, struct clk **gate_clk)
 {
 	struct clk_aux *aux;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	struct clk *clk;
 
 	if (!aux_name || !parent_name || !reg || !rtbl || !rtbl_cnt) {

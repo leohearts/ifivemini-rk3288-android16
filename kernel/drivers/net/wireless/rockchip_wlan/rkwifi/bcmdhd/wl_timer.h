@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _wl_timer_
 #define _wl_timer_
 s32 wl_timer_attach(struct net_device *net);

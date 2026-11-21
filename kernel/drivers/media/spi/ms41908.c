@@ -6,6 +6,7 @@
  *
  */
 //#define DEBUG
+//#define READREG_DEBUG
 #include <linux/io.h>
 #include <linux/of_gpio.h>
 #include <linux/module.h>
@@ -59,12 +60,19 @@
 #define ZOOM_MAX_BACK_DELAY		4
 #define ZOOM1_MAX_BACK_DELAY		4
 
+#define SYS_CLK_DEF_27MHZ		27
+
+#define PIRIS_FINDPI_STEP		10
+#define FOCUS_FINDPI_STEP		200
+#define ZOOM_FINDPI_STEP		200
+#define ZOOM1_FINDPI_STEP		200
+
 #define to_motor_dev(sd) container_of(sd, struct motor_dev, subdev)
 
 enum {
 	MOTOR_STATUS_STOPPED = 0,
-	MOTOR_STATUS_CCW = 1,
-	MOTOR_STATUS_CW = 2,
+	MOTOR_STATUS_CW = 1,
+	MOTOR_STATUS_CCW = 2,
 };
 
 enum ext_dev_type {
@@ -119,6 +127,8 @@ struct ext_dev {
 	bool is_dir_opp;
 	bool is_need_reback;
 	bool reback_ctrl;
+	bool is_pihigh_positive_pos;
+	u32 findpi_step;
 	struct rk_cam_vcm_tim mv_tim;
 	struct run_data_s run_data;
 	struct run_data_s reback_data;
@@ -131,6 +141,9 @@ struct ext_dev {
 	int max_back_delay;
 	struct completion complete_out;
 	bool is_running;
+
+	u32 default_psum;
+	u32 default_intct;
 };
 
 struct dciris_dev {
@@ -175,6 +188,7 @@ struct motor_dev {
 	int id;
 	int wait_cnt;
 	int pi_gpio_usecnt;
+	u32 sys_clk;
 };
 
 struct motor_work_s {
@@ -196,11 +210,13 @@ static int spi_write_reg(struct spi_device *spi, u8 reg, u16 val)
 		{
 			.tx_buf = &buf_reg,
 			.len = 1,
-			.delay_usecs = 1,
+			.delay.value = 1,
+			.delay.unit = SPI_DELAY_UNIT_USECS,
 		}, {
 			.tx_buf = &buf_val,
 			.len = 2,
-			.delay_usecs = 1,
+			.delay.value = 1,
+			.delay.unit = SPI_DELAY_UNIT_USECS,
 		},
 	};
 	spi_message_init(&msg);
@@ -221,11 +237,13 @@ static __maybe_unused int spi_read_reg(struct spi_device *spi, u8 reg, u16 *val)
 		{
 			.tx_buf = &buf_reg,
 			.len = 1,
-			.delay_usecs = 1,
+			.delay.value = 1,
+			.delay.unit = SPI_DELAY_UNIT_USECS,
 		}, {
 			.rx_buf = &buf_val,
 			.len = 2,
-			.delay_usecs = 1,
+			.delay.value = 1,
+			.delay.unit = SPI_DELAY_UNIT_USECS,
 		},
 	};
 	spi_message_init(&msg);
@@ -266,7 +284,7 @@ static int set_motor_running_status(struct motor_dev *motor,
 	if (mv_cnt == 0) {
 		mutex_lock(&motor->mutex);
 		if (is_need_update_tim) {
-			ext_dev->mv_tim.vcm_start_t = ns_to_timeval(ktime_get_ns());
+			ext_dev->mv_tim.vcm_start_t = ns_to_kernel_old_timeval(ktime_get_ns());
 			ext_dev->mv_tim.vcm_end_t = ext_dev->mv_tim.vcm_start_t;
 			ext_dev->is_mv_tim_update = true;
 			if (motor->wait_cnt == 0) {
@@ -289,26 +307,27 @@ static int set_motor_running_status(struct motor_dev *motor,
 	}
 	ext_dev->is_running = true;
 	reinit_completion(&ext_dev->complete);
+	reinit_completion(&ext_dev->complete_out);
 
 	if (ext_dev->is_dir_opp) {
 		if (pos > ext_dev->last_pos) {
-			if (ext_dev->last_dir == MOTOR_STATUS_CCW)
-				mv_cnt += ext_dev->backlash;
-			status = MOTOR_STATUS_CW;
-		} else {
 			if (ext_dev->last_dir == MOTOR_STATUS_CW)
 				mv_cnt += ext_dev->backlash;
 			status = MOTOR_STATUS_CCW;
+		} else {
+			if (ext_dev->last_dir == MOTOR_STATUS_CCW)
+				mv_cnt += ext_dev->backlash;
+			status = MOTOR_STATUS_CW;
 		}
 	} else {
 		if (pos > ext_dev->last_pos) {
-			if (ext_dev->last_dir == MOTOR_STATUS_CW)
-				mv_cnt += ext_dev->backlash;
-			status = MOTOR_STATUS_CCW;
-		} else {
 			if (ext_dev->last_dir == MOTOR_STATUS_CCW)
 				mv_cnt += ext_dev->backlash;
 			status = MOTOR_STATUS_CW;
+		} else {
+			if (ext_dev->last_dir == MOTOR_STATUS_CW)
+				mv_cnt += ext_dev->backlash;
+			status = MOTOR_STATUS_CCW;
 		}
 	}
 
@@ -386,7 +405,7 @@ static int set_motor_running_status(struct motor_dev *motor,
 	return ret;
 }
 
-static int motor_dev_parse_dt(struct motor_dev *motor)
+static int ms41908_dev_parse_dt(struct motor_dev *motor)
 {
 	struct device_node *node = motor->spi->dev.of_node;
 	int ret = 0;
@@ -404,6 +423,14 @@ static int motor_dev_parse_dt(struct motor_dev *motor)
 	motor->is_use_zoom1 =
 		device_property_read_bool(&motor->spi->dev, "use-zoom1");
 
+	ret = of_property_read_u32(node,
+				   "sys-clk",
+				   &motor->sys_clk);
+	if (ret != 0) {
+		motor->sys_clk = SYS_CLK_DEF_27MHZ;
+		dev_err(&motor->spi->dev,
+			"failed get sys clk,use dafult value %d MHz\n", SYS_CLK_DEF_27MHZ);
+	}
 	/* get reset gpio */
 	motor->reset_gpio = devm_gpiod_get(&motor->spi->dev,
 					     "reset", GPIOD_OUT_LOW);
@@ -600,6 +627,16 @@ static int motor_dev_parse_dt(struct motor_dev *motor)
 				"failed get piris reback distance, return\n");
 			return -EINVAL;
 		}
+		motor->piris->is_pihigh_positive_pos =
+			device_property_read_bool(&motor->spi->dev, "piris-pihigh-positive-pos");
+		ret = of_property_read_u32(node,
+					   "piris-findpi-step",
+					   &motor->piris->findpi_step);
+		if (ret != 0) {
+			motor->piris->findpi_step = PIRIS_FINDPI_STEP;
+			dev_err(&motor->spi->dev,
+				"failed get piris find pi step\n");
+		}
 	}
 
 	if (motor->is_use_focus) {
@@ -739,6 +776,16 @@ static int motor_dev_parse_dt(struct motor_dev *motor)
 			dev_err(&motor->spi->dev,
 				"failed get focus max_pos pos,use dafult value\n");
 		}
+		motor->focus->is_pihigh_positive_pos =
+			device_property_read_bool(&motor->spi->dev, "focus-pihigh-positive-pos");
+		ret = of_property_read_u32(node,
+					   "focus-findpi-step",
+					   &motor->focus->findpi_step);
+		if (ret != 0) {
+			motor->focus->findpi_step = FOCUS_FINDPI_STEP;
+			dev_err(&motor->spi->dev,
+				"failed get focus find pi step\n");
+		}
 	}
 
 	if (motor->is_use_zoom) {
@@ -874,6 +921,16 @@ static int motor_dev_parse_dt(struct motor_dev *motor)
 			dev_err(&motor->spi->dev,
 				"failed get zoom reback distance, return\n");
 			return -EINVAL;
+		}
+		motor->zoom->is_pihigh_positive_pos =
+			device_property_read_bool(&motor->spi->dev, "zoom-pihigh-positive-pos");
+		ret = of_property_read_u32(node,
+					   "zoom-findpi-step",
+					   &motor->zoom->findpi_step);
+		if (ret != 0) {
+			motor->zoom->findpi_step = ZOOM_FINDPI_STEP;
+			dev_err(&motor->spi->dev,
+				"failed get zoom find pi step\n");
 		}
 	}
 
@@ -1020,6 +1077,16 @@ static int motor_dev_parse_dt(struct motor_dev *motor)
 				"failed get zoom1 reback distance, return\n");
 			return -EINVAL;
 		}
+		motor->zoom1->is_pihigh_positive_pos =
+			device_property_read_bool(&motor->spi->dev, "zoom1-pihigh-positive-pos");
+		ret = of_property_read_u32(node,
+					   "zoom1-findpi-step",
+					   &motor->zoom1->findpi_step);
+		if (ret != 0) {
+			motor->zoom1->findpi_step = ZOOM1_FINDPI_STEP;
+			dev_err(&motor->spi->dev,
+				"failed get zoom1 find pi step\n");
+		}
 	}
 
 	ret = of_property_read_u32(node, RKMODULE_CAMERA_MODULE_INDEX,
@@ -1040,7 +1107,7 @@ static void motor_config_dev_next_status(struct motor_dev *motor, struct ext_dev
 	u16 psum = 0;
 	u16 micro = 0;
 	struct spi_device *spi = motor->spi;
-#ifdef DEBUG
+#ifdef READREG_DEBUG
 	u16 intct = 0;
 	int i = 0;
 	u16 val = 0;
@@ -1065,7 +1132,7 @@ static void motor_config_dev_next_status(struct motor_dev *motor, struct ext_dev
 	}
 #endif
 
-#ifdef DEBUG
+#ifdef READREG_DEBUG
 	spi_read_reg(spi, dev->reg_op->reg.ppw, &ppw);
 	spi_read_reg(spi, dev->reg_op->reg.psum, &psum);
 	spi_read_reg(spi, dev->reg_op->reg.intct, &intct);
@@ -1078,7 +1145,7 @@ static void motor_config_dev_next_status(struct motor_dev *motor, struct ext_dev
 	if (dev->run_data.cur_count != 0) {
 		if (dev->run_data.cur_count == dev->run_data.count &&
 		    dev->is_need_update_tim) {
-			dev->mv_tim.vcm_start_t = ns_to_timeval(ktime_get_ns());
+			dev->mv_tim.vcm_start_t = ns_to_kernel_old_timeval(ktime_get_ns());
 			dev->is_need_update_tim = false;
 		}
 		dev->run_data.cur_count--;
@@ -1124,7 +1191,7 @@ static void motor_config_dev_next_status(struct motor_dev *motor, struct ext_dev
 			      dev->run_data.intct);
 		dev->reg_op->tmp_psum = psum;
 	} else if (dev->move_status != MOTOR_STATUS_STOPPED) {
-		dev->mv_tim.vcm_end_t = ns_to_timeval(ktime_get_ns());
+		dev->mv_tim.vcm_end_t = ns_to_kernel_old_timeval(ktime_get_ns());
 		dev->is_mv_tim_update = true;
 		dev->move_status = MOTOR_STATUS_STOPPED;
 		dev->reg_op->tmp_psum = 0;
@@ -1139,11 +1206,11 @@ static void motor_op_work(struct work_struct *work)
 	struct motor_work_s *wk =
 		container_of(work, struct motor_work_s, work);
 	struct motor_dev *motor = wk->dev;
-	static struct timeval tv_last = {0};
-	struct timeval tv = {0};
+	static struct __kernel_old_timeval tv_last = {0};
+	struct __kernel_old_timeval tv;
 	u64 time_dist = 0;
 
-	do_gettimeofday(&tv);
+	tv = ns_to_kernel_old_timeval(ktime_get_ns());
 	time_dist = tv.tv_sec * 1000000 + tv.tv_usec - (tv_last.tv_sec * 1000000 + tv_last.tv_usec);
 	tv_last = tv;
 	if (time_dist < motor->vd_fz_period_us && motor->is_timer_restart_bywq)
@@ -1162,7 +1229,7 @@ static void motor_op_work(struct work_struct *work)
 			motor->dev0->run_data = motor->dev0->reback_data;
 			motor->dev0->is_need_reback = false;
 			motor->dev0->move_status = motor->dev0->reback_status;
-			motor->dev0->last_dir = motor->dev1->reback_status;
+			motor->dev0->last_dir = motor->dev0->reback_status;
 			motor->dev0->cur_back_delay = 0;
 		}
 	}
@@ -1209,7 +1276,7 @@ static enum hrtimer_restart motor_timer_func(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-static int motor_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
+static int ms41908_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct motor_dev *motor = container_of(ctrl->handler,
 					     struct motor_dev, ctrl_handler);
@@ -1239,7 +1306,6 @@ static void wait_for_motor_stop(struct motor_dev *motor, struct ext_dev *dev)
 	unsigned long ret = 0;
 
 	if (dev->is_running) {
-		reinit_completion(&dev->complete_out);
 		ret = wait_for_completion_timeout(&dev->complete_out, 10 * HZ);
 		if (ret == 0)
 			dev_info(&motor->spi->dev,
@@ -1247,9 +1313,9 @@ static void wait_for_motor_stop(struct motor_dev *motor, struct ext_dev *dev)
 	}
 }
 
-static int motor_s_ctrl(struct v4l2_ctrl *ctrl)
+static int ms41908_s_ctrl(struct v4l2_ctrl *ctrl)
 {
-#ifdef DEBUG
+#ifdef READREG_DEBUG
 	int i = 0;
 	u16 val = 0;
 #endif
@@ -1271,7 +1337,7 @@ static int motor_s_ctrl(struct v4l2_ctrl *ctrl)
 			gpiod_set_value(motor->dciris->vd_iris_gpio, 0);
 			motor->dciris->last_log = ctrl->val;
 			dev_dbg(&motor->spi->dev, "set iris pos %d\n", ctrl->val);
-#ifdef DEBUG
+#ifdef READREG_DEBUG
 			for (i = 0; i < 16; i++) {
 				spi_read_reg(motor->spi, i, &val);
 				dev_dbg(&motor->spi->dev, "reg,val=0x%02x,0x%04x\n", i, val);
@@ -1343,7 +1409,93 @@ static int motor_s_ctrl(struct v4l2_ctrl *ctrl)
 	return ret;
 }
 
-static int motor_set_zoom_follow(struct motor_dev *motor, struct rk_cam_set_zoom *mv_param)
+static void ms41908_restore_speed(struct motor_dev *motor)
+{
+	struct ext_dev *zoom_dev = motor->zoom;
+	struct ext_dev *focus_dev = motor->focus;
+
+	zoom_dev->run_data.psum = zoom_dev->default_psum;
+	zoom_dev->run_data.intct = zoom_dev->default_intct;
+	focus_dev->run_data.psum = focus_dev->default_psum;
+	focus_dev->run_data.intct = focus_dev->default_intct;
+
+	dev_dbg(&motor->spi->dev,
+		"%s: zoom psum: %d, zoom intct: %d, focus psum: %d, focus intct: %d\n",
+		__func__,
+		zoom_dev->run_data.psum,
+		zoom_dev->run_data.intct,
+		focus_dev->run_data.psum,
+		focus_dev->run_data.intct);
+}
+
+static void ms41908_sync_zoomfocus_speed(struct motor_dev *motor, s32 zoom_pos, s32 focus_pos,
+					 bool is_zoom_need_reback, bool is_focus_need_reback)
+{
+	struct ext_dev *zoom_dev = motor->zoom;
+	struct ext_dev *focus_dev = motor->focus;
+	u32 zoom_mv_cnt = 0;
+	u32 focus_mv_cnt = 0;
+	u32 zoom_mv_step = 0;
+	u32 focus_mv_step = 0;
+	u32 zoom_vd_count = 0;
+	u32 focus_vd_count = 0;
+	u32 max_vd_count = 0;
+	u32 zoom_vd_psum = 0;
+	u32 focus_vd_psum = 0;
+
+	zoom_mv_cnt = abs(zoom_pos - zoom_dev->last_pos);
+	if (is_zoom_need_reback)
+		zoom_mv_cnt += zoom_dev->reback;
+
+	if (zoom_dev->is_half_step_mode)
+		zoom_mv_step = zoom_mv_cnt * 4;
+	else
+		zoom_mv_step = zoom_mv_cnt * 8;
+
+	zoom_vd_count = (zoom_mv_step + zoom_dev->default_psum - 1) / zoom_dev->default_psum;
+
+	focus_mv_cnt = abs(focus_pos - focus_dev->last_pos);
+	if (is_focus_need_reback)
+		focus_mv_cnt += focus_dev->reback;
+
+	if (focus_dev->is_half_step_mode)
+		focus_mv_step = focus_mv_cnt * 4;
+	else
+		focus_mv_step = focus_mv_cnt * 8;
+
+	focus_vd_count = (focus_mv_step + focus_dev->default_psum - 1) / focus_dev->default_psum;
+	max_vd_count = (zoom_vd_count > focus_vd_count) ? zoom_vd_count : focus_vd_count;
+
+	if (zoom_mv_cnt > 0) {
+		zoom_vd_psum = (zoom_mv_step + max_vd_count - 1) / max_vd_count;
+		if (zoom_vd_psum > zoom_dev->default_psum)
+			zoom_vd_psum = zoom_dev->default_psum;
+		zoom_dev->run_data.psum = zoom_vd_psum;
+		zoom_dev->run_data.intct = motor->sys_clk * motor->vd_fz_period_us /
+					   (zoom_dev->run_data.psum * 24);
+	}
+
+	if (focus_mv_cnt > 0) {
+		focus_vd_psum = (focus_mv_step + max_vd_count - 1) / max_vd_count;
+		if (focus_vd_psum > focus_dev->default_psum)
+			focus_vd_psum = focus_dev->default_psum;
+		focus_dev->run_data.psum = focus_vd_psum;
+		focus_dev->run_data.intct = motor->sys_clk * motor->vd_fz_period_us /
+					    (focus_dev->run_data.psum * 24);
+	}
+
+	dev_dbg(&motor->spi->dev,
+		"%s: zoom_mv_cnt %d, focus_mv_cnt %d, zoom psum: %d, zoom intct: %d, focus psum: %d, focus intct: %d\n",
+		__func__,
+		zoom_mv_cnt,
+		focus_mv_cnt,
+		zoom_dev->run_data.psum,
+		zoom_dev->run_data.intct,
+		focus_dev->run_data.psum,
+		focus_dev->run_data.intct);
+}
+
+static int ms41908_set_zoom_follow(struct motor_dev *motor, struct rk_cam_set_zoom *mv_param)
 {
 	int i = 0;
 	int ret = 0;
@@ -1352,12 +1504,19 @@ static int motor_set_zoom_follow(struct motor_dev *motor, struct rk_cam_set_zoom
 
 	for (i = 0; i < mv_param->setzoom_cnt; i++) {
 		dev_dbg(&motor->spi->dev,
-			"%s zoom %d, focus %d, i %d\n",
+			"%s zoom %d, focus %d, i %d, setzoom_cnt %d, is_need_zoom_reback %d, is_need_focus_reback %d\n",
 			__func__,
 			mv_param->zoom_pos[i].zoom_pos,
 			mv_param->zoom_pos[i].focus_pos,
-			i);
+			i, mv_param->setzoom_cnt,
+			is_need_zoom_reback,
+			is_need_focus_reback);
 
+		ms41908_sync_zoomfocus_speed(motor,
+					     mv_param->zoom_pos[i].zoom_pos,
+					     mv_param->zoom_pos[i].focus_pos,
+					     is_need_zoom_reback,
+					     is_need_focus_reback);
 		if (i == (mv_param->setzoom_cnt - 1)) {
 			ret = set_motor_running_status(motor,
 						       motor->focus,
@@ -1365,20 +1524,20 @@ static int motor_set_zoom_follow(struct motor_dev *motor, struct rk_cam_set_zoom
 						       true,
 						       true,
 						       is_need_focus_reback);
-			ret = set_motor_running_status(motor,
+			ret |= set_motor_running_status(motor,
 						       motor->zoom,
 						       mv_param->zoom_pos[i].zoom_pos,
 						       true,
 						       false,
 						       is_need_zoom_reback);
 		} else {
-			set_motor_running_status(motor,
+			ret = set_motor_running_status(motor,
 						 motor->focus,
 						 mv_param->zoom_pos[i].focus_pos,
 						 false,
 						 true,
 						 false);
-			set_motor_running_status(motor,
+			ret |= set_motor_running_status(motor,
 						 motor->zoom,
 						 mv_param->zoom_pos[i].zoom_pos,
 						 false,
@@ -1388,12 +1547,14 @@ static int motor_set_zoom_follow(struct motor_dev *motor, struct rk_cam_set_zoom
 		wait_for_motor_stop(motor, motor->focus);
 		wait_for_motor_stop(motor, motor->zoom);
 	}
+
+	ms41908_restore_speed(motor);
 	return ret;
 }
 
-static int motor_find_pi_binarysearch(struct motor_dev *motor,
-			 struct ext_dev *ext_dev,
-			 int min, int max)
+static int ms41908_find_pi_binarysearch(struct motor_dev *motor,
+					struct ext_dev *ext_dev,
+					int min, int max, bool *error)
 {
 	int gpio_val = 0;
 	int tmp_val = 0;
@@ -1402,11 +1563,17 @@ static int motor_find_pi_binarysearch(struct motor_dev *motor,
 	int new_min = 0;
 	int new_max = 0;
 
-	if (min > max)
+	dev_dbg(&motor->spi->dev,
+		"ext dev %d min %d, max %d\n", ext_dev->type, min, max);
+	*error = false;
+	if (min > max) {
+		*error = true;
 		return -EINVAL;
+	}
+
 	tmp_val = gpiod_get_value(ext_dev->pic_gpio);
 	mid = (min + max) / 2;
-	if (mid == min) {
+	if ((mid == min) || (mid == max)) {
 		dev_dbg(&motor->spi->dev,
 			"ext dev %d find pi %d\n", ext_dev->type, mid);
 		if (ext_dev->last_pos < mid)
@@ -1436,11 +1603,11 @@ static int motor_find_pi_binarysearch(struct motor_dev *motor,
 					 false);
 	else
 		set_motor_running_status(motor,
-				       ext_dev,
-				       mid,
-				       false,
-				       false,
-				       true);
+					 ext_dev,
+					 mid,
+					 false,
+					 false,
+					 true);
 	wait_for_motor_stop(motor, ext_dev);
 	gpio_val = gpiod_get_value(ext_dev->pic_gpio);
 	if (tmp_val != gpio_val) {
@@ -1468,11 +1635,11 @@ static int motor_find_pi_binarysearch(struct motor_dev *motor,
 			new_max = mid;
 		}
 	}
-	return motor_find_pi_binarysearch(motor, ext_dev, new_min, new_max);
+	return ms41908_find_pi_binarysearch(motor, ext_dev, new_min, new_max, error);
 }
 
-static int motor_find_pi(struct motor_dev *motor,
-		     struct ext_dev *ext_dev, int step)
+static int ms41908_find_pi(struct motor_dev *motor,
+			 struct ext_dev *ext_dev, int step)
 {
 	int i = 0;
 	int idx_max = ext_dev->step_max + step - 1;
@@ -1480,34 +1647,38 @@ static int motor_find_pi(struct motor_dev *motor,
 	int gpio_val = 0;
 	int min = 0;
 	int max = 0;
+	int pi_pos = 0;
 	bool is_find_pi = false;
+	bool if_find_error = false;
 
 	tmp_val = gpiod_get_value(ext_dev->pic_gpio);
-	for (i = ext_dev->last_pos + step; i < idx_max; i += step) {
-		set_motor_running_status(motor,
-					 ext_dev,
-					 i,
-					 false,
-					 false,
-					 false);
-		wait_for_motor_stop(motor, ext_dev);
-		gpio_val = gpiod_get_value(ext_dev->pic_gpio);
-		if (tmp_val != gpio_val) {
-			usleep_range(10, 20);
+	if ((!tmp_val && ext_dev->is_pihigh_positive_pos) ||
+	    (tmp_val && !ext_dev->is_pihigh_positive_pos)) {
+		for (i = ext_dev->last_pos + step; i < 2 * idx_max; i += step) {
+			set_motor_running_status(motor,
+						 ext_dev,
+						 i,
+						 false,
+						 false,
+						 false);
+			wait_for_motor_stop(motor, ext_dev);
 			gpio_val = gpiod_get_value(ext_dev->pic_gpio);
+			if (tmp_val != gpio_val) {
+				usleep_range(10, 20);
+				gpio_val = gpiod_get_value(ext_dev->pic_gpio);
+			}
+			dev_dbg(&motor->spi->dev,
+				"__line__ %d ext_dev type %d, get pi value %d, i %d, tmp_val %d\n",
+				__LINE__, ext_dev->type, gpio_val, i, tmp_val);
+			if (tmp_val != gpio_val) {
+				min = i - step;
+				max = i;
+				is_find_pi = true;
+				break;
+			}
 		}
-		dev_dbg(&motor->spi->dev,
-			"__line__ %d ext_dev type %d, get pi value %d, i %d, tmp_val %d\n",
-			__LINE__, ext_dev->type, gpio_val, i, tmp_val);
-		if (tmp_val != gpio_val) {
-			min = i - step;
-			max = i;
-			is_find_pi = true;
-			break;
-		}
-	}
-	if (i > idx_max) {
-		for (i = ext_dev->last_pos - step; i > 0; i -= step) {
+	} else {
+		for (i = ext_dev->last_pos - step; i > -2 * idx_max; i -= step) {
 			set_motor_running_status(motor,
 					       ext_dev,
 					       i,
@@ -1531,19 +1702,26 @@ static int motor_find_pi(struct motor_dev *motor,
 			}
 		}
 	}
+
 	if (is_find_pi) {
-		if (abs(step) == 1)
-			return ext_dev->last_pos;
-		else
-			return motor_find_pi_binarysearch(motor, ext_dev,
-							  min,
-							  max);
+		if (abs(step) != 1) {
+			pi_pos = ms41908_find_pi_binarysearch(motor, ext_dev,
+							    min,
+							    max,
+							    &if_find_error);
+			dev_dbg(&motor->spi->dev,
+				"ext_dev type %d, pi_pos %d, if_find_error %d\n",
+				ext_dev->type, pi_pos, if_find_error);
+			if (if_find_error)
+				return -EINVAL;
+		}
+		return 0;
 	} else {
 		return -EINVAL;
 	}
 }
 
-static int motor_reinit_piris(struct motor_dev *motor)
+static int ms41908_reinit_piris(struct motor_dev *motor)
 {
 	int ret = 0;
 
@@ -1565,7 +1743,7 @@ static int motor_reinit_piris(struct motor_dev *motor)
 		#else
 		motor->piris->last_pos = 0;
 		#endif
-		ret = motor_find_pi(motor, motor->piris, 10);
+		ret = ms41908_find_pi(motor, motor->piris, motor->piris->findpi_step);
 		if (ret < 0) {
 			dev_err(&motor->spi->dev,
 				"get piris pi fail, pls check it\n");
@@ -1592,24 +1770,24 @@ static int motor_reinit_piris(struct motor_dev *motor)
 					       false);
 		wait_for_motor_stop(motor, motor->piris);
 	}
-	return 0;
+	return ret;
 }
 
-static void motor_reinit_piris_pos(struct motor_dev *motor)
+static void ms41908_reinit_piris_pos(struct motor_dev *motor)
 {
 	if (!motor->piris) {
 		dev_err(&motor->spi->dev,
 			"not support piris\n");
 		return;
 	}
-	motor_reinit_piris(motor);
+	ms41908_reinit_piris(motor);
 	motor->piris->last_pos = 0;
 	__v4l2_ctrl_modify_range(motor->iris_ctrl, motor->piris->min_pos,
 				 motor->piris->max_pos - motor->piris->reback,
 				 1, 0);
 }
 
-static int motor_reinit_focus(struct motor_dev *motor)
+static int ms41908_reinit_focus(struct motor_dev *motor)
 {
 	int ret = 0;
 
@@ -1636,7 +1814,7 @@ static int motor_reinit_focus(struct motor_dev *motor)
 		#else
 		motor->focus->last_pos = 0;
 		#endif
-		ret = motor_find_pi(motor, motor->focus, 200);
+		ret = ms41908_find_pi(motor, motor->focus, motor->focus->findpi_step);
 		if (ret < 0) {
 			dev_info(&motor->spi->dev,
 				 "get focus pi fail, pls check it\n");
@@ -1668,24 +1846,24 @@ static int motor_reinit_focus(struct motor_dev *motor)
 					       true);
 		wait_for_motor_stop(motor, motor->focus);
 	}
-	return 0;
+	return ret;
 }
 
-static void motor_reinit_focus_pos(struct motor_dev *motor)
+static void ms41908_reinit_focus_pos(struct motor_dev *motor)
 {
 	if (!motor->focus) {
 		dev_err(&motor->spi->dev,
 			"not support focus\n");
 		return;
 	}
-	motor_reinit_focus(motor);
+	ms41908_reinit_focus(motor);
 	motor->focus->last_pos = 0;
 	__v4l2_ctrl_modify_range(motor->focus_ctrl, motor->focus->min_pos,
 				 motor->focus->max_pos - motor->focus->reback,
 				 1, 0);
 }
 
-static int  motor_reinit_zoom(struct motor_dev *motor)
+static int  ms41908_reinit_zoom(struct motor_dev *motor)
 {
 	int ret = 0;
 
@@ -1713,7 +1891,7 @@ static int  motor_reinit_zoom(struct motor_dev *motor)
 		#else
 		motor->zoom->last_pos = 0;
 		#endif
-		ret = motor_find_pi(motor, motor->zoom, 200);
+		ret = ms41908_find_pi(motor, motor->zoom, motor->zoom->findpi_step);
 		if (ret < 0) {
 			dev_err(&motor->spi->dev,
 				"get zoom pi fail, pls check it\n");
@@ -1745,24 +1923,24 @@ static int  motor_reinit_zoom(struct motor_dev *motor)
 					       true);
 		wait_for_motor_stop(motor, motor->zoom);
 	}
-	return 0;
+	return ret;
 }
 
-static void motor_reinit_zoom_pos(struct motor_dev *motor)
+static void ms41908_reinit_zoom_pos(struct motor_dev *motor)
 {
 	if (!motor->zoom) {
 		dev_err(&motor->spi->dev,
 			"not support zoom\n");
 		return;
 	}
-	motor_reinit_zoom(motor);
+	ms41908_reinit_zoom(motor);
 	motor->zoom->last_pos = 0;
 	__v4l2_ctrl_modify_range(motor->zoom_ctrl, motor->zoom->min_pos,
 				 motor->zoom->max_pos - motor->zoom->reback,
 				 1, 0);
 }
 
-static int motor_reinit_zoom1(struct motor_dev *motor)
+static int ms41908_reinit_zoom1(struct motor_dev *motor)
 {
 	int ret = 0;
 
@@ -1784,7 +1962,7 @@ static int motor_reinit_zoom1(struct motor_dev *motor)
 		#else
 		motor->zoom1->last_pos = 0;
 		#endif
-		ret = motor_find_pi(motor, motor->zoom1, 200);
+		ret = ms41908_find_pi(motor, motor->zoom1, motor->zoom1->findpi_step);
 		if (ret < 0) {
 			dev_err(&motor->spi->dev,
 				"get zoom1 pi fail, pls check it\n");
@@ -1810,17 +1988,17 @@ static int motor_reinit_zoom1(struct motor_dev *motor)
 					       true);
 		wait_for_motor_stop(motor, motor->zoom1);
 	}
-	return 0;
+	return ret;
 }
 
-static void motor_reinit_zoom1_pos(struct motor_dev *motor)
+static void ms41908_reinit_zoom1_pos(struct motor_dev *motor)
 {
 	if (!motor->zoom1) {
 		dev_err(&motor->spi->dev,
 			"not support zoom1\n");
 		return;
 	}
-	motor_reinit_zoom1(motor);
+	ms41908_reinit_zoom1(motor);
 	motor->zoom1->last_pos = 0;
 	__v4l2_ctrl_modify_range(motor->zoom1_ctrl, motor->zoom1->min_pos,
 				 motor->zoom1->max_pos - motor->zoom1->reback,
@@ -1828,7 +2006,7 @@ static void motor_reinit_zoom1_pos(struct motor_dev *motor)
 }
 
 //#define REBACK_CTRL_BY_DRV
-static int motor_set_focus(struct motor_dev *motor, struct rk_cam_set_focus *mv_param)
+static int ms41908_set_focus(struct motor_dev *motor, struct rk_cam_set_focus *mv_param)
 {
 	int ret = 0;
 	bool is_need_reback = mv_param->is_need_reback;
@@ -1854,7 +2032,7 @@ static int motor_set_focus(struct motor_dev *motor, struct rk_cam_set_focus *mv_
 	return ret;
 }
 
-static long motor_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+static long ms41908_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct rk_cam_vcm_tim *mv_tim;
 	struct motor_dev *motor = to_motor_dev(sd);
@@ -1958,24 +2136,24 @@ static long motor_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		motor->zoom1->backlash = *pbacklash;
 		break;
 	case RK_VIDIOC_IRIS_CORRECTION:
-		motor_reinit_piris_pos(motor);
+		ms41908_reinit_piris_pos(motor);
 		break;
 	case RK_VIDIOC_FOCUS_CORRECTION:
-		motor_reinit_focus_pos(motor);
+		ms41908_reinit_focus_pos(motor);
 		break;
 	case RK_VIDIOC_ZOOM_CORRECTION:
-		motor_reinit_zoom_pos(motor);
+		ms41908_reinit_zoom_pos(motor);
 		break;
 	case RK_VIDIOC_ZOOM1_CORRECTION:
-		motor_reinit_zoom1_pos(motor);
+		ms41908_reinit_zoom1_pos(motor);
 		break;
 	case RK_VIDIOC_ZOOM_SET_POSITION:
 		mv_param = (struct rk_cam_set_zoom *)arg;
-		ret = motor_set_zoom_follow(motor, mv_param);
+		ret = ms41908_set_zoom_follow(motor, mv_param);
 		break;
 	case RK_VIDIOC_FOCUS_SET_POSITION:
 		focus_param = (struct rk_cam_set_focus *)arg;
-		ret = motor_set_focus(motor, focus_param);
+		ret = ms41908_set_focus(motor, focus_param);
 		break;
 	case RK_VIDIOC_MODIFY_POSITION:
 		pos = (struct rk_cam_modify_pos *)arg;
@@ -1993,7 +2171,7 @@ static long motor_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 }
 
 #ifdef CONFIG_COMPAT
-static long motor_compat_ioctl32(struct v4l2_subdev *sd, unsigned int cmd, unsigned long arg)
+static long ms41908_compat_ioctl32(struct v4l2_subdev *sd, unsigned int cmd, unsigned long arg)
 {
 	void __user *up = compat_ptr(arg);
 	struct rk_cam_compat_vcm_tim *compat_mv_tim;
@@ -2023,7 +2201,7 @@ handle_mvtime:
 			ret = -ENOMEM;
 			return ret;
 		}
-		ret = motor_ioctl(sd, ioctl_cmd, &ioctl_mv_tim);
+		ret = ms41908_ioctl(sd, ioctl_cmd, &ioctl_mv_tim);
 		if (!ret) {
 			compat_mv_tim->vcm_start_t.tv_sec = ioctl_mv_tim.vcm_start_t.tv_sec;
 			compat_mv_tim->vcm_start_t.tv_usec = ioctl_mv_tim.vcm_start_t.tv_usec;
@@ -2042,7 +2220,7 @@ handle_mvtime:
 	case RK_VIDIOC_ZOOM1_SET_BACKLASH:
 		if (copy_from_user(&val, up, sizeof(val)))
 			return -EFAULT;
-		ret = motor_ioctl(sd, cmd, &val);
+		ret = ms41908_ioctl(sd, cmd, &val);
 		break;
 	case RK_VIDIOC_IRIS_CORRECTION:
 	case RK_VIDIOC_FOCUS_CORRECTION:
@@ -2050,7 +2228,7 @@ handle_mvtime:
 	case RK_VIDIOC_ZOOM1_CORRECTION:
 		if (copy_from_user(&val, up, sizeof(val)))
 			return -EFAULT;
-		ret = motor_ioctl(sd, cmd, &val);
+		ret = ms41908_ioctl(sd, cmd, &val);
 		break;
 	case RK_VIDIOC_ZOOM_SET_POSITION:
 		mv_param = kzalloc(sizeof(*mv_param), GFP_KERNEL);
@@ -2062,7 +2240,7 @@ handle_mvtime:
 			kfree(mv_param);
 			return -EFAULT;
 		}
-		ret = motor_ioctl(sd, cmd, mv_param);
+		ret = ms41908_ioctl(sd, cmd, mv_param);
 		kfree(mv_param);
 		break;
 	case RK_VIDIOC_FOCUS_SET_POSITION:
@@ -2075,7 +2253,7 @@ handle_mvtime:
 			kfree(focus_param);
 			return -EFAULT;
 		}
-		ret = motor_ioctl(sd, cmd, focus_param);
+		ret = ms41908_ioctl(sd, cmd, focus_param);
 		kfree(focus_param);
 		break;
 	default:
@@ -2286,7 +2464,7 @@ static ssize_t reinit_piris_pos(struct device *dev,
 	ret = kstrtoint(buf, 0, &val);
 	if (!ret) {
 		if (val == 1)
-			motor_reinit_piris_pos(motor);
+			ms41908_reinit_piris_pos(motor);
 	}
 	return count;
 }
@@ -2304,7 +2482,7 @@ static ssize_t reinit_focus_pos(struct device *dev,
 	ret = kstrtoint(buf, 0, &val);
 	if (!ret) {
 		if (val == 1)
-			motor_reinit_focus_pos(motor);
+			ms41908_reinit_focus_pos(motor);
 	}
 	return count;
 }
@@ -2322,7 +2500,7 @@ static ssize_t reinit_zoom_pos(struct device *dev,
 	ret = kstrtoint(buf, 0, &val);
 	if (!ret) {
 		if (val == 1)
-			motor_reinit_zoom_pos(motor);
+			ms41908_reinit_zoom_pos(motor);
 	}
 	return count;
 }
@@ -2340,7 +2518,7 @@ static ssize_t reinit_zoom1_pos(struct device *dev,
 	ret = kstrtoint(buf, 0, &val);
 	if (!ret) {
 		if (val == 1)
-			motor_reinit_zoom1_pos(motor);
+			ms41908_reinit_zoom1_pos(motor);
 	}
 	return count;
 }
@@ -2426,9 +2604,9 @@ static int remove_sysfs_interfaces(struct device *dev)
 #endif
 
 static const struct v4l2_subdev_core_ops motor_core_ops = {
-	.ioctl = motor_ioctl,
+	.ioctl = ms41908_ioctl,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl32 = motor_compat_ioctl32
+	.compat_ioctl32 = ms41908_compat_ioctl32
 #endif
 };
 
@@ -2437,11 +2615,11 @@ static const struct v4l2_subdev_ops motor_subdev_ops = {
 };
 
 static const struct v4l2_ctrl_ops motor_ctrl_ops = {
-	.g_volatile_ctrl = motor_g_volatile_ctrl,
-	.s_ctrl = motor_s_ctrl,
+	.g_volatile_ctrl = ms41908_g_volatile_ctrl,
+	.s_ctrl = ms41908_s_ctrl,
 };
 
-static int motor_initialize_controls(struct motor_dev *motor)
+static int ms41908_initialize_controls(struct motor_dev *motor)
 {
 	struct v4l2_ctrl_handler *handler;
 	int ret = 0;
@@ -2463,7 +2641,7 @@ static int motor_initialize_controls(struct motor_dev *motor)
 
 	} else if (motor->is_use_p_iris) {
 		#ifdef REINIT_BOOT
-		ret = motor_reinit_piris(motor);
+		ret = ms41908_reinit_piris(motor);
 		if (ret < 0)
 			return -EINVAL;
 		#endif
@@ -2478,7 +2656,7 @@ static int motor_initialize_controls(struct motor_dev *motor)
 	}
 	if (motor->is_use_focus) {
 		#ifdef REINIT_BOOT
-		ret = motor_reinit_focus(motor);
+		ret = ms41908_reinit_focus(motor);
 		if (ret < 0)
 			return -EINVAL;
 		#endif
@@ -2492,7 +2670,7 @@ static int motor_initialize_controls(struct motor_dev *motor)
 	}
 	if (motor->is_use_zoom) {
 		#ifdef REINIT_BOOT
-		ret = motor_reinit_zoom(motor);
+		ret = ms41908_reinit_zoom(motor);
 		if (ret < 0)
 			return -EINVAL;
 		#endif
@@ -2507,7 +2685,7 @@ static int motor_initialize_controls(struct motor_dev *motor)
 	}
 	if (motor->is_use_zoom1) {
 		#ifdef REINIT_BOOT
-		ret = motor_reinit_zoom1(motor);
+		ret = ms41908_reinit_zoom1(motor);
 		if (ret < 0)
 			return -EINVAL;
 		#endif
@@ -2550,18 +2728,21 @@ static void dev_param_init(struct motor_dev *motor)
 		motor->piris->is_need_update_tim = false;
 		motor->piris->move_status = MOTOR_STATUS_STOPPED;
 		motor->piris->type = TYPE_IRIS;
-		motor->piris->mv_tim.vcm_start_t = ns_to_timeval(ktime_get_ns());
-		motor->piris->mv_tim.vcm_end_t = ns_to_timeval(ktime_get_ns());
+		motor->piris->mv_tim.vcm_start_t = ns_to_kernel_old_timeval(ktime_get_ns());
+		motor->piris->mv_tim.vcm_end_t = ns_to_kernel_old_timeval(ktime_get_ns());
 		init_completion(&motor->piris->complete);
 		init_completion(&motor->piris->complete_out);
 		motor->piris->run_data.psum = motor->vd_fz_period_us *
 					      motor->piris->start_up_speed * 8 / 1000000;
-		motor->piris->run_data.intct = 27 * motor->vd_fz_period_us /
+		if (motor->piris->is_half_step_mode)
+			motor->piris->run_data.psum /= 2;
+		motor->piris->run_data.intct = motor->sys_clk * motor->vd_fz_period_us /
 					       (motor->piris->run_data.psum * 24);
 		motor->piris->is_running = false;
 		dev_info(&motor->spi->dev,
-			 "piris vd_fz_period_us %u, inict %d\n",
+			 "piris vd_fz_period_us %u, psum %d, inict %d\n",
 			 motor->vd_fz_period_us,
+			 motor->piris->run_data.psum,
 			 motor->piris->run_data.intct);
 	}
 	if (motor->is_use_focus) {
@@ -2569,20 +2750,27 @@ static void dev_param_init(struct motor_dev *motor)
 		motor->focus->is_need_update_tim = false;
 		motor->focus->move_status = MOTOR_STATUS_STOPPED;
 		motor->focus->type = TYPE_FOCUS;
-		motor->focus->mv_tim.vcm_start_t = ns_to_timeval(ktime_get_ns());
-		motor->focus->mv_tim.vcm_end_t = ns_to_timeval(ktime_get_ns());
+		motor->focus->mv_tim.vcm_start_t = ns_to_kernel_old_timeval(ktime_get_ns());
+		motor->focus->mv_tim.vcm_end_t = ns_to_kernel_old_timeval(ktime_get_ns());
 		init_completion(&motor->focus->complete);
 		init_completion(&motor->focus->complete_out);
 		motor->focus->run_data.psum = motor->vd_fz_period_us *
 					      motor->focus->start_up_speed * 8 / 1000000;
-		motor->focus->run_data.intct = 27 * motor->vd_fz_period_us /
+		if (motor->focus->is_half_step_mode)
+			motor->focus->run_data.psum /= 2;
+		motor->focus->run_data.intct = motor->sys_clk * motor->vd_fz_period_us /
 					       (motor->focus->run_data.psum * 24);
 		motor->focus->is_running = false;
 		motor->focus->reback_ctrl = false;
+		motor->focus->default_intct = motor->focus->run_data.intct;
+		motor->focus->default_psum = motor->focus->run_data.psum;
 		dev_info(&motor->spi->dev,
-			 "focus vd_fz_period_us %u, inict %d\n",
+			 "focus vd_fz_period_us %u, psum %d, inict %d, default_intct %d, default_psum %d\n",
 			 motor->vd_fz_period_us,
-			 motor->focus->run_data.intct);
+			 motor->focus->run_data.psum,
+			 motor->focus->run_data.intct,
+			 motor->focus->default_intct,
+			 motor->focus->default_psum);
 		if (motor->focus->reback != 0) {
 			motor->focus->cur_back_delay = 0;
 			motor->focus->max_back_delay = FOCUS_MAX_BACK_DELAY;
@@ -2590,10 +2778,10 @@ static void dev_param_init(struct motor_dev *motor)
 			mv_cnt = motor->focus->reback;
 			if (motor->focus->is_dir_opp) {
 				mv_cnt += motor->focus->backlash;
-				status = MOTOR_STATUS_CW;
+				status = MOTOR_STATUS_CCW;
 			} else {
 				mv_cnt += motor->focus->backlash;
-				status = MOTOR_STATUS_CCW;
+				status = MOTOR_STATUS_CW;
 			}
 			motor->focus->reback_status = status;
 			if (motor->focus->is_half_step_mode)
@@ -2615,17 +2803,20 @@ static void dev_param_init(struct motor_dev *motor)
 		motor->zoom->is_need_update_tim = false;
 		motor->zoom->move_status = MOTOR_STATUS_STOPPED;
 		motor->zoom->type = TYPE_ZOOM;
-		motor->zoom->mv_tim.vcm_start_t = ns_to_timeval(ktime_get_ns());
-		motor->zoom->mv_tim.vcm_end_t = ns_to_timeval(ktime_get_ns());
+		motor->zoom->mv_tim.vcm_start_t = ns_to_kernel_old_timeval(ktime_get_ns());
+		motor->zoom->mv_tim.vcm_end_t = ns_to_kernel_old_timeval(ktime_get_ns());
 		init_completion(&motor->zoom->complete);
 		init_completion(&motor->zoom->complete_out);
-		motor->vd_fz_period_us = VD_FZ_US;
 		motor->zoom->run_data.psum = motor->vd_fz_period_us *
 					     motor->zoom->start_up_speed * 8 / 1000000;
-		motor->zoom->run_data.intct = 27 * motor->vd_fz_period_us /
+		if (motor->zoom->is_half_step_mode)
+			motor->zoom->run_data.psum /= 2;
+		motor->zoom->run_data.intct = motor->sys_clk * motor->vd_fz_period_us /
 					      (motor->zoom->run_data.psum * 24);
 		motor->zoom->is_running = false;
 		motor->zoom->reback_ctrl = false;
+		motor->zoom->default_intct = motor->zoom->run_data.intct;
+		motor->zoom->default_psum = motor->zoom->run_data.psum;
 		if (motor->zoom->reback != 0) {
 			motor->zoom->cur_back_delay = 0;
 			motor->zoom->max_back_delay = ZOOM_MAX_BACK_DELAY;
@@ -2633,10 +2824,10 @@ static void dev_param_init(struct motor_dev *motor)
 			mv_cnt = motor->zoom->reback;
 			if (motor->zoom->is_dir_opp) {
 				mv_cnt += motor->zoom->backlash;
-				status = MOTOR_STATUS_CW;
+				status = MOTOR_STATUS_CCW;
 			} else {
 				mv_cnt += motor->zoom->backlash;
-				status = MOTOR_STATUS_CCW;
+				status = MOTOR_STATUS_CW;
 			}
 			motor->zoom->reback_status = status;
 			if (motor->zoom->is_half_step_mode)
@@ -2653,30 +2844,39 @@ static void dev_param_init(struct motor_dev *motor)
 			motor->zoom->reback_move_time_us = reback_vd_cnt * (motor->vd_fz_period_us + 500);
 		}
 		dev_info(&motor->spi->dev,
-			 "zoom vd_fz_period_us %u, inict %d\n",
+			 "zoom vd_fz_period_us %u, psum %d, inict %d, default_intct %d, default_psum %d\n",
 			 motor->vd_fz_period_us,
-			 motor->zoom->run_data.intct);
+			 motor->zoom->run_data.psum,
+			 motor->zoom->run_data.intct,
+			 motor->zoom->default_intct,
+			 motor->zoom->default_psum);
 	}
 	if (motor->is_use_zoom1) {
 		motor->zoom1->is_mv_tim_update = false;
 		motor->zoom1->is_need_update_tim = false;
 		motor->zoom1->move_status = MOTOR_STATUS_STOPPED;
 		motor->zoom1->type = TYPE_ZOOM1;
-		motor->zoom1->mv_tim.vcm_start_t = ns_to_timeval(ktime_get_ns());
-		motor->zoom1->mv_tim.vcm_end_t = ns_to_timeval(ktime_get_ns());
+		motor->zoom1->mv_tim.vcm_start_t = ns_to_kernel_old_timeval(ktime_get_ns());
+		motor->zoom1->mv_tim.vcm_end_t = ns_to_kernel_old_timeval(ktime_get_ns());
 		init_completion(&motor->zoom1->complete);
 		init_completion(&motor->zoom1->complete_out);
-		motor->vd_fz_period_us = VD_FZ_US;
 		motor->zoom1->run_data.psum = motor->vd_fz_period_us *
 					      motor->zoom1->start_up_speed * 8 / 1000000;
-		motor->zoom1->run_data.intct = 27 * motor->vd_fz_period_us /
+		if (motor->zoom1->is_half_step_mode)
+			motor->zoom1->run_data.psum /= 2;
+		motor->zoom1->run_data.intct = motor->sys_clk * motor->vd_fz_period_us /
 					       (motor->zoom1->run_data.psum * 24);
 		motor->zoom1->is_running = false;
 		motor->zoom1->reback_ctrl = false;
+		motor->zoom1->default_intct = motor->zoom1->run_data.intct;
+		motor->zoom1->default_psum = motor->zoom1->run_data.psum;
 		dev_info(&motor->spi->dev,
-			 "zoom1 vd_fz_period_us %u, inict %d\n",
+			 "zoom1 vd_fz_period_us %u, psum %d, inict %d, default_intct %d, default_psum %d\n",
 			 motor->vd_fz_period_us,
-			 motor->zoom1->run_data.intct);
+			 motor->zoom1->run_data.psum,
+			 motor->zoom1->run_data.intct,
+			 motor->zoom1->default_intct,
+			 motor->zoom1->default_psum);
 	}
 
 	motor->is_should_wait = false;
@@ -2731,7 +2931,7 @@ static void dev_reg_init(struct motor_dev *motor)
 }
 
 
-static int motor_check_id(struct motor_dev *motor)
+static int ms41908_check_id(struct motor_dev *motor)
 {
 	u16 val = 0xffff;
 	int i = 0;
@@ -2748,7 +2948,7 @@ static int motor_check_id(struct motor_dev *motor)
 	return 0;
 }
 
-static int dev_init(struct motor_dev *motor)
+static int ms41908_dev_init(struct motor_dev *motor)
 {
 	int ret = 0;
 
@@ -2757,7 +2957,7 @@ static int dev_init(struct motor_dev *motor)
 		usleep_range(100, 200);
 		gpiod_set_value_cansleep(motor->reset_gpio, 1);
 	}
-	ret = motor_check_id(motor);
+	ret = ms41908_check_id(motor);
 	if (ret < 0)
 		return -EINVAL;
 	dev_param_init(motor);
@@ -2774,7 +2974,7 @@ static int dev_init(struct motor_dev *motor)
 	return 0;
 }
 
-static int motor_dev_probe(struct spi_device *spi)
+static int ms41908_dev_probe(struct spi_device *spi)
 {
 	int ret = 0;
 	struct device *dev = &spi->dev;
@@ -2802,11 +3002,11 @@ static int motor_dev_probe(struct spi_device *spi)
 	motor->motor_op[0] = g_motor_op[0];
 	motor->motor_op[1] = g_motor_op[1];
 
-	if (motor_dev_parse_dt(motor)) {
+	if (ms41908_dev_parse_dt(motor)) {
 		dev_err(&motor->spi->dev, "parse dt error\n");
 		return -EINVAL;
 	}
-	ret = dev_init(motor);
+	ret = ms41908_dev_init(motor);
 	if (ret)
 		goto err_free;
 
@@ -2819,7 +3019,7 @@ static int motor_dev_probe(struct spi_device *spi)
 	sd->entity.function = MEDIA_ENT_F_LENS;
 	sd->entity.flags = 0;
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
-	motor_initialize_controls(motor);
+	ms41908_initialize_controls(motor);
 	ret = media_entity_pads_init(&motor->subdev.entity, 0, NULL);
 	if (ret < 0)
 		goto err_free;
@@ -2847,7 +3047,7 @@ err_free:
 	return ret;
 }
 
-static int motor_dev_remove(struct spi_device *spi)
+static void ms41908_dev_remove(struct spi_device *spi)
 {
 	struct v4l2_subdev *sd = spi_get_drvdata(spi);
 	struct motor_dev *motor = to_motor_dev(sd);
@@ -2860,44 +3060,43 @@ static int motor_dev_remove(struct spi_device *spi)
 #ifdef USED_SYS_DEBUG
 	remove_sysfs_interfaces(&spi->dev);
 #endif
-	return 0;
 }
 
-static const struct spi_device_id motor_match_id[] = {
+static const struct spi_device_id ms41908_match_id[] = {
 	{"relmon,ms41908", 0 },
 	{ }
 };
-MODULE_DEVICE_TABLE(spi, motor_match_id);
+MODULE_DEVICE_TABLE(spi, ms41908_match_id);
 
 #if defined(CONFIG_OF)
-static const struct of_device_id motor_dev_of_match[] = {
+static const struct of_device_id ms41908_dev_of_match[] = {
 	{.compatible = "relmon,ms41908", },
 	{},
 };
 #endif
 
-static struct spi_driver motor_dev_driver = {
+static struct spi_driver ms41908_dev_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.of_match_table = of_match_ptr(motor_dev_of_match),
+		.of_match_table = of_match_ptr(ms41908_dev_of_match),
 	},
-	.probe		= &motor_dev_probe,
-	.remove		= &motor_dev_remove,
-	.id_table	= motor_match_id,
+	.probe		= ms41908_dev_probe,
+	.remove		= ms41908_dev_remove,
+	.id_table	= ms41908_match_id,
 };
 
-static int __init motor_mod_init(void)
+static int __init ms41908_mod_init(void)
 {
-	return spi_register_driver(&motor_dev_driver);
+	return spi_register_driver(&ms41908_dev_driver);
 }
 
-static void __exit motor_mod_exit(void)
+static void __exit ms41908_mod_exit(void)
 {
-	spi_unregister_driver(&motor_dev_driver);
+	spi_unregister_driver(&ms41908_dev_driver);
 }
 
-device_initcall_sync(motor_mod_init);
-module_exit(motor_mod_exit);
+device_initcall_sync(ms41908_mod_init);
+module_exit(ms41908_mod_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:motor");

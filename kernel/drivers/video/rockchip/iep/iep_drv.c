@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013 ROCKCHIP, Inc.
+ * Copyright (C) 2013 Rockchip Electronics Co., Ltd.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -31,6 +31,7 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/rockchip/cpu.h>
+#include <linux/iommu.h>
 #include <asm/cacheflush.h>
 #include "iep_drv.h"
 #include "hw_iep_reg.h"
@@ -870,54 +871,16 @@ static struct miscdevice iep_dev = {
 	.fops  = &iep_fops,
 };
 
-static struct device* rockchip_get_sysmmu_device_by_compatible(
-	const char *compt)
-{
-	struct device_node *dn = NULL;
-	struct platform_device *pd = NULL;
-	struct device *ret = NULL;
-
-	dn = of_find_compatible_node(NULL, NULL, compt);
-	if (!dn) {
-		printk("can't find device node %s \r\n", compt);
-		return NULL;
-	}
-
-	pd = of_find_device_by_node(dn);
-	if (!pd) {
-		printk("can't find platform device in device node %s \r\n",
-			compt);
-		return  NULL;
-	}
-	ret = &pd->dev;
-
-	return ret;
-
-}
-#ifdef CONFIG_IOMMU_API
-static inline void platform_set_sysmmu(struct device *iommu,
-	struct device *dev)
-{
-	dev->archdata.iommu = iommu;
-}
-#else
-static inline void platform_set_sysmmu(struct device *iommu,
-	struct device *dev)
-{
-}
-#endif
-
-static int iep_sysmmu_fault_handler(struct device *dev,
-	enum rk_iommu_inttype itype,
-	unsigned long pgtable_base,
-	unsigned long fault_addr, unsigned int status)
+static int iep_sysmmu_fault_handler(struct iommu_domain *domain,
+				    struct device *iommu_dev,
+				    unsigned long iova, int status, void *arg)
 {
 	struct iep_reg *reg = list_entry(iep_service.running.next,
 		struct iep_reg, status_link);
 	if (reg != NULL) {
 		struct iep_mem_region *mem, *n;
 		int i = 0;
-		pr_info("iep, fault addr 0x%08x\n", (u32)fault_addr);
+		pr_info("iep, fault addr 0x%08x\n", (u32)iova);
 		list_for_each_entry_safe(mem, n,
 			&reg->mem_region_list,
 			reg_lnk) {
@@ -934,6 +897,68 @@ static int iep_sysmmu_fault_handler(struct device *dev,
 	return 0;
 }
 
+#ifdef CONFIG_PROC_FS
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+
+static int proc_iep_show(struct seq_file *s, void *v)
+{
+	struct iep_status sts;
+
+	if (!iep_drvdata1)
+		return 0;
+
+	iep_power_on();
+	seq_puts(s, "\nIEP Modules Status:\n");
+	sts = iep_get_status(iep_drvdata1->iep_base);
+	seq_printf(s, "scl_sts %u dil_sts %u wyuv_sts %u ryuv_sts %u\n",
+		   sts.scl_sts, sts.dil_sts, sts.wyuv_sts, sts.ryuv_sts);
+
+	seq_printf(s, "wrgb_sts %u rrgb_sts %u voi_sts %u\n",
+		   sts.wrgb_sts, sts.rrgb_sts, sts.voi_sts);
+
+	{
+		int *reg = (int *)iep_drvdata1->iep_base;
+		int i;
+
+		/* could not read validate data from address after base+0x40 */
+		for (i = 0; i < 0x40; i++) {
+			seq_printf(s, "%08x ", reg[i]);
+
+			if ((i + 1) % 4 == 0)
+				seq_puts(s, "\n");
+		}
+
+		seq_puts(s, "\n");
+	}
+
+	return 0;
+}
+
+static int proc_iep_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_iep_show, NULL);
+}
+
+static const struct proc_ops proc_iep_fops = {
+	.proc_open	= proc_iep_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+
+static int iep_proc_init(void)
+{
+	proc_create("iep", 0, NULL, &proc_iep_fops);
+	return 0;
+}
+
+static void iep_proc_release(void)
+{
+	remove_proc_entry("iep", NULL);
+}
+#endif
+
 static int iep_drv_probe(struct platform_device *pdev)
 {
 	struct iep_drvdata *data;
@@ -944,7 +969,8 @@ static int iep_drv_probe(struct platform_device *pdev)
 	struct platform_device *sub_dev = NULL;
 	struct device_node *sub_np = NULL;
 	u32 iommu_en = 0;
-	struct device *mmu_dev = NULL;
+	struct iommu_domain *domain;
+
 	of_property_read_u32(np, "iommu_enabled", &iommu_en);
 
 	data = devm_kzalloc(&pdev->dev, sizeof(*data),
@@ -1081,27 +1107,20 @@ static int iep_drv_probe(struct platform_device *pdev)
 	if (sub_np) {
 		sub_dev = of_find_device_by_node(sub_np);
 		iep_service.iommu_dev = &sub_dev->dev;
+		domain = iommu_get_domain_for_dev(&pdev->dev);
+		iommu_set_fault_handler(domain, iep_sysmmu_fault_handler, data);
 	}
 
-	if (!iep_service.iommu_dev) {
-		mmu_dev = rockchip_get_sysmmu_device_by_compatible(
-			IEP_IOMMU_COMPATIBLE_NAME);
-
-		if (mmu_dev) {
-			platform_set_sysmmu(mmu_dev, &pdev->dev);
-		}
-
-		rockchip_iovmm_set_fault_handler(&pdev->dev,
-						 iep_sysmmu_fault_handler);
-
-		iep_service.iommu_dev = mmu_dev;
-	}
 	of_property_read_u32(np, "allocator", (u32 *)&iep_service.alloc_type);
 	iep_power_on();
 	iep_service.iommu_info = iep_iommu_info_create(data->dev,
 						       iep_service.iommu_dev,
 						       iep_service.alloc_type);
 	iep_power_off();
+
+#ifdef CONFIG_PROC_FS
+	iep_proc_init();
+#endif
 
 	IEP_INFO("IEP Driver loaded succesfully\n");
 
@@ -1122,6 +1141,8 @@ static int iep_drv_remove(struct platform_device *pdev)
 {
 	struct iep_drvdata *data = platform_get_drvdata(pdev);
 
+	iep_power_off();
+
 	iep_iommu_info_destroy(iep_service.iommu_info);
 	iep_service.iommu_info = NULL;
 
@@ -1132,6 +1153,10 @@ static int iep_drv_remove(struct platform_device *pdev)
 
 #ifdef IEP_CLK_ENABLE
 	pm_runtime_disable(data->dev);
+#endif
+
+#ifdef CONFIG_PROC_FS
+	iep_proc_release();
 #endif
 
 	return 0;
@@ -1155,64 +1180,6 @@ static struct platform_driver iep_driver = {
 	},
 };
 
-#ifdef CONFIG_PROC_FS
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
-
-static int proc_iep_show(struct seq_file *s, void *v)
-{
-	struct iep_status sts;
-	//mutex_lock(&iep_service.mutex);
-	iep_power_on();
-	seq_printf(s, "\nIEP Modules Status:\n");
-	sts = iep_get_status(iep_drvdata1->iep_base);
-	seq_printf(s, "scl_sts: %u, dil_sts %u, wyuv_sts %u, "
-		      "ryuv_sts %u, wrgb_sts %u, rrgb_sts %u, voi_sts %u\n",
-		sts.scl_sts, sts.dil_sts, sts.wyuv_sts, sts.ryuv_sts,
-		sts.wrgb_sts, sts.rrgb_sts, sts.voi_sts); {
-		int *reg = (int *)iep_drvdata1->iep_base;
-		int i;
-
-		/* could not read validate data from address after base+0x40 */
-		for (i = 0; i < 0x40; i++) {
-			seq_printf(s, "%08x ", reg[i]);
-
-			if ((i + 1) % 4 == 0)
-				seq_printf(s, "\n");
-		}
-
-		seq_printf(s, "\n");
-	}
-
-	//mutex_unlock(&iep_service.mutex);
-
-	return 0;
-}
-
-static int proc_iep_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, proc_iep_show, NULL);
-}
-
-static const struct file_operations proc_iep_fops = {
-	.open		= proc_iep_open,
-	.read		= seq_read,
-	.llseek 	= seq_lseek,
-	.release	= single_release,
-};
-
-static int __init iep_proc_init(void)
-{
-	proc_create("iep", 0, NULL, &proc_iep_fops);
-	return 0;
-}
-
-static void __exit iep_proc_release(void)
-{
-	remove_proc_entry("iep", NULL);
-}
-#endif
-
 #ifdef IEP_TEST_CASE
 void iep_test_case0(void);
 #endif
@@ -1226,10 +1193,6 @@ static int __init iep_init(void)
 		return ret;
 	}
 
-#ifdef CONFIG_PROC_FS
-	iep_proc_init();
-#endif
-
 	IEP_INFO("Module initialized.\n");
 
 #ifdef IEP_TEST_CASE
@@ -1242,11 +1205,7 @@ static int __init iep_init(void)
 static void __exit iep_exit(void)
 {
 	IEP_ERR("%s IN\n", __func__);
-#ifdef CONFIG_PROC_FS
-	iep_proc_release();
-#endif
 
-	iep_power_off();
 	platform_driver_unregister(&iep_driver);
 }
 
@@ -1257,6 +1216,7 @@ module_exit(iep_exit);
 MODULE_AUTHOR("ljf@rock-chips.com");
 MODULE_DESCRIPTION("Driver for iep device");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(DMA_BUF);
 
 #ifdef IEP_TEST_CASE
 

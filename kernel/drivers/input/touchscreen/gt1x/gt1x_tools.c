@@ -23,6 +23,7 @@
 #include <generated/utsrelease.h>
 #include "gt1x_generic.h"
 
+#if GTP_CREATE_WR_NODE
 static ssize_t gt1x_tool_read(struct file *filp, char __user *buffer, size_t count, loff_t *ppos);
 static ssize_t gt1x_tool_write(struct file *filp, const char *buffer, size_t count, loff_t *ppos);
 
@@ -60,12 +61,11 @@ s8 IC_TYPE[16] = "GT1X";
 static char procname[20] = { 0 };
 
 static struct proc_dir_entry *gt1x_tool_proc_entry;
-static struct file_operations gt1x_tool_fops = {
-	.read = gt1x_tool_read,
-	.write = gt1x_tool_write,
-  .open = gt1x_tool_open,
-  .release = gt1x_tool_release,
-  .owner = THIS_MODULE,
+static const struct proc_ops gt1x_tool_fops = {
+	.proc_read = gt1x_tool_read,
+	.proc_write = gt1x_tool_write,
+	.proc_open = gt1x_tool_open,
+	.proc_release = gt1x_tool_release,
 };
 
 static void set_tool_node_name(char *procname)
@@ -411,10 +411,10 @@ static ssize_t gt1x_tool_read(struct file *filp, char __user *buffer, size_t cou
 		return -1;
 	} else if (4 == cmd_head.wr) {
 	    /* read fw update progress */
-		buffer[0] = update_info.progress >> 8;
-		buffer[1] = update_info.progress & 0xff;
-		buffer[2] = update_info.max_progress >> 8;
-		buffer[3] = update_info.max_progress & 0xff;
+		buffer[0] = gt1x_update_info.progress >> 8;
+		buffer[1] = gt1x_update_info.progress & 0xff;
+		buffer[2] = gt1x_update_info.max_progress >> 8;
+		buffer[3] = gt1x_update_info.max_progress & 0xff;
 		*ppos += 4;
 		return 4;
 	} else if (6 == cmd_head.wr) {
@@ -432,3 +432,4 @@ static ssize_t gt1x_tool_read(struct file *filp, char __user *buffer, size_t cou
 	*ppos += cmd_head.data_len;
 	return cmd_head.data_len;
 }
+#endif

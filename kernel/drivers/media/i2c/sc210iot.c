@@ -89,14 +89,6 @@ static const char * const sc210iot_supply_names[] = {
 #define to_sc210iot(sd) container_of(sd, struct sc210iot, subdev)
 
 enum {
-	PAD0,
-	PAD1,
-	PAD2,
-	PAD3,
-	PAD_MAX,
-};
-
-enum {
 	LINK_FREQ_INDEX,
 };
 
@@ -148,6 +140,8 @@ struct sc210iot {
 	struct v4l2_ctrl    *link_freq;
 	struct v4l2_ctrl    *pixel_rate;
 	struct mutex        lock;
+	struct v4l2_fract cur_fps;
+	u32		cur_vts;
 	bool		streaming;
 	bool		power_on;
 	bool		is_thunderboot;
@@ -258,7 +252,7 @@ static const struct sc210iot_mode supported_modes[] = {
 		.reg_list = sc210iot_1080p_liner_30fps_settings,
 		.reg_num = ARRAY_SIZE(sc210iot_1080p_liner_30fps_settings),
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 };
 
@@ -371,6 +365,14 @@ static int sc210iot_set_exp(struct sc210iot *sc210iot, u32 exp)
 	return ret;
 }
 
+static void sc210iot_modify_fps_info(struct sc210iot *sc210iot)
+{
+	const struct sc210iot_mode *mode = sc210iot->cur_mode;
+
+	sc210iot->cur_fps.denominator = mode->max_fps.denominator * mode->vts_def /
+					sc210iot->cur_vts;
+}
+
 static int sc210iot_set_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct sc210iot *sc210iot = container_of(ctrl->handler,
@@ -402,8 +404,11 @@ static int sc210iot_set_ctrl(struct v4l2_ctrl *ctrl)
 		dev_dbg(sc210iot->dev, "set vblank 0x%x\n", ctrl->val);
 		ret = sc210iot_write_reg(sc210iot, SC210IOT_REG_VTS_H,
 					(ctrl->val + sc210iot->cur_mode->height) >> 8);
-		ret = sc210iot_write_reg(sc210iot, SC210IOT_REG_VTS_L,
+		ret |= sc210iot_write_reg(sc210iot, SC210IOT_REG_VTS_L,
 					(ctrl->val + sc210iot->cur_mode->height) & 0xff);
+		if (!ret)
+			sc210iot->cur_vts = ctrl->val + sc210iot->cur_mode->height;
+		sc210iot_modify_fps_info(sc210iot);
 		break;
 	case V4L2_CID_HFLIP:
 		regmap_update_bits(sc210iot->regmap, SC210IOT_REG_MIRROR_FLIP,
@@ -487,6 +492,8 @@ static int sc210iot_initialize_controls(struct sc210iot *sc210iot)
 	}
 	sc210iot->subdev.ctrl_handler = handler;
 	sc210iot->has_init_exp = false;
+	sc210iot->cur_fps = mode->max_fps;
+	sc210iot->cur_vts = mode->vts_def;
 	return 0;
 err_free_handler:
 	v4l2_ctrl_handler_free(handler);
@@ -600,9 +607,9 @@ static void sc210iot_get_module_inf(struct sc210iot *sc210iot,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.lens, sc210iot->len_name, sizeof(inf->base.lens));
-	strlcpy(inf->base.sensor, SC210IOT_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, sc210iot->module_name, sizeof(inf->base.module));
+	strscpy(inf->base.lens, sc210iot->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.sensor, SC210IOT_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, sc210iot->module_name, sizeof(inf->base.module));
 }
 
 static long sc210iot_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -687,8 +694,11 @@ static long sc210iot_compat_ioctl32(struct v4l2_subdev *sd,
 			return ret;
 		}
 		ret = sc210iot_ioctl(sd, cmd, inf);
-		if (!ret)
+		if (!ret) {
 			ret = copy_to_user(up, inf, sizeof(*inf));
+			if (ret)
+				ret = -EFAULT;
+		}
 		kfree(inf);
 		break;
 	case RKMODULE_GET_HDR_CFG:
@@ -698,16 +708,19 @@ static long sc210iot_compat_ioctl32(struct v4l2_subdev *sd,
 			return ret;
 		}
 		ret = sc210iot_ioctl(sd, cmd, hdr);
-		if (!ret)
+		if (!ret) {
 			ret = copy_to_user(up, hdr, sizeof(*hdr));
+			if (ret)
+				ret = -EFAULT;
+		}
 		kfree(hdr);
-		break;
-	case RKMODULE_SET_HDR_CFG:
 		break;
 	case RKMODULE_SET_QUICK_STREAM:
 		ret = copy_from_user(&stream, up, sizeof(u32));
 		if (!ret)
 			ret = sc210iot_ioctl(sd, cmd, &stream);
+		else
+			ret = -EFAULT;
 		break;
 	default:
 		ret = -ENOIOCTLCMD;
@@ -758,27 +771,23 @@ static int sc210iot_g_frame_interval(struct v4l2_subdev *sd,
 	struct sc210iot *sc210iot = to_sc210iot(sd);
 	const struct sc210iot_mode *mode = sc210iot->cur_mode;
 
-	mutex_lock(&sc210iot->lock);
-	fi->interval = mode->max_fps;
-	mutex_unlock(&sc210iot->lock);
+	if (sc210iot->streaming)
+		fi->interval = sc210iot->cur_fps;
+	else
+		fi->interval = mode->max_fps;
 	return 0;
 }
 
-static int sc210iot_g_mbus_config(struct v4l2_subdev *sd,
+static int sc210iot_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
-	struct sc210iot *sc210iot = to_sc210iot(sd);
-
-	u32 val = 1 << (SC210IOT_LANES - 1) | V4L2_MBUS_CSI2_CHANNEL_0 |
-		  V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = (sc210iot->cur_mode->hdr_mode == NO_HDR) ?
-			val : (val | V4L2_MBUS_CSI2_CHANNEL_1);
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = SC210IOT_LANES;
 	return 0;
 }
 
 static int sc210iot_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index != 0)
@@ -788,7 +797,7 @@ static int sc210iot_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int sc210iot_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct sc210iot *sc210iot = to_sc210iot(sd);
@@ -805,7 +814,7 @@ static int sc210iot_enum_frame_sizes(struct v4l2_subdev *sd,
 }
 
 static int sc210iot_enum_frame_interval(struct v4l2_subdev *sd,
-						  struct v4l2_subdev_pad_config *cfg,
+						  struct v4l2_subdev_state *sd_state,
 						  struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct sc210iot *sc210iot = to_sc210iot(sd);
@@ -821,7 +830,7 @@ static int sc210iot_enum_frame_interval(struct v4l2_subdev *sd,
 }
 
 static int sc210iot_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct sc210iot *sc210iot = to_sc210iot(sd);
@@ -839,7 +848,7 @@ static int sc210iot_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&sc210iot->lock);
 		return -ENOTTY;
@@ -856,13 +865,15 @@ static int sc210iot_set_fmt(struct v4l2_subdev *sd,
 		__v4l2_ctrl_modify_range(sc210iot->vblank, vblank_def,
 					 SC210IOT_VTS_MAX - mode->height,
 					 1, vblank_def);
+		sc210iot->cur_fps = mode->max_fps;
+		sc210iot->cur_vts = mode->vts_def;
 	}
 	mutex_unlock(&sc210iot->lock);
 	return 0;
 }
 
 static int sc210iot_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct sc210iot *sc210iot = to_sc210iot(sd);
@@ -871,7 +882,7 @@ static int sc210iot_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&sc210iot->lock);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&sc210iot->lock);
 		return -ENOTTY;
@@ -892,7 +903,7 @@ static int sc210iot_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct sc210iot *sc210iot = to_sc210iot(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct sc210iot_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&sc210iot->lock);
@@ -951,7 +962,6 @@ static const struct v4l2_subdev_core_ops sc210iot_core_ops = {
 static const struct v4l2_subdev_video_ops sc210iot_video_ops = {
 	.s_stream = sc210iot_s_stream,
 	.g_frame_interval = sc210iot_g_frame_interval,
-	.g_mbus_config = sc210iot_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops sc210iot_pad_ops = {
@@ -960,6 +970,7 @@ static const struct v4l2_subdev_pad_ops sc210iot_pad_ops = {
 	.enum_frame_interval = sc210iot_enum_frame_interval,
 	.get_fmt = sc210iot_get_fmt,
 	.set_fmt = sc210iot_set_fmt,
+	.get_mbus_config = sc210iot_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops sc210iot_subdev_ops = {
@@ -1097,7 +1108,7 @@ static int sc210iot_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 sc210iot->module_index, facing,
 		 SC210IOT_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "Failed to register v4l2 async subdev\n");
 		goto err_clean_entity;
@@ -1120,7 +1131,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int sc210iot_remove(struct i2c_client *client)
+static void sc210iot_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct sc210iot *sc210iot = to_sc210iot(sd);
@@ -1135,7 +1146,6 @@ static int sc210iot_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__sc210iot_power_off(sc210iot);
 	pm_runtime_set_suspended(&client->dev);
-	return 0;
 }
 
 static const struct i2c_device_id sc210iot_match_id[] = {
@@ -1171,7 +1181,11 @@ static void __exit sensor_mod_exit(void)
 	i2c_del_driver(&sc210iot_i2c_driver);
 }
 
+#if defined(CONFIG_VIDEO_ROCKCHIP_THUNDER_BOOT_ISP)
+subsys_initcall(sensor_mod_init);
+#else
 device_initcall_sync(sensor_mod_init);
+#endif
 module_exit(sensor_mod_exit);
 
 MODULE_DESCRIPTION("Smartsens sc210iot Image Sensor driver");

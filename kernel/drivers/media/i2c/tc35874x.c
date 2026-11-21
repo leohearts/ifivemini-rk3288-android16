@@ -41,7 +41,9 @@
 #include <linux/v4l2-dv-timings.h>
 #include <linux/hdmi.h>
 #include <linux/version.h>
+#include <linux/compat.h>
 #include <linux/rk-camera-module.h>
+#include <linux/rk_hdmirx_config.h>
 #include <media/v4l2-dv-timings.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
@@ -187,7 +189,7 @@ static const struct tc35874x_mode supported_modes[] = {
 
 struct tc35874x_state {
 	struct tc35874x_platform_data pdata;
-	struct v4l2_fwnode_bus_mipi_csi2 bus;
+	struct v4l2_mbus_config_mipi_csi2 bus;
 	struct v4l2_subdev sd;
 	struct media_pad pad;
 	struct v4l2_ctrl_handler hdl;
@@ -898,7 +900,7 @@ static void tc35874x_set_csi(struct v4l2_subdev *sd)
 			((lanes > 3) ? MASK_D3M_HSTXVREGEN : 0x0));
 
 	i2c_wr32(sd, TXOPTIONCNTRL, (state->bus.flags &
-		 V4L2_MBUS_CSI2_CONTINUOUS_CLOCK) ? MASK_CONTCLKMODE : 0);
+		 V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK) ? 0 : MASK_CONTCLKMODE);
 	i2c_wr32(sd, STARTCNTRL, MASK_START);
 	i2c_wr32(sd, CSI_START, MASK_STRT);
 
@@ -1282,23 +1284,6 @@ static void tc35874x_hdmi_sys_int_handler(struct v4l2_subdev *sd, bool *handled)
 	}
 }
 
-/* --------------- CTRL OPS --------------- */
-
-static int tc35874x_get_ctrl(struct v4l2_ctrl *ctrl)
-{
-	int ret = -1;
-	struct tc35874x_state *state = container_of(ctrl->handler,
-			struct tc35874x_state, hdl);
-	struct v4l2_subdev *sd = &(state->sd);
-
-	if (ctrl->id == V4L2_CID_DV_RX_POWER_PRESENT) {
-		ret = tx_5v_power_present(sd);
-		*ctrl->p_new.p_s32 = ret;
-	}
-
-	return ret;
-}
-
 /* --------------- CORE OPS --------------- */
 
 static int tc35874x_log_status(struct v4l2_subdev *sd)
@@ -1472,9 +1457,15 @@ static int tc35874x_s_register(struct v4l2_subdev *sd,
 
 static int tc35874x_isr(struct v4l2_subdev *sd, u32 status, bool *handled)
 {
+	struct tc35874x_state *state = to_state(sd);
+	bool plugin;
 	u16 intstatus = i2c_rd16(sd, INTSTATUS);
 
 	v4l2_dbg(1, debug, sd, "%s: IntStatus = 0x%04x\n", __func__, intstatus);
+
+	plugin = tx_5v_power_present(sd);
+	v4l2_ctrl_s_ctrl(state->detect_tx_5v_ctrl, plugin);
+	v4l2_dbg(1, debug, sd, "%s: 5v_det:%d\n", __func__, plugin);
 
 	if (intstatus & MASK_HDMI_INT) {
 		u8 hdmi_int0 = i2c_rd8(sd, HDMI_INT0);
@@ -1517,7 +1508,7 @@ static int tc35874x_isr(struct v4l2_subdev *sd, u32 status, bool *handled)
 static irqreturn_t tc35874x_irq_handler(int irq, void *dev_id)
 {
 	struct tc35874x_state *state = dev_id;
-	bool handled;
+	bool handled = false;
 
 	tc35874x_isr(&state->sd, 0, &handled);
 
@@ -1660,31 +1651,14 @@ static int tc35874x_dv_timings_cap(struct v4l2_subdev *sd,
 }
 
 static int tc35874x_g_mbus_config(struct v4l2_subdev *sd,
-			     struct v4l2_mbus_config *cfg)
+				 unsigned int pad, struct v4l2_mbus_config *cfg)
 {
 	struct tc35874x_state *state = to_state(sd);
 
-	cfg->type = V4L2_MBUS_CSI2;
+	cfg->type = V4L2_MBUS_CSI2_DPHY;
 
 	/* Support for non-continuous CSI-2 clock is missing in the driver */
-	cfg->flags = V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-
-	switch (state->csi_lanes_in_use) {
-	case 1:
-		cfg->flags |= V4L2_MBUS_CSI2_1_LANE;
-		break;
-	case 2:
-		cfg->flags |= V4L2_MBUS_CSI2_2_LANE;
-		break;
-	case 3:
-		cfg->flags |= V4L2_MBUS_CSI2_3_LANE;
-		break;
-	case 4:
-		cfg->flags |= V4L2_MBUS_CSI2_4_LANE;
-		break;
-	default:
-		return -EINVAL;
-	}
+	cfg->bus.mipi_csi2.num_data_lanes = state->csi_lanes_in_use;
 
 	return 0;
 }
@@ -1702,7 +1676,7 @@ static int tc35874x_s_stream(struct v4l2_subdev *sd, int enable)
 /* --------------- PAD OPS --------------- */
 
 static int tc35874x_enum_mbus_code(struct v4l2_subdev *sd,
-		struct v4l2_subdev_pad_config *cfg,
+		struct v4l2_subdev_state *sd_state,
 		struct v4l2_subdev_mbus_code_enum *code)
 {
 	switch (code->index) {
@@ -1721,7 +1695,7 @@ static int tc35874x_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int tc35874x_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	v4l2_dbg(1, debug, sd, "%s:\n", __func__);
@@ -1741,14 +1715,13 @@ static int tc35874x_enum_frame_sizes(struct v4l2_subdev *sd,
 }
 
 static int tc35874x_enum_frame_interval(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_frame_interval_enum *fie)
 {
 	if (fie->index >= ARRAY_SIZE(supported_modes))
 		return -EINVAL;
 
-	if (fie->code != MEDIA_BUS_FMT_UYVY8_2X8)
-		return -EINVAL;
+	fie->code = MEDIA_BUS_FMT_UYVY8_2X8;
 
 	fie->width = supported_modes[fie->index].width;
 	fie->height = supported_modes[fie->index].height;
@@ -1757,7 +1730,7 @@ static int tc35874x_enum_frame_interval(struct v4l2_subdev *sd,
 }
 
 static int tc35874x_get_fmt(struct v4l2_subdev *sd,
-		struct v4l2_subdev_pad_config *cfg,
+		struct v4l2_subdev_state *sd_state,
 		struct v4l2_subdev_format *format)
 {
 	struct tc35874x_state *state = to_state(sd);
@@ -1819,14 +1792,14 @@ tc35874x_find_best_fit(struct v4l2_subdev_format *fmt)
 }
 
 static int tc35874x_set_fmt(struct v4l2_subdev *sd,
-		struct v4l2_subdev_pad_config *cfg,
+		struct v4l2_subdev_state *sd_state,
 		struct v4l2_subdev_format *format)
 {
 	struct tc35874x_state *state = to_state(sd);
 	const struct tc35874x_mode *mode;
 
 	u32 code = format->format.code; /* is overwritten by get_fmt */
-	int ret = tc35874x_get_fmt(sd, cfg, format);
+	int ret = tc35874x_get_fmt(sd, sd_state, format);
 
 	format->format.code = code;
 
@@ -1956,10 +1929,10 @@ static void tc35874x_get_module_inf(struct tc35874x_state *tc35874x,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, TC35874X_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, tc35874x->module_name,
+	strscpy(inf->base.sensor, TC35874X_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, tc35874x->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, tc35874x->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, tc35874x->len_name, sizeof(inf->base.lens));
 }
 
 static long tc35874x_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -1970,6 +1943,12 @@ static long tc35874x_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	switch (cmd) {
 	case RKMODULE_GET_MODULE_INFO:
 		tc35874x_get_module_inf(tc35874x, (struct rkmodule_inf *)arg);
+		break;
+	case RKMODULE_GET_HDMI_MODE:
+		*(int *)arg = RKMODULE_HDMIIN_MODE;
+		break;
+	case RK_HDMIRX_CMD_GET_SIGNAL_STABLE_STATUS:
+		*(int *)arg = !no_signal(sd);
 		break;
 	default:
 		ret = -ENOIOCTLCMD;
@@ -1987,6 +1966,7 @@ static long tc35874x_compat_ioctl32(struct v4l2_subdev *sd,
 	struct rkmodule_inf *inf;
 	struct rkmodule_awb_cfg *cfg;
 	long ret;
+	int *seq;
 
 	switch (cmd) {
 	case RKMODULE_GET_MODULE_INFO:
@@ -1997,8 +1977,11 @@ static long tc35874x_compat_ioctl32(struct v4l2_subdev *sd,
 		}
 
 		ret = tc35874x_ioctl(sd, cmd, inf);
-		if (!ret)
+		if (!ret) {
 			ret = copy_to_user(up, inf, sizeof(*inf));
+			if (ret)
+				ret = -EFAULT;
+		}
 		kfree(inf);
 		break;
 	case RKMODULE_AWB_CFG:
@@ -2011,7 +1994,38 @@ static long tc35874x_compat_ioctl32(struct v4l2_subdev *sd,
 		ret = copy_from_user(cfg, up, sizeof(*cfg));
 		if (!ret)
 			ret = tc35874x_ioctl(sd, cmd, cfg);
+		else
+			ret = -EFAULT;
 		kfree(cfg);
+		break;
+	case RKMODULE_GET_HDMI_MODE:
+		seq = kzalloc(sizeof(*seq), GFP_KERNEL);
+		if (!seq) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = tc35874x_ioctl(sd, cmd, seq);
+		if (!ret) {
+			ret = copy_to_user(up, seq, sizeof(*seq));
+			if (ret)
+				ret = -EFAULT;
+		}
+		kfree(seq);
+		break;
+	case RK_HDMIRX_CMD_GET_SIGNAL_STABLE_STATUS:
+		seq = kzalloc(sizeof(*seq), GFP_KERNEL);
+		if (!seq) {
+			ret = -ENOMEM;
+			return ret;
+		}
+		ret = tc35874x_ioctl(sd, cmd, seq);
+		if (!ret) {
+			ret = copy_to_user(up, seq, sizeof(*seq));
+			if (ret)
+				ret = -EFAULT;
+		}
+		kfree(seq);
 		break;
 	default:
 		ret = -ENOIOCTLCMD;
@@ -2021,12 +2035,6 @@ static long tc35874x_compat_ioctl32(struct v4l2_subdev *sd,
 	return ret;
 }
 #endif
-
-/* -------------------------------------------------------------------------- */
-
-static const struct v4l2_ctrl_ops tc35874x_ctrl_ops = {
-	.g_volatile_ctrl = tc35874x_get_ctrl,
-};
 
 static const struct v4l2_subdev_core_ops tc35874x_core_ops = {
 	.log_status = tc35874x_log_status,
@@ -2048,7 +2056,6 @@ static const struct v4l2_subdev_video_ops tc35874x_video_ops = {
 	.s_dv_timings = tc35874x_s_dv_timings,
 	.g_dv_timings = tc35874x_g_dv_timings,
 	.query_dv_timings = tc35874x_query_dv_timings,
-	.g_mbus_config = tc35874x_g_mbus_config,
 	.s_stream = tc35874x_s_stream,
 	.g_frame_interval = tc35874x_g_frame_interval,
 };
@@ -2063,6 +2070,7 @@ static const struct v4l2_subdev_pad_ops tc35874x_pad_ops = {
 	.set_edid = tc35874x_s_edid,
 	.enum_dv_timings = tc35874x_enum_dv_timings,
 	.dv_timings_cap = tc35874x_dv_timings_cap,
+	.get_mbus_config = tc35874x_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops tc35874x_ops = {
@@ -2129,7 +2137,7 @@ static void tc35874x_gpio_reset(struct tc35874x_state *state)
 static int tc35874x_probe_of(struct tc35874x_state *state)
 {
 	struct device *dev = &state->i2c_client->dev;
-	struct v4l2_fwnode_endpoint *endpoint;
+	struct v4l2_fwnode_endpoint endpoint = { .bus_type = 0 };
 	struct device_node *ep;
 	struct clk *refclk;
 	u32 bps_pr_lane;
@@ -2149,21 +2157,21 @@ static int tc35874x_probe_of(struct tc35874x_state *state)
 		return -EINVAL;
 	}
 
-	endpoint = v4l2_fwnode_endpoint_alloc_parse(of_fwnode_handle(ep));
-	if (IS_ERR(endpoint)) {
+	ret = v4l2_fwnode_endpoint_alloc_parse(of_fwnode_handle(ep), &endpoint);
+	if (ret) {
 		dev_err(dev, "failed to parse endpoint\n");
-		return PTR_ERR(endpoint);
+		goto put_node;
 	}
 
-	if (endpoint->bus_type != V4L2_MBUS_CSI2 ||
-	    endpoint->bus.mipi_csi2.num_data_lanes == 0 ||
-	    endpoint->nr_of_link_frequencies == 0) {
+	if (endpoint.bus_type != V4L2_MBUS_CSI2_DPHY ||
+	    endpoint.bus.mipi_csi2.num_data_lanes == 0 ||
+	    endpoint.nr_of_link_frequencies == 0) {
 		dev_err(dev, "missing CSI-2 properties in endpoint\n");
 		goto free_endpoint;
 	}
 
-	state->csi_lanes_in_use = endpoint->bus.mipi_csi2.num_data_lanes;
-	state->bus = endpoint->bus.mipi_csi2;
+	state->csi_lanes_in_use = endpoint.bus.mipi_csi2.num_data_lanes;
+	state->bus = endpoint.bus.mipi_csi2;
 
 	ret = clk_prepare_enable(refclk);
 	if (ret) {
@@ -2196,7 +2204,7 @@ static int tc35874x_probe_of(struct tc35874x_state *state)
 	 * The CSI bps per lane must be between 62.5 Mbps and 1 Gbps.
 	 * The default is 594 Mbps for 4-lane 1080p60 or 2-lane 720p60.
 	 */
-	bps_pr_lane = 2 * endpoint->link_frequencies[0];
+	bps_pr_lane = 2 * endpoint.link_frequencies[0];
 	if (bps_pr_lane < 62500000U || bps_pr_lane > 1000000000U) {
 		dev_err(dev, "unsupported bps per lane: %u bps\n", bps_pr_lane);
 		goto disable_clk;
@@ -2242,7 +2250,9 @@ static int tc35874x_probe_of(struct tc35874x_state *state)
 disable_clk:
 	clk_disable_unprepare(refclk);
 free_endpoint:
-	v4l2_fwnode_endpoint_free(endpoint);
+	v4l2_fwnode_endpoint_free(&endpoint);
+put_node:
+	of_node_put(ep);
 	return ret;
 }
 #else
@@ -2300,7 +2310,7 @@ static int tc35874x_probe(struct i2c_client *client,
 	/* platform data */
 	if (pdata) {
 		state->pdata = *pdata;
-		state->bus.flags = V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
+		state->bus.flags = 0;
 	} else {
 		err = tc35874x_probe_of(state);
 		if (err == -ENODEV)
@@ -2336,11 +2346,8 @@ static int tc35874x_probe(struct i2c_client *client,
 		TC35874X_PIXEL_RATE_310M);
 
 	state->detect_tx_5v_ctrl = v4l2_ctrl_new_std(&state->hdl,
-			&tc35874x_ctrl_ops, V4L2_CID_DV_RX_POWER_PRESENT,
+			NULL, V4L2_CID_DV_RX_POWER_PRESENT,
 			0, 1, 0, 0);
-
-	if (state->detect_tx_5v_ctrl)
-		state->detect_tx_5v_ctrl->flags |= V4L2_CTRL_FLAG_VOLATILE;
 
 	/* custom controls */
 	state->audio_sampling_rate_ctrl = v4l2_ctrl_new_custom(&state->hdl,
@@ -2445,7 +2452,7 @@ err_hdl:
 	return err;
 }
 
-static int tc35874x_remove(struct i2c_client *client)
+static void tc35874x_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct tc35874x_state *state = to_state(sd);
@@ -2460,8 +2467,6 @@ static int tc35874x_remove(struct i2c_client *client)
 	mutex_destroy(&state->confctl_mutex);
 	media_entity_cleanup(&sd->entity);
 	v4l2_ctrl_handler_free(&state->hdl);
-
-	return 0;
 }
 
 static struct i2c_device_id tc35874x_id[] = {

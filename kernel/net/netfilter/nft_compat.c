@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * (C) 2012-2013 by Pablo Neira Ayuso <pablo@netfilter.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * This software has been sponsored by Sophos Astaro <http://www.sophos.com>
  */
@@ -22,6 +19,7 @@
 #include <linux/netfilter_bridge/ebtables.h>
 #include <linux/netfilter_arp/arp_tables.h>
 #include <net/netfilter/nf_tables.h>
+#include <net/netfilter/nf_log.h>
 
 /* Used for matches where *info is larger than X byte */
 #define NFT_MATCH_LARGE_THRESH	192
@@ -60,8 +58,13 @@ union nft_entry {
 };
 
 static inline void
-nft_compat_set_par(struct xt_action_param *par, void *xt, const void *xt_info)
+nft_compat_set_par(struct xt_action_param *par,
+		   const struct nft_pktinfo *pkt,
+		   const void *xt, const void *xt_info)
 {
+	par->state	= pkt->state;
+	par->thoff	= nft_thoff(pkt);
+	par->fragoff	= pkt->fragoff;
 	par->target	= xt;
 	par->targinfo	= xt_info;
 	par->hotdrop	= false;
@@ -74,13 +77,14 @@ static void nft_target_eval_xt(const struct nft_expr *expr,
 	void *info = nft_expr_priv(expr);
 	struct xt_target *target = expr->ops->data;
 	struct sk_buff *skb = pkt->skb;
+	struct xt_action_param xt;
 	int ret;
 
-	nft_compat_set_par((struct xt_action_param *)&pkt->xt, target, info);
+	nft_compat_set_par(&xt, pkt, target, info);
 
-	ret = target->target(skb, &pkt->xt);
+	ret = target->target(skb, &xt);
 
-	if (pkt->xt.hotdrop)
+	if (xt.hotdrop)
 		ret = NF_DROP;
 
 	switch (ret) {
@@ -100,13 +104,14 @@ static void nft_target_eval_bridge(const struct nft_expr *expr,
 	void *info = nft_expr_priv(expr);
 	struct xt_target *target = expr->ops->data;
 	struct sk_buff *skb = pkt->skb;
+	struct xt_action_param xt;
 	int ret;
 
-	nft_compat_set_par((struct xt_action_param *)&pkt->xt, target, info);
+	nft_compat_set_par(&xt, pkt, target, info);
 
-	ret = target->target(skb, &pkt->xt);
+	ret = target->target(skb, &xt);
 
-	if (pkt->xt.hotdrop)
+	if (xt.hotdrop)
 		ret = NF_DROP;
 
 	switch (ret) {
@@ -129,8 +134,9 @@ static void nft_target_eval_bridge(const struct nft_expr *expr,
 }
 
 static const struct nla_policy nft_target_policy[NFTA_TARGET_MAX + 1] = {
-	[NFTA_TARGET_NAME]	= { .type = NLA_NUL_STRING },
-	[NFTA_TARGET_REV]	= { .type = NLA_U32 },
+	[NFTA_TARGET_NAME]	= { .type = NLA_NUL_STRING,
+				    .len = XT_EXTENSION_MAXNAMELEN, },
+	[NFTA_TARGET_REV]	= NLA_POLICY_MAX(NLA_BE32, 255),
 	[NFTA_TARGET_INFO]	= { .type = NLA_BINARY },
 };
 
@@ -195,11 +201,12 @@ static const struct nla_policy nft_rule_compat_policy[NFTA_RULE_COMPAT_MAX + 1] 
 static int nft_parse_compat(const struct nlattr *attr, u16 *proto, bool *inv)
 {
 	struct nlattr *tb[NFTA_RULE_COMPAT_MAX+1];
+	u32 l4proto;
 	u32 flags;
 	int err;
 
-	err = nla_parse_nested(tb, NFTA_RULE_COMPAT_MAX, attr,
-			       nft_rule_compat_policy, NULL);
+	err = nla_parse_nested_deprecated(tb, NFTA_RULE_COMPAT_MAX, attr,
+					  nft_rule_compat_policy, NULL);
 	if (err < 0)
 		return err;
 
@@ -207,13 +214,30 @@ static int nft_parse_compat(const struct nlattr *attr, u16 *proto, bool *inv)
 		return -EINVAL;
 
 	flags = ntohl(nla_get_be32(tb[NFTA_RULE_COMPAT_FLAGS]));
-	if (flags & ~NFT_RULE_COMPAT_F_MASK)
+	if (flags & NFT_RULE_COMPAT_F_UNUSED ||
+	    flags & ~NFT_RULE_COMPAT_F_MASK)
 		return -EINVAL;
 	if (flags & NFT_RULE_COMPAT_F_INV)
 		*inv = true;
 
-	*proto = ntohl(nla_get_be32(tb[NFTA_RULE_COMPAT_PROTO]));
+	l4proto = ntohl(nla_get_be32(tb[NFTA_RULE_COMPAT_PROTO]));
+	if (l4proto > U16_MAX)
+		return -EINVAL;
+
+	*proto = l4proto;
+
 	return 0;
+}
+
+static void nft_compat_wait_for_destructors(void)
+{
+	/* xtables matches or targets can have side effects, e.g.
+	 * creation/destruction of /proc files.
+	 * The xt ->destroy functions are run asynchronously from
+	 * work queue.  If we have pending invocations we thus
+	 * need to wait for those to finish.
+	 */
+	nf_tables_trans_destroy_flush_work();
 }
 
 static int
@@ -239,15 +263,37 @@ nft_target_init(const struct nft_ctx *ctx, const struct nft_expr *expr,
 
 	nft_target_set_tgchk_param(&par, ctx, target, info, &e, proto, inv);
 
+	nft_compat_wait_for_destructors();
+
 	ret = xt_check_target(&par, size, proto, inv);
-	if (ret < 0)
+	if (ret < 0) {
+		if (ret == -ENOENT) {
+			const char *modname = NULL;
+
+			if (strcmp(target->name, "LOG") == 0)
+				modname = "nf_log_syslog";
+			else if (strcmp(target->name, "NFLOG") == 0)
+				modname = "nfnetlink_log";
+
+			if (modname &&
+			    nft_request_module(ctx->net, "%s", modname) == -EAGAIN)
+				return -EAGAIN;
+		}
+
 		return ret;
+	}
 
 	/* The standard target cannot be used */
 	if (!target->target)
 		return -EINVAL;
 
 	return 0;
+}
+
+static void __nft_mt_tg_destroy(struct module *me, const struct nft_expr *expr)
+{
+	module_put(me);
+	kfree(expr->ops);
 }
 
 static void
@@ -265,8 +311,7 @@ nft_target_destroy(const struct nft_ctx *ctx, const struct nft_expr *expr)
 	if (par.target->destroy != NULL)
 		par.target->destroy(&par);
 
-	module_put(me);
-	kfree(expr->ops);
+	__nft_mt_tg_destroy(me, expr);
 }
 
 static int nft_extension_dump_info(struct sk_buff *skb, int attr,
@@ -312,6 +357,22 @@ static int nft_target_validate(const struct nft_ctx *ctx,
 	unsigned int hook_mask = 0;
 	int ret;
 
+	if (ctx->family != NFPROTO_IPV4 &&
+	    ctx->family != NFPROTO_IPV6 &&
+	    ctx->family != NFPROTO_INET &&
+	    ctx->family != NFPROTO_BRIDGE &&
+	    ctx->family != NFPROTO_ARP)
+		return -EOPNOTSUPP;
+
+	ret = nft_chain_validate_hooks(ctx->chain,
+				       (1 << NF_INET_PRE_ROUTING) |
+				       (1 << NF_INET_LOCAL_IN) |
+				       (1 << NF_INET_FORWARD) |
+				       (1 << NF_INET_LOCAL_OUT) |
+				       (1 << NF_INET_POST_ROUTING));
+	if (ret)
+		return ret;
+
 	if (nft_is_base_chain(ctx->chain)) {
 		const struct nft_base_chain *basechain =
 						nft_base_chain(ctx->chain);
@@ -335,13 +396,14 @@ static void __nft_match_eval(const struct nft_expr *expr,
 {
 	struct xt_match *match = expr->ops->data;
 	struct sk_buff *skb = pkt->skb;
+	struct xt_action_param xt;
 	bool ret;
 
-	nft_compat_set_par((struct xt_action_param *)&pkt->xt, match, info);
+	nft_compat_set_par(&xt, pkt, match, info);
 
-	ret = match->match(skb, (struct xt_action_param *)&pkt->xt);
+	ret = match->match(skb, &xt);
 
-	if (pkt->xt.hotdrop) {
+	if (xt.hotdrop) {
 		regs->verdict.code = NF_DROP;
 		return;
 	}
@@ -373,8 +435,9 @@ static void nft_match_eval(const struct nft_expr *expr,
 }
 
 static const struct nla_policy nft_match_policy[NFTA_MATCH_MAX + 1] = {
-	[NFTA_MATCH_NAME]	= { .type = NLA_NUL_STRING },
-	[NFTA_MATCH_REV]	= { .type = NLA_U32 },
+	[NFTA_MATCH_NAME]	= { .type = NLA_NUL_STRING,
+				    .len = XT_EXTENSION_MAXNAMELEN },
+	[NFTA_MATCH_REV]	= NLA_POLICY_MAX(NLA_BE32, 255),
 	[NFTA_MATCH_INFO]	= { .type = NLA_BINARY },
 };
 
@@ -454,6 +517,8 @@ __nft_match_init(const struct nft_ctx *ctx, const struct nft_expr *expr,
 
 	nft_match_set_mtchk_param(&par, ctx, match, info, &e, proto, inv);
 
+	nft_compat_wait_for_destructors();
+
 	return xt_check_match(&par, size, proto, inv);
 }
 
@@ -472,7 +537,7 @@ nft_match_large_init(const struct nft_ctx *ctx, const struct nft_expr *expr,
 	struct xt_match *m = expr->ops->data;
 	int ret;
 
-	priv->info = kmalloc(XT_ALIGN(m->matchsize), GFP_KERNEL);
+	priv->info = kmalloc(XT_ALIGN(m->matchsize), GFP_KERNEL_ACCOUNT);
 	if (!priv->info)
 		return -ENOMEM;
 
@@ -497,8 +562,7 @@ __nft_match_destroy(const struct nft_ctx *ctx, const struct nft_expr *expr,
 	if (par.match->destroy != NULL)
 		par.match->destroy(&par);
 
-	module_put(me);
-	kfree(expr->ops);
+	__nft_mt_tg_destroy(me, expr);
 }
 
 static void
@@ -553,6 +617,22 @@ static int nft_match_validate(const struct nft_ctx *ctx,
 	unsigned int hook_mask = 0;
 	int ret;
 
+	if (ctx->family != NFPROTO_IPV4 &&
+	    ctx->family != NFPROTO_IPV6 &&
+	    ctx->family != NFPROTO_INET &&
+	    ctx->family != NFPROTO_BRIDGE &&
+	    ctx->family != NFPROTO_ARP)
+		return -EOPNOTSUPP;
+
+	ret = nft_chain_validate_hooks(ctx->chain,
+				       (1 << NF_INET_PRE_ROUTING) |
+				       (1 << NF_INET_LOCAL_IN) |
+				       (1 << NF_INET_FORWARD) |
+				       (1 << NF_INET_LOCAL_OUT) |
+				       (1 << NF_INET_POST_ROUTING));
+	if (ret)
+		return ret;
+
 	if (nft_is_base_chain(ctx->chain)) {
 		const struct nft_base_chain *basechain =
 						nft_base_chain(ctx->chain);
@@ -575,18 +655,13 @@ nfnl_compat_fill_info(struct sk_buff *skb, u32 portid, u32 seq, u32 type,
 		      int rev, int target)
 {
 	struct nlmsghdr *nlh;
-	struct nfgenmsg *nfmsg;
 	unsigned int flags = portid ? NLM_F_MULTI : 0;
 
 	event = nfnl_msg_type(NFNL_SUBSYS_NFT_COMPAT, event);
-	nlh = nlmsg_put(skb, portid, seq, event, sizeof(*nfmsg), flags);
-	if (nlh == NULL)
+	nlh = nfnl_msg_put(skb, portid, seq, event, flags, family,
+			   NFNETLINK_V0, 0);
+	if (!nlh)
 		goto nlmsg_failure;
-
-	nfmsg = nlmsg_data(nlh);
-	nfmsg->nfgen_family = family;
-	nfmsg->version = NFNETLINK_V0;
-	nfmsg->res_id = 0;
 
 	if (nla_put_string(skb, NFTA_COMPAT_NAME, name) ||
 	    nla_put_be32(skb, NFTA_COMPAT_REV, htonl(rev)) ||
@@ -602,17 +677,15 @@ nla_put_failure:
 	return -1;
 }
 
-static int nfnl_compat_get_rcu(struct net *net, struct sock *nfnl,
-			       struct sk_buff *skb, const struct nlmsghdr *nlh,
-			       const struct nlattr * const tb[],
-			       struct netlink_ext_ack *extack)
+static int nfnl_compat_get_rcu(struct sk_buff *skb,
+			       const struct nfnl_info *info,
+			       const struct nlattr * const tb[])
 {
-	int ret = 0, target;
-	struct nfgenmsg *nfmsg;
-	const char *fmt;
-	const char *name;
-	u32 rev;
+	u8 family = info->nfmsg->nfgen_family;
+	const char *name, *fmt;
 	struct sk_buff *skb2;
+	int ret = 0, target;
+	u32 rev;
 
 	if (tb[NFTA_COMPAT_NAME] == NULL ||
 	    tb[NFTA_COMPAT_REV] == NULL ||
@@ -621,11 +694,14 @@ static int nfnl_compat_get_rcu(struct net *net, struct sock *nfnl,
 
 	name = nla_data(tb[NFTA_COMPAT_NAME]);
 	rev = ntohl(nla_get_be32(tb[NFTA_COMPAT_REV]));
-	target = ntohl(nla_get_be32(tb[NFTA_COMPAT_TYPE]));
+	/* x_tables api checks for 'target == 1' to mean target,
+	 * everything else means 'match'.
+	 * In x_tables world, the number is set by kernel, not
+	 * userspace.
+	 */
+	target = nla_get_be32(tb[NFTA_COMPAT_TYPE]) == htonl(1);
 
-	nfmsg = nlmsg_data(nlh);
-
-	switch(nfmsg->nfgen_family) {
+	switch(family) {
 	case AF_INET:
 		fmt = "ipt_%s";
 		break;
@@ -639,8 +715,7 @@ static int nfnl_compat_get_rcu(struct net *net, struct sock *nfnl,
 		fmt = "arpt_%s";
 		break;
 	default:
-		pr_err("nft_compat: unsupported protocol %d\n",
-			nfmsg->nfgen_family);
+		pr_err("nft_compat: unsupported protocol %d\n", family);
 		return -EINVAL;
 	}
 
@@ -648,9 +723,8 @@ static int nfnl_compat_get_rcu(struct net *net, struct sock *nfnl,
 		return -EINVAL;
 
 	rcu_read_unlock();
-	try_then_request_module(xt_find_revision(nfmsg->nfgen_family, name,
-						 rev, target, &ret),
-						 fmt, name);
+	try_then_request_module(xt_find_revision(family, name, rev, target, &ret),
+				fmt, name);
 	if (ret < 0)
 		goto out_put;
 
@@ -662,36 +736,36 @@ static int nfnl_compat_get_rcu(struct net *net, struct sock *nfnl,
 
 	/* include the best revision for this extension in the message */
 	if (nfnl_compat_fill_info(skb2, NETLINK_CB(skb).portid,
-				  nlh->nlmsg_seq,
-				  NFNL_MSG_TYPE(nlh->nlmsg_type),
+				  info->nlh->nlmsg_seq,
+				  NFNL_MSG_TYPE(info->nlh->nlmsg_type),
 				  NFNL_MSG_COMPAT_GET,
-				  nfmsg->nfgen_family,
-				  name, ret, target) <= 0) {
+				  family, name, ret, target) <= 0) {
 		kfree_skb(skb2);
 		goto out_put;
 	}
 
-	ret = netlink_unicast(nfnl, skb2, NETLINK_CB(skb).portid,
-				MSG_DONTWAIT);
-	if (ret > 0)
-		ret = 0;
+	ret = nfnetlink_unicast(skb2, info->net, NETLINK_CB(skb).portid);
 out_put:
 	rcu_read_lock();
 	module_put(THIS_MODULE);
-	return ret == -EAGAIN ? -ENOBUFS : ret;
+
+	return ret;
 }
 
 static const struct nla_policy nfnl_compat_policy_get[NFTA_COMPAT_MAX+1] = {
 	[NFTA_COMPAT_NAME]	= { .type = NLA_NUL_STRING,
 				    .len = NFT_COMPAT_NAME_MAX-1 },
-	[NFTA_COMPAT_REV]	= { .type = NLA_U32 },
+	[NFTA_COMPAT_REV]	= NLA_POLICY_MAX(NLA_BE32, 255),
 	[NFTA_COMPAT_TYPE]	= { .type = NLA_U32 },
 };
 
 static const struct nfnl_callback nfnl_nft_compat_cb[NFNL_MSG_COMPAT_MAX] = {
-	[NFNL_MSG_COMPAT_GET]		= { .call_rcu = nfnl_compat_get_rcu,
-					    .attr_count = NFTA_COMPAT_MAX,
-					    .policy = nfnl_compat_policy_get },
+	[NFNL_MSG_COMPAT_GET]	= {
+		.call		= nfnl_compat_get_rcu,
+		.type		= NFNL_CB_RCU,
+		.attr_count	= NFTA_COMPAT_MAX,
+		.policy		= nfnl_compat_policy_get
+	},
 };
 
 static const struct nfnetlink_subsystem nfnl_compat_subsys = {
@@ -702,6 +776,14 @@ static const struct nfnetlink_subsystem nfnl_compat_subsys = {
 };
 
 static struct nft_expr_type nft_match_type;
+
+static bool nft_match_reduce(struct nft_regs_track *track,
+			     const struct nft_expr *expr)
+{
+	const struct xt_match *match = expr->ops->data;
+
+	return strcmp(match->name, "comment") == 0;
+}
 
 static const struct nft_expr_ops *
 nft_match_select_ops(const struct nft_ctx *ctx,
@@ -732,7 +814,7 @@ nft_match_select_ops(const struct nft_ctx *ctx,
 		goto err;
 	}
 
-	ops = kzalloc(sizeof(struct nft_expr_ops), GFP_KERNEL);
+	ops = kzalloc(sizeof(struct nft_expr_ops), GFP_KERNEL_ACCOUNT);
 	if (!ops) {
 		err = -ENOMEM;
 		goto err;
@@ -745,6 +827,7 @@ nft_match_select_ops(const struct nft_ctx *ctx,
 	ops->dump = nft_match_dump;
 	ops->validate = nft_match_validate;
 	ops->data = match;
+	ops->reduce = nft_match_reduce;
 
 	matchsize = NFT_EXPR_SIZE(XT_ALIGN(match->matchsize));
 	if (matchsize > NFT_MATCH_LARGE_THRESH) {
@@ -821,7 +904,7 @@ nft_target_select_ops(const struct nft_ctx *ctx,
 		goto err;
 	}
 
-	ops = kzalloc(sizeof(struct nft_expr_ops), GFP_KERNEL);
+	ops = kzalloc(sizeof(struct nft_expr_ops), GFP_KERNEL_ACCOUNT);
 	if (!ops) {
 		err = -ENOMEM;
 		goto err;
@@ -834,6 +917,7 @@ nft_target_select_ops(const struct nft_ctx *ctx,
 	ops->dump = nft_target_dump;
 	ops->validate = nft_target_validate;
 	ops->data = target;
+	ops->reduce = NFT_REDUCE_READONLY;
 
 	if (family == NFPROTO_BRIDGE)
 		ops->eval = nft_target_eval_bridge;
@@ -905,3 +989,4 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Pablo Neira Ayuso <pablo@netfilter.org>");
 MODULE_ALIAS_NFT_EXPR("match");
 MODULE_ALIAS_NFT_EXPR("target");
+MODULE_DESCRIPTION("x_tables over nftables support");

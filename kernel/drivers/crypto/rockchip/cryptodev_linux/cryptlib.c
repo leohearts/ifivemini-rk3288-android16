@@ -34,16 +34,16 @@
 #include <crypto/aead.h>
 #include <linux/rtnetlink.h>
 #include <crypto/authenc.h>
-#include "cryptodev.h"
+#include "cryptodev_int.h"
 #include "cipherapi.h"
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0))
 extern const struct crypto_type crypto_givcipher_type;
 #endif
 
-static void cryptodev_complete(struct crypto_async_request *req, int err)
+static void cryptodev_complete(void *data, int err)
 {
-	struct cryptodev_result *res = req->data;
+	struct cryptodev_result *res = data;
 
 	if (err == -EINPROGRESS)
 		return;
@@ -51,6 +51,14 @@ static void cryptodev_complete(struct crypto_async_request *req, int err)
 	res->err = err;
 	complete(&res->completion);
 }
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0))
+static void cryptodev_complete_shim(struct crypto_async_request *req, int err)
+{
+	cryptodev_complete(req->data, err);
+}
+#define cryptodev_complete cryptodev_complete_shim
+#endif
 
 int cryptodev_get_cipher_keylen(unsigned int *keylen, struct session_op *sop,
 		int aead)
@@ -150,7 +158,8 @@ int cryptodev_cipher_init(struct cipher_data *out, const char *alg_name,
 		struct ablkcipher_alg *alg;
 #endif
 
-		out->async.s = cryptodev_crypto_alloc_blkcipher(alg_name, 0, 0);
+		out->async.s = cryptodev_crypto_alloc_blkcipher(alg_name, CRYPTO_ALG_INTERNAL,
+								CRYPTO_ALG_INTERNAL);
 		if (unlikely(IS_ERR(out->async.s))) {
 			ddebug(1, "Failed to load cipher %s", alg_name);
 			return PTR_ERR(out->async.s);
@@ -194,7 +203,8 @@ int cryptodev_cipher_init(struct cipher_data *out, const char *alg_name,
 
 		ret = cryptodev_crypto_blkcipher_setkey(out->async.s, keyp, keylen);
 	} else {
-		out->async.as = crypto_alloc_aead(alg_name, 0, 0);
+		out->async.as = crypto_alloc_aead(alg_name, CRYPTO_ALG_INTERNAL,
+						  CRYPTO_ALG_INTERNAL);
 		if (unlikely(IS_ERR(out->async.as))) {
 			ddebug(1, "Failed to load cipher %s", alg_name);
 			return PTR_ERR(out->async.as);
@@ -354,7 +364,7 @@ int cryptodev_hash_init(struct hash_data *hdata, const char *alg_name,
 {
 	int ret;
 
-	hdata->async.s = crypto_alloc_ahash(alg_name, 0, 0);
+	hdata->async.s = crypto_alloc_ahash(alg_name, CRYPTO_ALG_INTERNAL, CRYPTO_ALG_INTERNAL);
 	if (unlikely(IS_ERR(hdata->async.s))) {
 		ddebug(1, "Failed to load transform for %s", alg_name);
 		return PTR_ERR(hdata->async.s);
@@ -372,7 +382,11 @@ int cryptodev_hash_init(struct hash_data *hdata, const char *alg_name,
 	}
 
 	hdata->digestsize = crypto_ahash_digestsize(hdata->async.s);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0))
 	hdata->alignmask = crypto_ahash_alignmask(hdata->async.s);
+#else
+	hdata->alignmask = 0;
+#endif
 
 	init_completion(&hdata->async.result.completion);
 

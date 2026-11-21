@@ -7,13 +7,13 @@
  */
 #ifndef _RK_TP_SUSPEND_H
 #define _RK_TP_SUSPEND_H
-#include <linux/module.h>
-#include <linux/init.h>
 #include <linux/device.h>
+#include <linux/ebc.h>
 #include <linux/err.h>
 #include <linux/fb.h>
+#include <linux/init.h>
+#include <linux/module.h>
 #include <linux/notifier.h>
-#include "../../gpu/drm/rockchip/ebc-dev/ebc_dev.h"
 
 struct  tp_device{
 	struct notifier_block fb_notif;
@@ -34,28 +34,26 @@ static inline int fb_notifier_callback(struct notifier_block *self,
 
 	tp = container_of(self, struct tp_device, fb_notif);
 
-	//printk("%s.....lin=%d tp->status=%x,blank_mode=%x\n",__func__,__LINE__,tp->status,blank_mode);
+	if (action != FB_EVENT_BLANK)
+		return NOTIFY_DONE;
 
 	mutex_lock(&tp->ops_lock);
 
-	switch (action) {
-	case FB_EARLY_EVENT_BLANK:
-		blank_mode = *((int *)event->data);
-		if (blank_mode != FB_BLANK_UNBLANK && tp->status == FB_BLANK_UNBLANK) {
-			tp->status = blank_mode;
-			ret = tp->tp_suspend(tp);
-		}
-		break;
+	blank_mode = *((int *)event->data);
+	//printk("%s.....lin=%d tp->status=%x,blank_mode=%x\n",__func__,__LINE__,tp->status,blank_mode);
 
-	case FB_EVENT_BLANK:
-		blank_mode = *((int *)event->data);
-		if (blank_mode == FB_BLANK_UNBLANK && tp->status != FB_BLANK_UNBLANK) {
+	switch (blank_mode) {
+	case FB_BLANK_UNBLANK:
+		if (tp->status != FB_BLANK_UNBLANK) {
 			tp->status = blank_mode;
 			tp->tp_resume(tp);
 		}
 		break;
-
 	default:
+		if (tp->status == FB_BLANK_UNBLANK) {
+			tp->status = blank_mode;
+			ret = tp->tp_suspend(tp);
+		}
 		break;
 	}
 

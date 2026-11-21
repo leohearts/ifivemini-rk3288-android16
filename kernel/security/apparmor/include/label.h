@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * AppArmor security module
  *
  * This file contains AppArmor label definitions
  *
  * Copyright 2017 Canonical Ltd.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
  */
 
 #ifndef __AA_LABEL_H
@@ -81,10 +77,6 @@ struct aa_labelset {
 #define __labelset_for_each(LS, N) \
 	for ((N) = rb_first(&(LS)->root); (N); (N) = rb_next(N))
 
-void aa_labelset_destroy(struct aa_labelset *ls);
-void aa_labelset_init(struct aa_labelset *ls);
-
-
 enum label_flags {
 	FLAG_HAT = 1,			/* profile is a hat */
 	FLAG_UNCONFINED = 2,		/* label unconfined only if all */
@@ -100,6 +92,8 @@ enum label_flags {
 	FLAG_STALE = 0x800,		/* replaced/removed */
 	FLAG_RENAMED = 0x1000,		/* label has renaming in it */
 	FLAG_REVOKED = 0x2000,		/* label has revocation in it */
+	FLAG_DEBUG1 = 0x4000,
+	FLAG_DEBUG2 = 0x8000,
 
 	/* These flags must correspond with PATH_flags */
 	/* TODO: add new path flags */
@@ -107,7 +101,7 @@ enum label_flags {
 
 struct aa_label;
 struct aa_proxy {
-	struct kref count;
+	struct aa_common_ref count;
 	struct aa_label __rcu *label;
 };
 
@@ -127,7 +121,7 @@ struct label_it {
  * @ent: set of profiles for label, actual size determined by @size
  */
 struct aa_label {
-	struct kref count;
+	struct aa_common_ref count;
 	struct rb_node node;
 	struct rcu_head rcu;
 	struct aa_proxy *proxy;
@@ -152,6 +146,7 @@ do {							\
 #define __label_make_stale(X) ((X)->flags |= FLAG_STALE)
 #define labels_ns(X) (vec_ns(&((X)->vec[0]), (X)->size))
 #define labels_set(X) (&labels_ns(X)->labels)
+#define labels_view(X) labels_ns(X)
 #define labels_profile(X) ((X)->vec[(X)->size - 1])
 
 
@@ -279,6 +274,7 @@ void aa_labelset_destroy(struct aa_labelset *ls);
 void aa_labelset_init(struct aa_labelset *ls);
 void __aa_labelset_update_subtree(struct aa_ns *ns);
 
+void aa_label_destroy(struct aa_label *label);
 void aa_label_free(struct aa_label *label);
 void aa_label_kref(struct kref *kref);
 bool aa_label_init(struct aa_label *label, int size, gfp_t gfp);
@@ -376,7 +372,7 @@ int aa_label_match(struct aa_profile *profile, struct aa_label *label,
  */
 static inline struct aa_label *__aa_get_label(struct aa_label *l)
 {
-	if (l && kref_get_unless_zero(&l->count))
+	if (l && kref_get_unless_zero(&l->count.count))
 		return l;
 
 	return NULL;
@@ -385,7 +381,7 @@ static inline struct aa_label *__aa_get_label(struct aa_label *l)
 static inline struct aa_label *aa_get_label(struct aa_label *l)
 {
 	if (l)
-		kref_get(&(l->count));
+		kref_get(&(l->count.count));
 
 	return l;
 }
@@ -405,7 +401,7 @@ static inline struct aa_label *aa_get_label_rcu(struct aa_label __rcu **l)
 	rcu_read_lock();
 	do {
 		c = rcu_dereference(*l);
-	} while (c && !kref_get_unless_zero(&c->count));
+	} while (c && !kref_get_unless_zero(&c->count.count));
 	rcu_read_unlock();
 
 	return c;
@@ -445,7 +441,7 @@ static inline struct aa_label *aa_get_newest_label(struct aa_label *l)
 static inline void aa_put_label(struct aa_label *l)
 {
 	if (l)
-		kref_put(&l->count, aa_label_kref);
+		kref_put(&l->count.count, aa_label_kref);
 }
 
 
@@ -455,7 +451,7 @@ void aa_proxy_kref(struct kref *kref);
 static inline struct aa_proxy *aa_get_proxy(struct aa_proxy *proxy)
 {
 	if (proxy)
-		kref_get(&(proxy->count));
+		kref_get(&(proxy->count.count));
 
 	return proxy;
 }
@@ -463,7 +459,7 @@ static inline struct aa_proxy *aa_get_proxy(struct aa_proxy *proxy)
 static inline void aa_put_proxy(struct aa_proxy *proxy)
 {
 	if (proxy)
-		kref_put(&proxy->count, aa_proxy_kref);
+		kref_put(&proxy->count.count, aa_proxy_kref);
 }
 
 void __aa_proxy_redirect(struct aa_label *orig, struct aa_label *new);

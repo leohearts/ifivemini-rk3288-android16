@@ -14,14 +14,6 @@ Optional properties:
 
 - clock-names: Should be "mclk".
 
-- realtek,default-dac-routing: Boolean. At probe, route the I2S DAC to the
-  headphone and line outputs and unmute them at 0 dB, for boards whose
-  userspace never programs the codec mixer.
-
-- realtek,default-adc-routing: Boolean. At probe, route IN2 (BST2) through
-  the record mixers to the stereo ADC mixer, ADC boost +36 dB, for boards
-  whose userspace never programs the codec mixer.
-
 Pins on the device (for linking into audio routes) for RT5616:
 
   * IN1P

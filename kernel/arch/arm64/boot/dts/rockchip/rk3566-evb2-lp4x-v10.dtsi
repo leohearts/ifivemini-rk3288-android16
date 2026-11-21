@@ -16,13 +16,6 @@
 	model = "Rockchip RK3566 EVB2 LP4X V10 Board";
 	compatible = "rockchip,rk3566-evb2-lp4x-v10", "rockchip,rk3566";
 
-	rk_headset: rk-headset {
-		compatible = "rockchip_headset";
-		headset_gpio = <&gpio3 RK_PA1 GPIO_ACTIVE_LOW>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&hp_det>;
-	};
-
 	vcc_camera: vcc-camera-regulator {
 		compatible = "regulator-fixed";
 		gpio = <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
@@ -34,7 +27,7 @@
 		regulator-boot-on;
 	};
 
-	vcc3v3_pcie: gpio-regulator {
+	vcc3v3_pcie: vcc3v3-pcie {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v3_pcie";
 		regulator-min-microvolt = <3300000>;
@@ -43,6 +36,13 @@
 		gpio = <&gpio0 RK_PC2 GPIO_ACTIVE_HIGH>;
 		startup-delay-us = <5000>;
 		vin-supply = <&dc_12v>;
+	};
+};
+
+&bt_sound {
+	status = "disabled";
+	simple-audio-card,cpu {
+		sound-dai = <&i2s2_2ch>;
 	};
 };
 
@@ -256,6 +256,17 @@
 	status = "okay";
 	pinctrl-0 = <&i2c2m1_xfer>;
 
+	dw9714: dw9714@c {
+		compatible = "dongwoon,dw9714";
+		status = "okay";
+		reg = <0x0c>;
+		rockchip,vcm-start-current = <10>;
+		rockchip,vcm-rated-current = <85>;
+		rockchip,vcm-step-mode = <5>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+	};
+
 	/* split mode: lane0/1 */
 	ov5695: ov5695@36 {
 		status = "okay";
@@ -273,6 +284,7 @@
 		rockchip,camera-module-facing = "back";
 		rockchip,camera-module-name = "TongJu";
 		rockchip,camera-module-lens-name = "CHT842-MD";
+		lens-focus = <&dw9714>;
 		port {
 			ov5695_out: endpoint {
 				remote-endpoint = <&mipi_in_ucam1>;
@@ -322,6 +334,7 @@
 		rockchip,camera-module-facing = "back";
 		rockchip,camera-module-name = "RK-CMK-8M-2-v1";
 		rockchip,camera-module-lens-name = "CK8401";
+		lens-focus = <&dw9714>;
 		port {
 			gc8034_out: endpoint {
 				remote-endpoint = <&dphy0_in>;
@@ -369,6 +382,12 @@
 	};
 };
 
+&i2s2_2ch {
+	pinctrl-0 = <&i2s2m0_sclktx &i2s2m0_lrcktx &i2s2m0_sdi &i2s2m0_sdo>;
+	rockchip,bclk-fs = <32>;
+	status = "disabled";
+};
+
 &mdio1 {
 	rgmii_phy0: phy@0 {
 		compatible = "ethernet-phy-ieee802.3-c22";
@@ -383,6 +402,10 @@
  * when mipi panel is connected to dsi1.
  */
 &gt1x {
+	power-supply = <&vcc3v3_lcd0_n>;
+};
+
+&hynitron {
 	power-supply = <&vcc3v3_lcd0_n>;
 };
 
@@ -442,12 +465,6 @@
 		};
 	};
 
-	headphone {
-		hp_det: hp-det {
-			rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_down>;
-		};
-	};
-
 	sdio-pwrseq {
 		wifi_enable_h: wifi-enable-h {
 			rockchip,pins = <2 RK_PB1 RK_FUNC_GPIO &pcfg_pull_none>;
@@ -460,6 +477,7 @@
 		};
 	};
 
+	/delete-node/ wireless-bluetooth;
 	wireless-bluetooth {
 		uart1_gpios: uart1-gpios {
 			rockchip,pins = <2 RK_PB5 RK_FUNC_GPIO &pcfg_pull_none>;
@@ -549,7 +567,8 @@
 
 &sdmmc1 {
 	max-frequency = <150000000>;
-	supports-sdio;
+	no-sd;
+	no-mmc;
 	bus-width = <4>;
 	disable-wp;
 	cap-sd-highspeed;
@@ -592,6 +611,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&wifi_host_wake_irq>;
 	WIFI,host_wake_irq = <&gpio2 RK_PB2 GPIO_ACTIVE_HIGH>;
+	WIFI,poweren_gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_HIGH>;
 };
 
 &work_led {
@@ -600,6 +620,7 @@
 
 &wireless_bluetooth {
 	compatible = "bluetooth-platdata";
+	bt_port = "/dev/ttyS1";
 	clocks = <&rk809 1>;
 	clock-names = "ext_clock";
 	//wifi-bt-power-toggle;

@@ -1,11 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * STMicroelectronics uvis25 sensor driver
  *
  * Copyright 2017 STMicroelectronics Inc.
  *
  * Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>
- *
- * Licensed under the GPL-2.
  */
 
 #include <linux/kernel.h>
@@ -211,7 +210,6 @@ static int st_uvis25_allocate_trigger(struct iio_dev *iio_dev)
 		return -ENOMEM;
 
 	iio_trigger_set_drvdata(hw->trig, iio_dev);
-	hw->trig->dev.parent = dev;
 
 	return devm_iio_trigger_register(dev, hw->trig);
 }
@@ -228,8 +226,6 @@ static int st_uvis25_buffer_postdisable(struct iio_dev *iio_dev)
 
 static const struct iio_buffer_setup_ops st_uvis25_buffer_ops = {
 	.preenable = st_uvis25_buffer_preenable,
-	.postenable = iio_triggered_buffer_postenable,
-	.predisable = iio_triggered_buffer_predisable,
 	.postdisable = st_uvis25_buffer_postdisable,
 };
 
@@ -306,7 +302,6 @@ int st_uvis25_probe(struct device *dev, int irq, struct regmap *regmap)
 		return err;
 
 	iio_dev->modes = INDIO_DIRECT_MODE;
-	iio_dev->dev.parent = dev;
 	iio_dev->channels = st_uvis25_channels;
 	iio_dev->num_channels = ARRAY_SIZE(st_uvis25_channels);
 	iio_dev->name = ST_UVIS25_DEV_NAME;
@@ -328,9 +323,9 @@ int st_uvis25_probe(struct device *dev, int irq, struct regmap *regmap)
 
 	return devm_iio_device_register(dev, iio_dev);
 }
-EXPORT_SYMBOL(st_uvis25_probe);
+EXPORT_SYMBOL_NS(st_uvis25_probe, IIO_UVIS25);
 
-static int __maybe_unused st_uvis25_suspend(struct device *dev)
+static int st_uvis25_suspend(struct device *dev)
 {
 	struct iio_dev *iio_dev = dev_get_drvdata(dev);
 	struct st_uvis25_hw *hw = iio_priv(iio_dev);
@@ -339,7 +334,7 @@ static int __maybe_unused st_uvis25_suspend(struct device *dev)
 				  ST_UVIS25_REG_ODR_MASK, 0);
 }
 
-static int __maybe_unused st_uvis25_resume(struct device *dev)
+static int st_uvis25_resume(struct device *dev)
 {
 	struct iio_dev *iio_dev = dev_get_drvdata(dev);
 	struct st_uvis25_hw *hw = iio_priv(iio_dev);
@@ -351,10 +346,7 @@ static int __maybe_unused st_uvis25_resume(struct device *dev)
 	return 0;
 }
 
-const struct dev_pm_ops st_uvis25_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(st_uvis25_suspend, st_uvis25_resume)
-};
-EXPORT_SYMBOL(st_uvis25_pm_ops);
+EXPORT_NS_SIMPLE_DEV_PM_OPS(st_uvis25_pm_ops, st_uvis25_suspend, st_uvis25_resume, IIO_UVIS25);
 
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>");
 MODULE_DESCRIPTION("STMicroelectronics uvis25 sensor driver");

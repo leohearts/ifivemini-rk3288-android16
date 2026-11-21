@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
    cx231xx-cards.c - driver for Conexant Cx23100/101/102
 				USB video capture devices
@@ -5,19 +6,6 @@
    Copyright (C) 2008 <srinivasa.deevi at conexant dot com>
 				Based on em28xx driver
 
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include "cx231xx.h"
@@ -1006,6 +994,8 @@ const unsigned int cx231xx_bcount = ARRAY_SIZE(cx231xx_boards);
 
 /* table of devices that work with this driver */
 struct usb_device_id cx231xx_id_table[] = {
+	{USB_DEVICE(0x1D19, 0x6108),
+	.driver_info = CX231XX_BOARD_PV_XCAPTURE_USB},
 	{USB_DEVICE(0x1D19, 0x6109),
 	.driver_info = CX231XX_BOARD_PV_XCAPTURE_USB},
 	{USB_DEVICE(0x0572, 0x5A3C),
@@ -1034,6 +1024,8 @@ struct usb_device_id cx231xx_id_table[] = {
 	{USB_DEVICE(0x2040, 0xb120),
 	 .driver_info = CX231XX_BOARD_HAUPPAUGE_EXETER},
 	{USB_DEVICE(0x2040, 0xb123),
+	 .driver_info = CX231XX_BOARD_HAUPPAUGE_955Q},
+	{USB_DEVICE(0x2040, 0xb124),
 	 .driver_info = CX231XX_BOARD_HAUPPAUGE_955Q},
 	{USB_DEVICE(0x2040, 0xb151),
 	 .driver_info = CX231XX_BOARD_HAUPPAUGE_935C},
@@ -1361,7 +1353,7 @@ static void cx231xx_unregister_media_device(struct cx231xx *dev)
 /*
  * cx231xx_realease_resources()
  * unregisters the v4l2,i2c and usb devices
- * called when the device gets disconected or at module unload
+ * called when the device gets disconnected or at module unload
 */
 void cx231xx_release_resources(struct cx231xx *dev)
 {
@@ -1489,13 +1481,11 @@ static int cx231xx_init_dev(struct cx231xx *dev, struct usb_device *udev,
 		goto err_dev_init;
 	}
 
-	/* init video dma queues */
+	/* init video dma queue */
 	INIT_LIST_HEAD(&dev->video_mode.vidq.active);
-	INIT_LIST_HEAD(&dev->video_mode.vidq.queued);
 
-	/* init vbi dma queues */
+	/* init vbi dma queue */
 	INIT_LIST_HEAD(&dev->vbi_mode.vidq.active);
-	INIT_LIST_HEAD(&dev->vbi_mode.vidq.queued);
 
 	/* Reset other chips required if they are tied up with GPIO pins */
 	cx231xx_add_into_devlist(dev);
@@ -1934,7 +1924,7 @@ err_if:
 
 /*
  * cx231xx_usb_disconnect()
- * called when the device gets diconencted
+ * called when the device gets disconnected
  * video device will be unregistered on v4l2_close in case it is still open
  */
 static void cx231xx_usb_disconnect(struct usb_interface *interface)

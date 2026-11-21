@@ -127,14 +127,6 @@ static const char * const imx378_supply_names[] = {
 
 #define IMX378_NUM_SUPPLIES ARRAY_SIZE(imx378_supply_names)
 
-enum imx378_max_pad {
-	PAD0, /* link to isp */
-	PAD1, /* link to csi wr0 | hdr x2:L x3:M */
-	PAD2, /* link to csi wr1 | hdr      x3:L */
-	PAD3, /* link to csi wr2 | hdr x2:M x3:S */
-	PAD_MAX,
-};
-
 struct regval {
 	u16 addr;
 	u8 val;
@@ -1776,7 +1768,7 @@ static const struct imx378_mode supported_modes[] = {
 		.bus_fmt = MEDIA_BUS_FMT_SRGGB10_1X10,
 		.reg_list = imx378_linear_10_3840x2160_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	}, {
 		.width = 4056,
 		.height = 3040,
@@ -1790,7 +1782,7 @@ static const struct imx378_mode supported_modes[] = {
 		.bus_fmt = MEDIA_BUS_FMT_SRGGB10_1X10,
 		.reg_list = imx378_linear_10_4056x3040_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	}, {
 		.width = 2028,
 		.height = 1520,
@@ -1804,7 +1796,7 @@ static const struct imx378_mode supported_modes[] = {
 		.bus_fmt = MEDIA_BUS_FMT_SRGGB12_1X12,
 		.reg_list = imx378_linear_12_2028x1520_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	}, {
 		.width = 4056,
 		.height = 3040,
@@ -1818,7 +1810,7 @@ static const struct imx378_mode supported_modes[] = {
 		.bus_fmt = MEDIA_BUS_FMT_SRGGB12_1X12,
 		.reg_list = imx378_linear_12_4056x3040_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 };
 
@@ -1947,7 +1939,7 @@ imx378_find_best_fit(struct imx378 *imx378, struct v4l2_subdev_format *fmt)
 }
 
 static int imx378_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct imx378 *imx378 = to_imx378(sd);
@@ -1963,7 +1955,7 @@ static int imx378_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&imx378->mutex);
 		return -ENOTTY;
@@ -1999,7 +1991,7 @@ static int imx378_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int imx378_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct imx378 *imx378 = to_imx378(sd);
@@ -2008,7 +2000,7 @@ static int imx378_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&imx378->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&imx378->mutex);
 		return -ENOTTY;
@@ -2038,7 +2030,7 @@ static int imx378_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int imx378_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct imx378 *imx378 = to_imx378(sd);
@@ -2051,7 +2043,7 @@ static int imx378_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int imx378_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct imx378 *imx378 = to_imx378(sd);
@@ -2091,33 +2083,16 @@ static int imx378_g_frame_interval(struct v4l2_subdev *sd,
 	struct imx378 *imx378 = to_imx378(sd);
 	const struct imx378_mode *mode = imx378->cur_mode;
 
-	mutex_lock(&imx378->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&imx378->mutex);
 
 	return 0;
 }
 
-static int imx378_g_mbus_config(struct v4l2_subdev *sd,
+static int imx378_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
-	struct imx378 *imx378 = to_imx378(sd);
-	const struct imx378_mode *mode = imx378->cur_mode;
-	u32 val = 0;
-
-	if (mode->hdr_mode == NO_HDR)
-		val = 1 << (IMX378_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-
-	if (mode->hdr_mode == HDR_X2)
-		val = 1 << (IMX378_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK |
-		V4L2_MBUS_CSI2_CHANNEL_1;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = IMX378_LANES;
 
 	return 0;
 }
@@ -2126,10 +2101,10 @@ static void imx378_get_module_inf(struct imx378 *imx378,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, IMX378_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, imx378->module_name,
+	strscpy(inf->base.sensor, IMX378_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, imx378->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, imx378->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, imx378->len_name, sizeof(inf->base.lens));
 }
 
 static long imx378_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -2514,7 +2489,7 @@ static int imx378_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct imx378 *imx378 = to_imx378(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct imx378_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&imx378->mutex);
@@ -2532,7 +2507,7 @@ static int imx378_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int imx378_enum_frame_interval(struct v4l2_subdev *sd,
-				      struct v4l2_subdev_pad_config *cfg,
+				      struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct imx378 *imx378 = to_imx378(sd);
@@ -2570,7 +2545,6 @@ static const struct v4l2_subdev_core_ops imx378_core_ops = {
 static const struct v4l2_subdev_video_ops imx378_video_ops = {
 	.s_stream = imx378_s_stream,
 	.g_frame_interval = imx378_g_frame_interval,
-	.g_mbus_config = imx378_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops imx378_pad_ops = {
@@ -2579,6 +2553,7 @@ static const struct v4l2_subdev_pad_ops imx378_pad_ops = {
 	.enum_frame_interval = imx378_enum_frame_interval,
 	.get_fmt = imx378_get_fmt,
 	.set_fmt = imx378_set_fmt,
+	.get_mbus_config = imx378_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops imx378_subdev_ops = {
@@ -2955,7 +2930,7 @@ static int imx378_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 imx378->module_index, facing,
 		 IMX378_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -2981,7 +2956,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int imx378_remove(struct i2c_client *client)
+static void imx378_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx378 *imx378 = to_imx378(sd);
@@ -2997,8 +2972,6 @@ static int imx378_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__imx378_power_off(imx378);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

@@ -1,7 +1,7 @@
 /*
  * rk818 charger driver
  *
- * Copyright (C) 2016 Rockchip Electronics Co., Ltd
+ * Copyright (C) 2016 Rockchip Electronics Co., Ltd.
  * chenjh <chenjh@rock-chips.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -266,9 +266,9 @@ static int rk818_cg_get_ts2_voltage(struct rk818_charger *cg)
 
 static u64 get_boot_sec(void)
 {
-	struct timespec ts;
+	struct timespec64 ts;
 
-	get_monotonic_boottime(&ts);
+	ktime_get_boottime_ts64(&ts);
 
 	return ts.tv_sec;
 }

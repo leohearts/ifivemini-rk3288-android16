@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
-/* Copyright (c) 2018 Rockchip Electronics Co. Ltd. */
+/* Copyright (c) 2018 Rockchip Electronics Co., Ltd. */
 
 #ifndef _SFC_H
 #define _SFC_H
@@ -8,6 +8,8 @@
 #define SFC_VER_3		0x3
 #define SFC_VER_4		0x4
 #define SFC_VER_5		0x5
+#define SFC_VER_6		0x6
+#define SFC_VER_8		0x8
 
 #define SFC_EN_INT		(0)         /* enable interrupt */
 #define SFC_EN_DMA		(1)         /* enable dma */
@@ -68,8 +70,8 @@
 
 /* SFC_DLL_CTRL Register */
 #define SCLK_SMP_SEL_EN		BIT(15)	/* SCLK Sampling Selection */
-#define SCLK_SMP_SEL_MAX_V4	0x1FF
-#define SCLK_SMP_SEL_MAX_V5	0xFF
+#define SCLK_SMP_SEL_MAX_V4	0xFF
+#define SCLK_SMP_SEL_MAX_V5	0x1FF
 
 #define SFC_DLL_TRANING_STEP		10	/* Training step */
 #define SFC_DLL_TRANING_VALID_WINDOW	80	/* Valid DLL winbow */

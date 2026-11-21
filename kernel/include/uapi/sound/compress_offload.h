@@ -5,23 +5,6 @@
  *  Copyright (C) 2011 Intel Corporation
  *  Authors:	Vinod Koul <vinod.koul@linux.intel.com>
  *		Pierre-Louis Bossart <pierre-louis.bossart@linux.intel.com>
- *  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
  */
 #ifndef __COMPRESS_OFFLOAD_H
 #define __COMPRESS_OFFLOAD_H
@@ -31,7 +14,7 @@
 #include <sound/compress_params.h>
 
 
-#define SNDRV_COMPRESS_VERSION SNDRV_PROTOCOL_VERSION(0, 1, 2)
+#define SNDRV_COMPRESS_VERSION SNDRV_PROTOCOL_VERSION(0, 2, 0)
 /**
  * struct snd_compressed_buffer - compressed buffer
  * @fragment_size: size of buffer fragment in bytes
@@ -67,7 +50,7 @@ struct snd_compr_params {
  */
 struct snd_compr_tstamp {
 	__u32 byte_offset;
-	__u64 copied_total;
+	__u32 copied_total;
 	__u32 pcm_frames;
 	__u32 pcm_io_frames;
 	__u32 sampling_rate;
@@ -123,19 +106,7 @@ struct snd_compr_codec_caps {
 } __attribute__((packed, aligned(4)));
 
 /**
- * struct snd_compr_audio_info: compressed input audio information
- * @frame_size: legth of the encoded frame with valid data
- * @reserved: reserved for furture use
- */
-struct snd_compr_audio_info {
-	__u32 frame_size;
-	__u32 reserved[15];
-} __attribute__((packed, aligned(4)));
-
-#define SND_COMPR_AUDIO_INFO
-
-/**
- * enum sndrv_compress_encoder
+ * enum sndrv_compress_encoder - encoder metadata key
  * @SNDRV_COMPRESS_ENCODER_PADDING: no of samples appended by the encoder at the
  * end of the track
  * @SNDRV_COMPRESS_ENCODER_DELAY: no of samples inserted by the encoder at the
@@ -156,7 +127,7 @@ struct snd_compr_metadata {
 	 __u32 value[8];
 } __attribute__((packed, aligned(4)));
 
-/**
+/*
  * compress path ioctl definitions
  * SNDRV_COMPRESS_GET_CAPS: Query capability of DSP
  * SNDRV_COMPRESS_GET_CODEC_CAPS: Query capability of a codec
@@ -172,8 +143,6 @@ struct snd_compr_metadata {
  * SNDRV_COMPRESS_STOP: stop a running stream, discarding ring buffer content
  * and the buffers currently with DSP
  * SNDRV_COMPRESS_DRAIN: Play till end of buffers and stop after that
- * SNDRV_COMPRESS_SET_NEXT_TRACK_PARAM: send codec specific data for the next
- * track in gapless
  * SNDRV_COMPRESS_IOCTL_VERSION: Query the API version
  */
 #define SNDRV_COMPRESS_IOCTL_VERSION	_IOR('C', 0x00, int)
@@ -195,8 +164,6 @@ struct snd_compr_metadata {
 #define SNDRV_COMPRESS_DRAIN		_IO('C', 0x34)
 #define SNDRV_COMPRESS_NEXT_TRACK	_IO('C', 0x35)
 #define SNDRV_COMPRESS_PARTIAL_DRAIN	_IO('C', 0x36)
-#define SNDRV_COMPRESS_SET_NEXT_TRACK_PARAM\
-					_IOW('C', 0x80, union snd_codec_options)
 /*
  * TODO
  * 1. add mmap support

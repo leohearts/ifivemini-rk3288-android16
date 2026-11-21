@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2020 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2020 Rockchip Electronics Co., Ltd.
  *
  * Author: Zorro Liu <zorro.liu@rock-chips.com>
  */
@@ -8,6 +8,7 @@
 #ifndef __EBC_DEV_H__
 #define __EBC_DEV_H__
 
+#include <linux/ebc.h>
 #include <linux/notifier.h>
 
 /*
@@ -19,23 +20,11 @@
 #define EBC_FB_SIZE		0x200000 /* 2M */
 #define EINK_FB_SIZE		0x400000 /* 4M */
 #define DIRECT_FB_SIZE		0x100000 /* 1M */
-#define LUT_TABLE_SIZE		0x100000 /* 1M */
 
 #define MAX_FB_NUM		4
 
 #define EBC_SUCCESS		(0)
 #define EBC_ERROR		(-1)
-
-#define WF_4BIT		16
-#define WF_5BIT		32
-
-/*
- * ebc status notify
- */
-#define EBC_OFF			(0)
-#define EBC_ON			(1)
-#define EBC_FB_BLANK		(2)
-#define EBC_FB_UNBLANK		(3)
 
 /*
  * ebc system ioctl command
@@ -48,14 +37,6 @@
 #define EBC_DISABLE_OVERLAY	(0x7005)
 #define EBC_GET_OSD_BUFFER	(0x7006)
 #define EBC_SEND_OSD_BUFFER	(0x7007)
-#define EBC_NEW_BUF_PREPARE	(0x7008)
-#define EBC_SET_DIFF_PERCENT	(0x7009)
-#define EBC_WAIT_NEW_BUF_TIME (0x700a)
-#define EBC_GET_OVERLAY_STATUS	(0x700b)
-#define EBC_ENABLE_BG_CONTROL (0x700c)
-#define EBC_DISABLE_BG_CONTROL (0x700d)
-#define EBC_ENABLE_RESUME_COUNT (0x700e)
-#define EBC_DISABLE_RESUME_COUNT (0x700f)
 
 /*
  * IMPORTANT: Those values is corresponding to android hardware program,
@@ -76,17 +57,13 @@ enum panel_refresh_mode {
 	EPD_PART_GLD16		= 10,
 	EPD_PART_GCC16		= 11,
 	EPD_A2			= 12,
-	EPD_A2_DITHER	        = 13,
-	EPD_DU			= 14,
-	EPD_DU4			= 15,
-	EPD_A2_ENTER		= 16,
-	EPD_RESET		= 17,
-	EPD_SUSPEND		= 18,
-	EPD_RESUME		= 19,
-	EPD_POWER_OFF		= 20,
-	EPD_FORCE_FULL		= 21,
-	EPD_AUTO_DU		= 22,
-	EPD_AUTO_DU4		= 23,
+	EPD_DU			= 13,
+	EPD_RESET		= 14,
+	EPD_SUSPEND		= 15,
+	EPD_RESUME		= 16,
+	EPD_POWER_OFF		= 17,
+	EPD_PART_EINK		= 18,
+	EPD_FULL_EINK		= 19,
 };
 
 /*
@@ -104,29 +81,6 @@ struct ebc_buf_info {
 	int win_y2;
 	int width_mm;
 	int height_mm;
-	int needpic;
-	char tid_name[16];
 };
-
-#if IS_ENABLED(CONFIG_ROCKCHIP_EBC_DEV)
-int ebc_register_notifier(struct notifier_block *nb);
-int ebc_unregister_notifier(struct notifier_block *nb);
-int ebc_notify(unsigned long event);
-#else
-static inline int ebc_register_notifier(struct notifier_block *nb)
-{
-	return 0;
-}
-
-static inline int ebc_unregister_notifier(struct notifier_block *nb)
-{
-	return 0;
-}
-
-static inline int ebc_notify(unsigned long event)
-{
-	return 0;
-}
-#endif
 
 #endif

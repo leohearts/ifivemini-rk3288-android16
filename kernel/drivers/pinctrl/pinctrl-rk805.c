@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Pinctrl driver for Rockchip RK805 PMIC
  *
  * Copyright (c) 2017, Fuzhou Rockchip Electronics Co., Ltd
  *
  * Author: Joseph Chen <chenjh@rock-chips.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under  the terms of the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the License, or (at your
- * option) any later version.
  *
  * Based on the pinctrl-as3722 driver
  */
@@ -17,17 +13,17 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mfd/rk808.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
+#include <linux/property.h>
+#include <linux/slab.h>
+
 #include <linux/pinctrl/consumer.h>
 #include <linux/pinctrl/machine.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/pm.h>
-#include <linux/slab.h>
 
 #include "core.h"
 #include "pinconf.h"
@@ -347,7 +343,7 @@ static int rk805_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
 
 	/* default output*/
 	if (!pci->pin_cfg[offset].dir_msk)
-		return 0;
+		return GPIO_LINE_DIRECTION_OUT;
 
 	ret = regmap_read(pci->rk808->regmap,
 			  pci->pin_cfg[offset].reg,
@@ -357,7 +353,10 @@ static int rk805_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
 		return ret;
 	}
 
-	return !(val & pci->pin_cfg[offset].dir_msk);
+	if (val & pci->pin_cfg[offset].dir_msk)
+		return GPIO_LINE_DIRECTION_OUT;
+
+	return GPIO_LINE_DIRECTION_IN;
 }
 
 static const struct gpio_chip rk805_gpio_chip = {
@@ -477,7 +476,7 @@ static int _rk805_pinctrl_set_mux(struct pinctrl_dev *pctldev,
 	if (!pci->pin_cfg[offset].fun_msk)
 		return 0;
 
-	if (mux == RK805_PINMUX_GPIO)  {
+	if (mux == RK805_PINMUX_GPIO) {
 		ret = regmap_update_bits(pci->rk808->regmap,
 					 pci->pin_cfg[offset].reg,
 					 pci->pin_cfg[offset].fun_msk,
@@ -571,7 +570,7 @@ static int rk805_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
 
 static int rk805_pinctrl_gpio_request_enable(struct pinctrl_dev *pctldev,
 					     struct pinctrl_gpio_range *range,
-					     unsigned offset)
+					     unsigned int offset)
 {
 	struct rk805_pctrl_info *pci = pinctrl_dev_get_drvdata(pctldev);
 
@@ -683,6 +682,8 @@ static int rk805_pinctrl_probe(struct platform_device *pdev)
 	struct device_node *np;
 	int ret;
 
+	device_set_node(&pdev->dev, dev_fwnode(pdev->dev.parent));
+
 	pci = devm_kzalloc(&pdev->dev, sizeof(*pci), GFP_KERNEL);
 	if (!pci)
 		return -ENOMEM;
@@ -691,8 +692,7 @@ static int rk805_pinctrl_probe(struct platform_device *pdev)
 	np = of_get_child_by_name(pdev->dev.parent->of_node, "pinctrl_rk8xx");
 	if (np)
 		pci->dev->of_node = np;
-	else
-		pci->dev->of_node = pdev->dev.parent->of_node;
+
 	pci->rk808 = dev_get_drvdata(pdev->dev.parent);
 
 	platform_set_drvdata(pdev, pci);
@@ -761,10 +761,8 @@ static int rk805_pinctrl_probe(struct platform_device *pdev)
 
 	if (np)
 		pci->gpio_chip.of_node = np;
-	else
-		pci->gpio_chip.of_node = pdev->dev.parent->of_node;
 
-	/* Add gpiochip */
+	/* Add gpio chip */
 	ret = devm_gpiochip_add_data(&pdev->dev, &pci->gpio_chip, pci);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Couldn't add gpiochip\n");

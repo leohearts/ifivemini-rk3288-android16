@@ -51,9 +51,6 @@ LOGO_PATH=${srctree}/logo.bmp
 LOGO_KERNEL_PATH=${srctree}/logo_kernel.bmp
 [ -f ${LOGO_KERNEL_PATH} ] && LOGO_KERNEL=logo_kernel.bmp
 
-LOGO_PANEL_PATH=${srctree}/tinkerboard.bmp
-[ -f ${LOGO_PANEL_PATH} ] && LOGO_PANEL=tinkerboard.bmp
-
 KERNEL_IMAGE_PATH=${objtree}/arch/${ARCH}/boot/Image
 KERNEL_IMAGE_ARG="--kernel ${KERNEL_IMAGE_PATH}"
 if [ "${ARCH}" == "arm" ]; then
@@ -121,6 +118,9 @@ check_mkimage()
 		# Doesn't exist
 		echo '"mkimage" command not found - U-Boot images will not be built' >&2
 		exit 1;
+	fi
+	if ${MKIMAGE} 2>&1 | grep -q "\[-B size\]"; then
+		MKIMAGE_ARG="-B 0x200 ${MKIMAGE_ARG}"
 	fi
 }
 
@@ -236,9 +236,6 @@ if [ -x ${srctree}/scripts/bmpconvert ]; then
 	if [ -f ${LOGO_KERNEL_PATH} ]; then
 		${srctree}/scripts/bmpconvert ${LOGO_KERNEL_PATH};
 	fi
-	if [ -f ${LOGO_PANEL_PATH} ]; then
-		${srctree}/scripts/bmpconvert ${LOGO_PANEL_PATH};
-	fi
 fi
 
 if [ "${srctree}" != "${objtree}" ]; then
@@ -248,17 +245,9 @@ if [ "${srctree}" != "${objtree}" ]; then
 	if [ -f ${LOGO_KERNEL_PATH} ]; then
 		cp -a ${LOGO_KERNEL_PATH} ${objtree}/;
 	fi
-	if [ -f ${LOGO_PANEL_PATH} ]; then
-		cp -a ${LOGO_PANEL_PATH} ${objtree}/;
-	fi
 fi
-scripts/resource_tool ${DTB_PATH} ${LOGO} ${LOGO_PANEL} ${LOGO_KERNEL} >/dev/null
-
-if [ "${ARCH}" == "arm64" ]; then
-	${srctree}/scripts/io-domain.sh ${srctree}/arch/arm64/boot/dts/rockchip/.${DTB}
-fi
-
-echo "  Image:  resource.img (with ${DTB} ${LOGO} ${LOGO_PANEL} ${LOGO_KERNEL}) is ready"
+scripts/resource_tool ${DTB_PATH} ${LOGO} ${LOGO_KERNEL} >/dev/null
+echo "  Image:  resource.img (with ${DTB} ${LOGO} ${LOGO_KERNEL}) is ready"
 
 if [ -f "${BOOT_IMG}" ]; then
 	if file -L -p -b ${BOOT_IMG} | grep -q 'Device Tree Blob' ; then

@@ -112,7 +112,7 @@
 		#size-cells = <2>;
 		ranges;
 
-		drm_logo: drm-logo@00000000 {
+		drm_logo: drm-logo@0 {
 			compatible = "rockchip,drm-logo";
 			reg = <0x0 0x0 0x0 0x0>;
 		};
@@ -229,7 +229,8 @@
 	cap-mmc-highspeed;
 	max-frequency = <200000000>;
 	mmc-hs200-1_8v;
-	supports-emmc;
+	no-sdio;
+	no-sd;
 	non-removable;
 	num-slots = <1>;
 	status = "okay";
@@ -255,7 +256,7 @@
 	clock-frequency = <400000>;
 
 	vdd_npu: tcs4525@1c {
-		compatible = "tcs,tcs452x";
+		compatible = "tcs,tcs4525";
 		reg = <0x1c>;
 		vin-supply = <&vcc5v0_sys>;
 		regulator-compatible = "fan53555-reg";
@@ -280,9 +281,9 @@
 		pinctrl-names = "default", "pmic-sleep",
 				"pmic-power-off", "pmic-reset";
 		pinctrl-0 = <&pmic_int>;
-		pinctrl-1 = <&soc_slppin_slp>, <&rk817_slppin_slp>;
-		pinctrl-2 = <&soc_slppin_gpio>, <&rk817_slppin_pwrdn>;
-		pinctrl-3 = <&soc_slppin_gpio>, <&rk817_slppin_null>;
+		pinctrl-1 = <&soc_slppin_slp>;
+		pinctrl-2 = <&soc_slppin_gpio>;
+		pinctrl-3 = <&soc_slppin_gpio>;
 		rockchip,system-power-controller;
 		wakeup-source;
 		#clock-cells = <1>;
@@ -307,31 +308,6 @@
 
 		rtc {
 			status = "okay";
-		};
-
-		pinctrl_rk8xx: pinctrl_rk8xx {
-			gpio-controller;
-			#gpio-cells = <2>;
-
-			rk817_slppin_null: rk817_slppin_null {
-				pins = "gpio_slp";
-				function = "pin_fun0";
-			};
-
-			rk817_slppin_slp: rk817_slppin_slp {
-				pins = "gpio_slp";
-				function = "pin_fun1";
-			};
-
-			rk817_slppin_pwrdn: rk817_slppin_pwrdn {
-				pins = "gpio_slp";
-				function = "pin_fun2";
-			};
-
-			rk817_slppin_rst: rk817_slppin_rst {
-				pins = "gpio_slp";
-				function = "pin_fun3";
-			};
 		};
 
 		regulators {
@@ -589,7 +565,7 @@
 };
 
 &power {
-	pd_npu-supply = <&vdd_npu>;
+	npu-supply = <&vdd_npu>;
 };
 
 &pwm1 {
@@ -605,7 +581,8 @@
 	bus-width = <4>;
 	cap-mmc-highspeed;
 	cap-sd-highspeed;
-	supports-sdio;
+	no-sd;
+	no-mmc;
 	keep-power-in-suspend;
 	non-removable;
 	mmc-pwrseq = <&sdio_pwrseq>;
@@ -617,7 +594,8 @@
 	bus-width = <4>;
 	cap-mmc-highspeed;
 	cap-sd-highspeed;
-	supports-sd;
+	no-sdio;
+	no-mmc;
 	card-detect-delay = <300>;
 	sd-uhs-sdr25;
 	sd-uhs-sdr50;

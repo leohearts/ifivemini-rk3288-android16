@@ -496,14 +496,14 @@ struct fw_update_info {
 	/*file update*/
 	char *fw_name;
 	u8 *buffer;
-	mm_segment_t old_fs;
+	//mm_segment_t old_fs;
 	struct file *fw_file;
 	/*header update*/
 	u8 *fw_data;
 };
 
 /* Export form gt1x_update.c */
-extern struct fw_update_info update_info;
+extern struct fw_update_info gt1x_update_info;
 
 extern u8 gt1x_default_FW[];
 extern int gt1x_hold_ss51_dsp(void);
@@ -527,8 +527,8 @@ extern struct i2c_client *gt1x_i2c_client;
 extern CHIP_TYPE_T gt1x_chip_type;
 extern struct gt1x_version_info gt1x_version;
 
-extern s32 _do_i2c_read(struct i2c_msg *msgs, u16 addr, u8 *buffer, s32 len);
-extern s32 _do_i2c_write(struct i2c_msg *msg, u16 addr, u8 *buffer, s32 len);
+extern s32 gt1x_do_i2c_read(struct i2c_msg *msgs, u16 addr, u8 *buffer, s32 len);
+extern s32 gt1x_do_i2c_write(struct i2c_msg *msg, u16 addr, u8 *buffer, s32 len);
 extern s32 gt1x_i2c_write(u16 addr, u8 *buffer, s32 len);
 extern s32 gt1x_i2c_read(u16 addr, u8 *buffer, s32 len);
 extern s32 gt1x_i2c_read_dbl_check(u16 addr, u8 *buffer, s32 len);

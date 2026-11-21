@@ -19,9 +19,6 @@ Required properties:
 Optional properties:
 - iommus: iommu node attached to cif if exist.
 - resets: CRU reset of cif if exist.
-- rockchip,dvp-data-shift: set to 2 when the DVP data lines D[7:0] are wired to
-  cif_data[7:0] instead of the sampled cif_data[9:2]; the driver then restores
-  the lost two bits on the CPU (YUV formats, non-iommu buffers only).
 
 port node
 -------------------

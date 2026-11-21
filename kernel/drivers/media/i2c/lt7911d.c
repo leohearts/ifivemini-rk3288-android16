@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2021 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2021 Rockchip Electronics Co., Ltd.
  *
  * lt7911d type-c/DP to MIPI CSI-2 bridge driver.
  *
@@ -22,6 +22,7 @@
 #include <linux/module.h>
 #include <linux/of_graph.h>
 #include <linux/rk-camera-module.h>
+#include <linux/rk_hdmirx_config.h>
 #include <linux/slab.h>
 #include <linux/timer.h>
 #include <linux/v4l2-dv-timings.h>
@@ -49,6 +50,12 @@ MODULE_PARM_DESC(debug, "debug level (0-3)");
 #define LT7911D_LINK_FREQ	400000000
 #define LT7911D_PIXEL_RATE	400000000
 
+#ifdef LT7911D_OUT_RGB
+#define LT7911D_MEDIA_BUS_FMT		MEDIA_BUS_FMT_BGR888_1X24
+#else
+#define LT7911D_MEDIA_BUS_FMT		MEDIA_BUS_FMT_UYVY8_2X8
+#endif
+
 #define LT7911D_NAME			"LT7911D"
 
 static const s64 link_freq_menu_items[] = {
@@ -56,7 +63,7 @@ static const s64 link_freq_menu_items[] = {
 };
 
 struct lt7911d_state {
-	struct v4l2_fwnode_bus_mipi_csi2 bus;
+	struct v4l2_mbus_config_mipi_csi2 bus;
 	struct v4l2_subdev sd;
 	struct media_pad pad;
 	struct v4l2_ctrl_handler hdl;
@@ -73,7 +80,6 @@ struct lt7911d_state {
 	struct clk *xvclk;
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *plugin_det_gpio;
-	struct gpio_desc *hpd_ctl_gpio;
 	struct gpio_desc *power_gpio;
 	struct work_struct work_i2c_poll;
 	struct timer_list timer;
@@ -472,22 +478,6 @@ static int lt7911d_get_detected_timings(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static void lt7911d_config_hpd(struct v4l2_subdev *sd)
-{
-	struct lt7911d_state *lt7911d = to_state(sd);
-	bool plugin;
-
-	plugin = tx_5v_power_present(sd);
-	v4l2_dbg(2, debug, sd, "%s: plugin: %d\n", __func__, plugin);
-
-	if (plugin) {
-		gpiod_set_value(lt7911d->hpd_ctl_gpio, 1);
-	} else {
-		lt7911d->nosignal = true;
-		gpiod_set_value(lt7911d->hpd_ctl_gpio, 0);
-	}
-}
-
 static void lt7911d_delayed_work_enable_hotplug(struct work_struct *work)
 {
 	struct delayed_work *dwork = to_delayed_work(work);
@@ -495,7 +485,7 @@ static void lt7911d_delayed_work_enable_hotplug(struct work_struct *work)
 			struct lt7911d_state, delayed_work_enable_hotplug);
 	struct v4l2_subdev *sd = &lt7911d->sd;
 
-	lt7911d_config_hpd(sd);
+	v4l2_ctrl_s_ctrl(lt7911d->detect_tx_5v_ctrl, tx_5v_power_present(sd));
 }
 
 static void lt7911d_delayed_work_res_change(struct work_struct *work)
@@ -577,21 +567,6 @@ static void lt7911d_format_change(struct v4l2_subdev *sd)
 		v4l2_subdev_notify_event(sd, &lt7911d_ev_fmt);
 }
 
-static int lt7911d_get_ctrl(struct v4l2_ctrl *ctrl)
-{
-	int ret = -1;
-	struct lt7911d_state *lt7911d = container_of(ctrl->handler,
-			struct lt7911d_state, hdl);
-	struct v4l2_subdev *sd = &(lt7911d->sd);
-
-	if (ctrl->id == V4L2_CID_DV_RX_POWER_PRESENT) {
-		ret = tx_5v_power_present(sd);
-		*ctrl->p_new.p_s32 = ret;
-	}
-
-	return ret;
-}
-
 static int lt7911d_isr(struct v4l2_subdev *sd, u32 status, bool *handled)
 {
 	struct lt7911d_state *lt7911d = to_state(sd);
@@ -615,12 +590,10 @@ static irqreturn_t lt7911d_res_change_irq_handler(int irq, void *dev_id)
 static irqreturn_t plugin_detect_irq_handler(int irq, void *dev_id)
 {
 	struct lt7911d_state *lt7911d = dev_id;
-	struct v4l2_subdev *sd = &lt7911d->sd;
 
 	/* control hpd output level after 25ms */
 	schedule_delayed_work(&lt7911d->delayed_work_enable_hotplug,
 			HZ / 40);
-	tx_5v_power_present(sd);
 
 	return IRQ_HANDLED;
 }
@@ -680,12 +653,6 @@ static int lt7911d_s_dv_timings(struct v4l2_subdev *sd,
 	if (v4l2_match_dv_timings(&lt7911d->timings, timings, 0, false)) {
 		v4l2_dbg(1, debug, sd, "%s: no change\n", __func__);
 		return 0;
-	}
-
-	if (!v4l2_valid_dv_timings(timings,
-				&lt7911d_timings_cap, NULL, NULL)) {
-		v4l2_dbg(1, debug, sd, "%s: timings out of range\n", __func__);
-		return -ERANGE;
 	}
 
 	lt7911d->timings = *timings;
@@ -748,31 +715,12 @@ static int lt7911d_dv_timings_cap(struct v4l2_subdev *sd,
 }
 
 static int lt7911d_g_mbus_config(struct v4l2_subdev *sd,
-				struct v4l2_mbus_config *cfg)
+			unsigned int pad, struct v4l2_mbus_config *cfg)
 {
 	struct lt7911d_state *lt7911d = to_state(sd);
 
-	cfg->type = V4L2_MBUS_CSI2;
-	cfg->flags = V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK |
-			V4L2_MBUS_CSI2_CHANNEL_0;
-
-	switch (lt7911d->csi_lanes_in_use) {
-	case 1:
-		cfg->flags |= V4L2_MBUS_CSI2_1_LANE;
-		break;
-	case 2:
-		cfg->flags |= V4L2_MBUS_CSI2_2_LANE;
-		break;
-	case 3:
-		cfg->flags |= V4L2_MBUS_CSI2_3_LANE;
-		break;
-	case 4:
-		cfg->flags |= V4L2_MBUS_CSI2_4_LANE;
-		break;
-
-	default:
-		return -EINVAL;
-	}
+	cfg->type = V4L2_MBUS_CSI2_DPHY;
+	cfg->bus.mipi_csi2 = lt7911d->bus;
 
 	return 0;
 }
@@ -785,12 +733,12 @@ static int lt7911d_s_stream(struct v4l2_subdev *sd, int enable)
 }
 
 static int lt7911d_enum_mbus_code(struct v4l2_subdev *sd,
-			struct v4l2_subdev_pad_config *cfg,
+			struct v4l2_subdev_state *sd_state,
 			struct v4l2_subdev_mbus_code_enum *code)
 {
 	switch (code->index) {
 	case 0:
-		code->code = MEDIA_BUS_FMT_UYVY8_2X8;
+		code->code = LT7911D_MEDIA_BUS_FMT;
 		break;
 
 	default:
@@ -801,13 +749,13 @@ static int lt7911d_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int lt7911d_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	if (fse->index >= ARRAY_SIZE(supported_modes))
 		return -EINVAL;
 
-	if (fse->code != MEDIA_BUS_FMT_UYVY8_2X8)
+	if (fse->code != LT7911D_MEDIA_BUS_FMT)
 		return -EINVAL;
 
 	fse->min_width  = supported_modes[fse->index].width;
@@ -819,7 +767,7 @@ static int lt7911d_enum_frame_sizes(struct v4l2_subdev *sd,
 }
 
 static int lt7911d_get_fmt(struct v4l2_subdev *sd,
-			struct v4l2_subdev_pad_config *cfg,
+			struct v4l2_subdev_state *sd_state,
 			struct v4l2_subdev_format *format)
 {
 	struct lt7911d_state *lt7911d = to_state(sd);
@@ -842,14 +790,13 @@ static int lt7911d_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int lt7911d_enum_frame_interval(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_frame_interval_enum *fie)
 {
 	if (fie->index >= ARRAY_SIZE(supported_modes))
 		return -EINVAL;
 
-	if (fie->code != MEDIA_BUS_FMT_UYVY8_2X8)
-		return -EINVAL;
+	fie->code = LT7911D_MEDIA_BUS_FMT;
 
 	fie->width = supported_modes[fie->index].width;
 	fie->height = supported_modes[fie->index].height;
@@ -886,7 +833,7 @@ lt7911d_find_best_fit(struct v4l2_subdev_format *fmt)
 }
 
 static int lt7911d_set_fmt(struct v4l2_subdev *sd,
-			struct v4l2_subdev_pad_config *cfg,
+			struct v4l2_subdev_state *sd_state,
 			struct v4l2_subdev_format *format)
 {
 	struct lt7911d_state *lt7911d = to_state(sd);
@@ -894,7 +841,7 @@ static int lt7911d_set_fmt(struct v4l2_subdev *sd,
 
 	/* is overwritten by get_fmt */
 	u32 code = format->format.code;
-	int ret = lt7911d_get_fmt(sd, cfg, format);
+	int ret = lt7911d_get_fmt(sd, sd_state, format);
 
 	format->format.code = code;
 
@@ -902,7 +849,7 @@ static int lt7911d_set_fmt(struct v4l2_subdev *sd,
 		return ret;
 
 	switch (code) {
-	case MEDIA_BUS_FMT_UYVY8_2X8:
+	case LT7911D_MEDIA_BUS_FMT:
 		break;
 
 	default:
@@ -951,6 +898,12 @@ static long lt7911d_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	case RKMODULE_GET_MODULE_INFO:
 		lt7911d_get_module_inf(lt7911d, (struct rkmodule_inf *)arg);
 		break;
+	case RKMODULE_GET_HDMI_MODE:
+		*(int *)arg = RKMODULE_HDMIIN_MODE;
+		break;
+	case RK_HDMIRX_CMD_GET_SIGNAL_STABLE_STATUS:
+		*(int *)arg = !lt7911d->nosignal;
+		break;
 	default:
 		ret = -ENOIOCTLCMD;
 		break;
@@ -966,6 +919,7 @@ static long lt7911d_compat_ioctl32(struct v4l2_subdev *sd,
 	void __user *up = compat_ptr(arg);
 	struct rkmodule_inf *inf;
 	long ret;
+	int *seq;
 
 	switch (cmd) {
 	case RKMODULE_GET_MODULE_INFO:
@@ -983,7 +937,35 @@ static long lt7911d_compat_ioctl32(struct v4l2_subdev *sd,
 		}
 		kfree(inf);
 		break;
+	case RKMODULE_GET_HDMI_MODE:
+		seq = kzalloc(sizeof(*seq), GFP_KERNEL);
+		if (!seq) {
+			ret = -ENOMEM;
+			return ret;
+		}
 
+		ret = lt7911d_ioctl(sd, cmd, seq);
+		if (!ret) {
+			ret = copy_to_user(up, seq, sizeof(*seq));
+			if (ret)
+				ret = -EFAULT;
+		}
+		kfree(seq);
+		break;
+	case RK_HDMIRX_CMD_GET_SIGNAL_STABLE_STATUS:
+		seq = kzalloc(sizeof(*seq), GFP_KERNEL);
+		if (!seq) {
+			ret = -ENOMEM;
+			return ret;
+		}
+		ret = lt7911d_ioctl(sd, cmd, seq);
+		if (!ret) {
+			ret = copy_to_user(up, seq, sizeof(*seq));
+			if (ret)
+				ret = -EFAULT;
+		}
+		kfree(seq);
+		break;
 	default:
 		ret = -ENOIOCTLCMD;
 		break;
@@ -992,10 +974,6 @@ static long lt7911d_compat_ioctl32(struct v4l2_subdev *sd,
 	return ret;
 }
 #endif
-
-static const struct v4l2_ctrl_ops lt7911d_ctrl_ops = {
-	.g_volatile_ctrl = lt7911d_get_ctrl,
-};
 
 static const struct v4l2_subdev_core_ops lt7911d_core_ops = {
 	.interrupt_service_routine = lt7911d_isr,
@@ -1012,7 +990,6 @@ static const struct v4l2_subdev_video_ops lt7911d_video_ops = {
 	.s_dv_timings = lt7911d_s_dv_timings,
 	.g_dv_timings = lt7911d_g_dv_timings,
 	.query_dv_timings = lt7911d_query_dv_timings,
-	.g_mbus_config = lt7911d_g_mbus_config,
 	.s_stream = lt7911d_s_stream,
 	.g_frame_interval = lt7911d_g_frame_interval,
 };
@@ -1025,6 +1002,7 @@ static const struct v4l2_subdev_pad_ops lt7911d_pad_ops = {
 	.get_fmt = lt7911d_get_fmt,
 	.enum_dv_timings = lt7911d_enum_dv_timings,
 	.dv_timings_cap = lt7911d_dv_timings_cap,
+	.get_mbus_config = lt7911d_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops lt7911d_ops = {
@@ -1055,16 +1033,6 @@ static const struct v4l2_ctrl_config lt7911d_ctrl_audio_present = {
 	.flags = V4L2_CTRL_FLAG_READ_ONLY,
 };
 
-static void lt7911d_reset(struct lt7911d_state *lt7911d)
-{
-	gpiod_set_value(lt7911d->reset_gpio, 0);
-	usleep_range(2000, 2100);
-	gpiod_set_value(lt7911d->reset_gpio, 1);
-	usleep_range(120*1000, 121*1000);
-	gpiod_set_value(lt7911d->reset_gpio, 0);
-	usleep_range(300*1000, 310*1000);
-}
-
 static int lt7911d_init_v4l2_ctrls(struct lt7911d_state *lt7911d)
 {
 	struct v4l2_subdev *sd;
@@ -1084,10 +1052,8 @@ static int lt7911d_init_v4l2_ctrls(struct lt7911d_state *lt7911d)
 			0, LT7911D_PIXEL_RATE, 1, LT7911D_PIXEL_RATE);
 
 	lt7911d->detect_tx_5v_ctrl = v4l2_ctrl_new_std(&lt7911d->hdl,
-			&lt7911d_ctrl_ops, V4L2_CID_DV_RX_POWER_PRESENT,
+			NULL, V4L2_CID_DV_RX_POWER_PRESENT,
 			0, 1, 0, 0);
-	if (lt7911d->detect_tx_5v_ctrl)
-		lt7911d->detect_tx_5v_ctrl->flags |= V4L2_CTRL_FLAG_VOLATILE;
 
 	lt7911d->audio_sampling_rate_ctrl =
 		v4l2_ctrl_new_custom(&lt7911d->hdl,
@@ -1119,7 +1085,7 @@ static int lt7911d_probe_of(struct lt7911d_state *lt7911d)
 {
 	struct device *dev = &lt7911d->i2c_client->dev;
 	struct device_node *node = dev->of_node;
-	struct v4l2_fwnode_endpoint *endpoint;
+	struct v4l2_fwnode_endpoint endpoint = { .bus_type = 0 };
 	struct device_node *ep;
 	int ret;
 
@@ -1160,29 +1126,20 @@ static int lt7911d_probe_of(struct lt7911d_state *lt7911d)
 		return ret;
 	}
 
-	lt7911d->hpd_ctl_gpio = devm_gpiod_get_optional(dev, "hpd-ctl",
-			GPIOD_OUT_HIGH);
-	if (IS_ERR(lt7911d->hpd_ctl_gpio)) {
-		dev_err(dev, "failed to get hpd ctl gpio\n");
-		ret = PTR_ERR(lt7911d->hpd_ctl_gpio);
-		return ret;
-	}
-
 	ep = of_graph_get_next_endpoint(dev->of_node, NULL);
 	if (!ep) {
 		dev_err(dev, "missing endpoint node\n");
 		return -EINVAL;
 	}
 
-	endpoint = v4l2_fwnode_endpoint_alloc_parse(of_fwnode_handle(ep));
-	if (IS_ERR(endpoint)) {
+	ret = v4l2_fwnode_endpoint_alloc_parse(of_fwnode_handle(ep), &endpoint);
+	if (ret) {
 		dev_err(dev, "failed to parse endpoint\n");
-		ret = PTR_ERR(endpoint);
-		return ret;
+		goto put_node;
 	}
 
-	if (endpoint->bus_type != V4L2_MBUS_CSI2 ||
-			endpoint->bus.mipi_csi2.num_data_lanes == 0) {
+	if (endpoint.bus_type != V4L2_MBUS_CSI2_DPHY ||
+			endpoint.bus.mipi_csi2.num_data_lanes == 0) {
 		dev_err(dev, "missing CSI-2 properties in endpoint\n");
 		ret = -EINVAL;
 		goto free_endpoint;
@@ -1201,18 +1158,20 @@ static int lt7911d_probe_of(struct lt7911d_state *lt7911d)
 		goto free_endpoint;
 	}
 
-	lt7911d->csi_lanes_in_use = endpoint->bus.mipi_csi2.num_data_lanes;
-	lt7911d->bus = endpoint->bus.mipi_csi2;
+	lt7911d->csi_lanes_in_use = endpoint.bus.mipi_csi2.num_data_lanes;
+	lt7911d->bus = endpoint.bus.mipi_csi2;
 	lt7911d->enable_hdcp = false;
 
-	gpiod_set_value(lt7911d->hpd_ctl_gpio, 0);
 	gpiod_set_value(lt7911d->power_gpio, 1);
-	lt7911d_reset(lt7911d);
+	usleep_range(2000, 3000);
+	gpiod_set_value(lt7911d->reset_gpio, 0);
 
 	ret = 0;
 
 free_endpoint:
-	v4l2_fwnode_endpoint_free(endpoint);
+	v4l2_fwnode_endpoint_free(&endpoint);
+put_node:
+	of_node_put(ep);
 	return ret;
 }
 #else
@@ -1266,7 +1225,7 @@ static int lt7911d_probe(struct i2c_client *client,
 	sd = &lt7911d->sd;
 	lt7911d->i2c_client = client;
 	lt7911d->cur_mode = &supported_modes[0];
-	lt7911d->mbus_fmt_code = MEDIA_BUS_FMT_UYVY8_2X8;
+	lt7911d->mbus_fmt_code = LT7911D_MEDIA_BUS_FMT;
 
 	err = lt7911d_probe_of(lt7911d);
 	if (err) {
@@ -1277,8 +1236,6 @@ static int lt7911d_probe(struct i2c_client *client,
 	err = lt7911d_check_chip_id(lt7911d);
 	if (err < 0)
 		return err;
-
-	lt7911d_reset(lt7911d);
 
 	mutex_init(&lt7911d->confctl_mutex);
 	err = lt7911d_init_v4l2_ctrls(lt7911d);
@@ -1309,7 +1266,7 @@ static int lt7911d_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 lt7911d->module_index, facing,
 		 LT7911D_NAME, dev_name(sd->dev));
-	err = v4l2_async_register_subdev_sensor_common(sd);
+	err = v4l2_async_register_subdev_sensor(sd);
 	if (err < 0) {
 		v4l2_err(sd, "v4l2 register subdev failed! err:%d\n", err);
 		goto err_clean_entity;
@@ -1357,7 +1314,6 @@ static int lt7911d_probe(struct i2c_client *client,
 		goto err_work_queues;
 	}
 
-	lt7911d_config_hpd(sd);
 	v4l2_info(sd, "%s found @ 0x%x (%s)\n", client->name,
 			client->addr << 1, client->adapter->name);
 
@@ -1378,7 +1334,7 @@ err_free_hdl:
 	return err;
 }
 
-static int lt7911d_remove(struct i2c_client *client)
+static void lt7911d_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct lt7911d_state *lt7911d = to_state(sd);
@@ -1397,8 +1353,6 @@ static int lt7911d_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(&lt7911d->hdl);
 	mutex_destroy(&lt7911d->confctl_mutex);
 	clk_disable_unprepare(lt7911d->xvclk);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

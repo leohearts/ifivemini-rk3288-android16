@@ -284,8 +284,8 @@ out:;
 /**
  *	llc_conn_remove_acked_pdus - Removes acknowledged pdus from tx queue
  *	@sk: active connection
- *	nr: NR
- *	how_many_unacked: size of pdu_unack_q after removing acked pdus
+ *	@nr: NR
+ *	@how_many_unacked: size of pdu_unack_q after removing acked pdus
  *
  *	Removes acknowledged pdus from transmit queue (pdu_unack_q). Returns
  *	the number of pdus that removed from queue.
@@ -813,7 +813,7 @@ void llc_conn_handler(struct llc_sap *sap, struct sk_buff *skb)
 	else {
 		dprintk("%s: adding to backlog...\n", __func__);
 		llc_set_backlog_type(skb, LLC_PACKET);
-		if (sk_add_backlog(sk, skb, sk->sk_rcvbuf))
+		if (sk_add_backlog(sk, skb, READ_ONCE(sk->sk_rcvbuf)))
 			goto drop_unlock;
 	}
 out:
@@ -906,8 +906,11 @@ static void llc_sk_init(struct sock *sk)
 
 /**
  *	llc_sk_alloc - Allocates LLC sock
+ *	@net: network namespace
  *	@family: upper layer protocol family
  *	@priority: for allocation (%GFP_KERNEL, %GFP_ATOMIC, etc)
+ *	@prot: struct proto associated with this new sock instance
+ *	@kern: is this to be a kernel socket?
  *
  *	Allocates a LLC sock and initializes it. Returns the new LLC sock
  *	or %NULL if there's no memory available for one
@@ -951,7 +954,7 @@ void llc_sk_stop_all_timers(struct sock *sk, bool sync)
 
 /**
  *	llc_sk_free - Frees a LLC socket
- *	@sk - socket to free
+ *	@sk: - socket to free
  *
  *	Frees a LLC socket
  */

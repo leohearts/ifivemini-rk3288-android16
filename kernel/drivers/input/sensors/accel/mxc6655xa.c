@@ -2,7 +2,7 @@
 /*
  * kernel/drivers/input/sensors/accel/mxc6655xa.c
  *
- * Copyright (C) 2020 Rockchip Co.,Ltd.
+ * Copyright (C) 2020 Rockchip Electronics Co., Ltd.
  * Author: Wang Jie <dave.wang@rock-chips.com>
  */
 
@@ -45,7 +45,6 @@
 #define	MXC6655_DEVICE_ID_A	0x05
 #define MXC6655_POWER_DOWN	BIT(0)
 #define MXC6655_INT_ENABLE	BIT(0)
-#define MXC6655_ORXY_INT_ENABLE	BIT(6)
 #define MXC6655_RANGE		(16384 * 2)
 #define MXC6655_PRECISION	12
 #define MXC6655_BOUNDARY	(0x1 << (MXC6655_PRECISION - 1))
@@ -110,12 +109,6 @@ static int sensor_init(struct i2c_client *client)
 			"%s:fail to set MXC6655_INT_MASK1.\n", __func__);
 		return result;
 	}
-	result = sensor_write_reg(client, MXC6655_INT_MASK0, 0);
-	if (result) {
-		dev_err(&client->dev,
-			"%s:fail to set MXC6655_INT_MASK0.\n", __func__);
-		return result;
-	}
 
 	return result;
 }
@@ -147,6 +140,7 @@ static int gsensor_report_value(struct i2c_client *client,
 		input_report_abs(sensor->input_dev, ABS_X, axis->x);
 		input_report_abs(sensor->input_dev, ABS_Y, axis->y);
 		input_report_abs(sensor->input_dev, ABS_Z, axis->z);
+		input_sync(sensor->input_dev);
 	}
 
 	return 0;
@@ -212,48 +206,7 @@ static int sensor_report_value(struct i2c_client *client)
 		}
 	}
 
-	if (sensor->pdata->wake_enable)
-		sensor_write_reg(client, MXC6655_INT_CLR0, 0xff);
-
 	return ret;
-}
-
-static int sensor_suspend(struct i2c_client *client)
-{
-	int status = 0;
-	struct sensor_private_data *sensor =
-		(struct sensor_private_data *)i2c_get_clientdata(client);
-
-	/* Enable or Disable for orientation Interrupt */
-	if (sensor->pdata->wake_enable) {
-		status = sensor_write_reg(client, MXC6655_INT_MASK0, MXC6655_ORXY_INT_ENABLE);
-		if (status) {
-			dev_err(&client->dev,
-				"%s:fail to set MXC6655_INT_MASK0.\n", __func__);
-			return status;
-		}
-	}
-
-	return status;
-}
-
-static int sensor_resume(struct i2c_client *client)
-{
-	int status = 0;
-	struct sensor_private_data *sensor =
-		(struct sensor_private_data *)i2c_get_clientdata(client);
-
-	/* Enable or Disable for orientation Interrupt */
-	if (sensor->pdata->wake_enable) {
-		status = sensor_write_reg(client, MXC6655_INT_MASK0, 0);
-		if (status) {
-			dev_err(&client->dev,
-				"%s:fail to set MXC6655_INT_MASK0.\n", __func__);
-			return status;
-		}
-	}
-
-	return status;
 }
 
 static struct sensor_operate gsensor_mxc6655_ops = {
@@ -272,8 +225,6 @@ static struct sensor_operate gsensor_mxc6655_ops = {
 	.active		= sensor_active,
 	.init		= sensor_init,
 	.report		= sensor_report_value,
-	.suspend	= sensor_suspend,
-	.resume		= sensor_resume,
 };
 
 static int gsensor_mxc6655_probe(struct i2c_client *client,
@@ -282,9 +233,9 @@ static int gsensor_mxc6655_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &gsensor_mxc6655_ops);
 }
 
-static int gsensor_mxc6655_remove(struct i2c_client *client)
+static void gsensor_mxc6655_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &gsensor_mxc6655_ops);
+	sensor_unregister_device(client, NULL, &gsensor_mxc6655_ops);
 }
 
 static const struct i2c_device_id gsensor_mxc6655_id[] = {
@@ -294,7 +245,7 @@ static const struct i2c_device_id gsensor_mxc6655_id[] = {
 
 static struct i2c_driver gsensor_mxc6655_driver = {
 	.probe = gsensor_mxc6655_probe,
-	.remove = gsensor_mxc6655_remove,
+	.remove = (void *)gsensor_mxc6655_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = gsensor_mxc6655_id,
 	.driver = {

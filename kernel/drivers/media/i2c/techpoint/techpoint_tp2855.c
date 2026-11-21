@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * techpoint techpoint lib
+ * techpoint lib
  *
- * Copyright (C) 2021 Rockchip Electronics Co., Ltd.
+ * Copyright (C) 2023 Rockchip Electronics Co., Ltd.
  */
 
 #include "techpoint_tp2855.h"
@@ -46,12 +46,93 @@ static __maybe_unused const struct regval common_setting_594M_1080p_regs[] = {
 	{ 0x14, 0x33 },
 	{ 0x14, 0xb3 },
 	{ 0x14, 0x33 },
+
 	// {0x23, 0x02}, //vi test ok
 	// {0x23, 0x00},
 };
 
+static __maybe_unused const struct regval common_setting_594M_720p_1chn_2lane_regs[] = {
+	{0x40, 0x08},
+	{0x01, 0xf0},
+	{0x02, 0x01},
+	{0x08, 0x0f},
+	{0x20, 0x12},
+	{0x34, 0x10}, //output vin1&vin2
+	{0x15, 0x0c},
+	{0x25, 0x08},
+	{0x26, 0x06},
+	{0x27, 0x11},
+	{0x29, 0x0a},
+	{0x33, 0x07},
+	{0x33, 0x00},
+	{0x14, 0x43},
+	{0x14, 0xc3},
+	{0x14, 0x43},
+
+	{0x23, 0x02}, //vi test ok
+	{0x23, 0x00},
+};
+
+static __maybe_unused const struct regval common_setting_594M_4ch_2lane_720p_25fps_regs[] = {
+	{ 0x40, 0x08 },
+	{ 0x01, 0xf0 },
+	{ 0x02, 0x01 },
+	{ 0x08, 0x0f },
+	{0x20, 0x42},
+	{0x34, 0xe4}, //output vin1&vin2
+	{0x15, 0x0c},
+	{0x25, 0x08},
+	{0x26, 0x06},
+	{0x27, 0x11},
+	{0x29, 0x0a},
+	{0x33, 0x07},
+	{0x33, 0x00},
+	{0x14, 0x43},
+	{0x14, 0xc3},
+	{0x14, 0x43},
+
+	{0x23, 0x02},
+	{0x23, 0x00},
+};
+
+static struct techpoint_video_modes supported_modes_2lane[] = {
+	{// 4CH 2lane 720p
+		.bus_fmt = MEDIA_BUS_FMT_UYVY8_2X8,
+		.width = 1280,
+		.height = 720,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 250000,
+		},
+		.link_freq_value = TP2855_LINK_FREQ_594M,
+		.common_reg_list = common_setting_594M_4ch_2lane_720p_25fps_regs,
+		.common_reg_size = ARRAY_SIZE(common_setting_594M_4ch_2lane_720p_25fps_regs),
+		.bpp = 8,
+		.lane = 2,
+		.vc[PAD0] = 0,
+		.vc[PAD1] = 1,
+		.vc[PAD2] = 2,
+		.vc[PAD3] = 3,
+	},
+	{//1 chn 2 lane 720p
+		.bus_fmt = MEDIA_BUS_FMT_UYVY8_2X8,
+		.width = 1280,
+		.height = 720,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 300000,
+			},
+		.link_freq_value = TP2855_LINK_FREQ_594M,
+		.common_reg_list = common_setting_594M_720p_1chn_2lane_regs,
+		.common_reg_size = ARRAY_SIZE(common_setting_594M_720p_1chn_2lane_regs),
+		.bpp = 8,
+		.lane = 2,
+		.vc[PAD0] = 0,
+	},
+};
+
 static struct techpoint_video_modes supported_modes[] = {
-	{
+	{//4 chn 4 lane 1080p
 		.bus_fmt = MEDIA_BUS_FMT_UYVY8_2X8,
 		.width = 1920,
 		.height = 1080,
@@ -64,12 +145,12 @@ static struct techpoint_video_modes supported_modes[] = {
 		.common_reg_size = ARRAY_SIZE(common_setting_594M_1080p_regs),
 		.bpp = 8,
 		.lane = 4,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
-		.vc[PAD1] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD2] = V4L2_MBUS_CSI2_CHANNEL_2,
-		.vc[PAD3] = V4L2_MBUS_CSI2_CHANNEL_3,
+		.vc[PAD0] = 0,
+		.vc[PAD1] = 1,
+		.vc[PAD2] = 2,
+		.vc[PAD3] = 3,
 	},
-	{
+	{//4 chn 4 lane 720p
 		.bus_fmt = MEDIA_BUS_FMT_UYVY8_2X8,
 		.width = 1280,
 		.height = 720,
@@ -82,12 +163,12 @@ static struct techpoint_video_modes supported_modes[] = {
 		.common_reg_size = ARRAY_SIZE(common_setting_297M_720p_regs),
 		.bpp = 8,
 		.lane = 4,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
-		.vc[PAD1] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD2] = V4L2_MBUS_CSI2_CHANNEL_2,
-		.vc[PAD3] = V4L2_MBUS_CSI2_CHANNEL_3,
+		.vc[PAD0] = 0,
+		.vc[PAD1] = 1,
+		.vc[PAD2] = 2,
+		.vc[PAD3] = 3,
 	},
-	{
+	{//4 chn 4 lane 576p
 		.bus_fmt = MEDIA_BUS_FMT_UYVY8_2X8,
 		.width = 720,
 		.height = 576,
@@ -100,10 +181,10 @@ static struct techpoint_video_modes supported_modes[] = {
 		.common_reg_size = ARRAY_SIZE(common_setting_297M_720p_regs),
 		.bpp = 8,
 		.lane = 4,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
-		.vc[PAD1] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD2] = V4L2_MBUS_CSI2_CHANNEL_2,
-		.vc[PAD3] = V4L2_MBUS_CSI2_CHANNEL_3,
+		.vc[PAD0] = 0,
+		.vc[PAD1] = 1,
+		.vc[PAD2] = 2,
+		.vc[PAD3] = 3,
 	},
 };
 
@@ -113,12 +194,19 @@ int tp2855_initialize(struct techpoint *techpoint)
 	struct i2c_client *client = techpoint->client;
 	struct device *dev = &client->dev;
 
-	techpoint->video_modes_num = ARRAY_SIZE(supported_modes);
-	array_size =
-		sizeof(struct techpoint_video_modes) * techpoint->video_modes_num;
-	techpoint->video_modes = devm_kzalloc(dev, array_size, GFP_KERNEL);
-	memcpy(techpoint->video_modes, supported_modes, array_size);
-
+	if (techpoint->data_lanes == 4) {
+		techpoint->video_modes_num = ARRAY_SIZE(supported_modes);
+		array_size =
+			sizeof(struct techpoint_video_modes) * techpoint->video_modes_num;
+		techpoint->video_modes = devm_kzalloc(dev, array_size, GFP_KERNEL);
+		memcpy(techpoint->video_modes, supported_modes, array_size);
+	} else {
+		techpoint->video_modes_num = ARRAY_SIZE(supported_modes_2lane);
+		array_size =
+			sizeof(struct techpoint_video_modes) * techpoint->video_modes_num;
+		techpoint->video_modes = devm_kzalloc(dev, array_size, GFP_KERNEL);
+		memcpy(techpoint->video_modes, supported_modes_2lane, array_size);
+	}
 	techpoint->cur_video_mode = &techpoint->video_modes[0];
 
 	return 0;
@@ -395,7 +483,7 @@ int tp2855_set_channel_reso(struct i2c_client *client, int ch,
 		break;
 	default:
 		dev_info(&client->dev,
-			"set channel %d UNSUPPORT, default 1080P_25\n", ch);
+			"set channel %d is not supported, default 1080P_25\n", ch);
 		techpoint_read_reg(client, 0xf5, &tmp);
 		tmp &= ~SYS_MODE[ch];
 		techpoint_write_reg(client, 0xf5, tmp);
@@ -466,27 +554,22 @@ int tp2855_get_channel_reso(struct i2c_client *client, int ch)
 	case TP2855_CVSTD_1080P_30:
 		dev_err(&client->dev, "detect channel %d 1080P_30\n", ch);
 		return TECHPOINT_S_RESO_1080P_30;
-		break;
 	case TP2855_CVSTD_1080P_25:
 		dev_err(&client->dev, "detect channel %d 1080P_25\n", ch);
 		return TECHPOINT_S_RESO_1080P_25;
-		break;
 	case TP2855_CVSTD_720P_30:
 		dev_err(&client->dev, "detect channel %d 720P_30\n", ch);
 		return TECHPOINT_S_RESO_720P_30;
-		break;
 	case TP2855_CVSTD_720P_25:
 		dev_err(&client->dev, "detect channel %d 720P_25\n", ch);
 		return TECHPOINT_S_RESO_720P_25;
-		break;
 	case TP2855_CVSTD_SD:
 		dev_err(&client->dev, "detect channel %d SD\n", ch);
 		return TECHPOINT_S_RESO_SD;
 	default:
 		dev_err(&client->dev,
-			"detect channel %d UNSUPPORT, default 1080P_25\n", ch);
+			"detect channel %d is not supported, default 1080P_25\n", ch);
 		return TECHPOINT_S_RESO_1080P_25;
-		break;
 	}
 
 	return reso;

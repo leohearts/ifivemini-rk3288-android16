@@ -9,18 +9,16 @@
 #include <linux/device.h>
 #include <linux/bitops.h>
 #include <linux/errno.h>
-#include <linux/extcon.h>
 #include <linux/iio/consumer.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/mfd/rn5t618.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <linux/thermal.h>
 
 #define CHG_STATE_ADP_INPUT 0x40
 #define CHG_STATE_USB_INPUT 0x80
@@ -61,39 +59,6 @@
 #define ADP_MAX_CUR 2500000
 #define USB_MAX_CUR 1400000
 
-/* ADP input limit per BC1.2 port type (SoC USB PHY or PMIC GCHGDET) */
-#define ADP_SDP_CUR 500000
-#define ADP_CDP_CUR 1500000
-#define ADP_DCP_CUR 2000000
-#define ADP_1A_CUR 1000000
-#define CHG_POLL_MS 30000
-#define CHG_MIN_VBAT_UV 3500000
-/* Battery temperature in 0.1 C: 40 C / 45 C steps, 2 C hysteresis */
-#define CHG_TEMP_WARM 400
-#define CHG_TEMP_HOT 450
-#define CHG_TEMP_HYST 20
-/* RC5T619 SW JEITA, stock A6 DTB values (ricoh,jt-*) */
-#define CHGCTL1_JEITA_HW 0x04 /* CHGCTL1 bit 2: PMIC HW JEITA */
-#define JEITA_TEMP_L 13 /* C */
-#define JEITA_TEMP_H 47 /* C */
-#define JEITA_TEMP_MAX 55 /* C */
-#define JEITA_ICHG_H 0x12 /* CHGISET ICHG code, 13-55 C */
-#define JEITA_ICHG_L 0x00 /* CHGISET ICHG code, 0-13 C: stock default, jt-ichg-l unset */
-#define JEITA_VFCHG_H 4 /* BATSET2 VFCHG code, 13-47 C */
-#define JEITA_VFCHG_L 4 /* BATSET2 VFCHG code, 47-55 C */
-
-/*
- * ADP input limit above 500 mA: 0 off (boot default), 1 auto (charge under
- * 95% and SoC under 70 C), 2 on. Userspace sets it after boot from
- * persist.vendor.chg.boost; the battery temperature bands below apply to
- * both 1 and 2.
- */
-enum { CHG_BOOST_OFF, CHG_BOOST_AUTO, CHG_BOOST_ON };
-static int chg_boost;
-module_param(chg_boost, int, 0644);
-MODULE_PARM_DESC(chg_boost, "ADP input limit above 500 mA: 0 off, 1 auto, 2 on");
-#define CHG_BOOST_MAX_SOC 95
-#define CHG_BOOST_MAX_SOC_TEMP 70000 /* mC */
 
 struct rn5t618_power_info {
 	struct rn5t618 *rn5t618;
@@ -104,17 +69,18 @@ struct rn5t618_power_info {
 	struct iio_channel *channel_vusb;
 	struct iio_channel *channel_vadp;
 	int irq;
-	struct extcon_dev *edev;
-	struct notifier_block extcon_nb;
-	struct delayed_work chg_work;
-	int chg_band;		/* 2: full, 1: 1 A, 0: 500 mA (temperature) */
-	int adp_cur;		/* last ADP input limit written, uA */
+};
+
+static enum power_supply_usb_type rn5t618_usb_types[] = {
+	POWER_SUPPLY_USB_TYPE_SDP,
+	POWER_SUPPLY_USB_TYPE_DCP,
+	POWER_SUPPLY_USB_TYPE_CDP,
+	POWER_SUPPLY_USB_TYPE_UNKNOWN
 };
 
 static enum power_supply_property rn5t618_usb_props[] = {
 	/* input current limit is not very accurate */
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
-	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_USB_TYPE,
@@ -124,7 +90,6 @@ static enum power_supply_property rn5t618_usb_props[] = {
 static enum power_supply_property rn5t618_adp_props[] = {
 	/* input current limit is not very accurate */
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
-	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_ONLINE,
@@ -134,7 +99,6 @@ static enum power_supply_property rn5t618_adp_props[] = {
 static enum power_supply_property rn5t618_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
-	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CAPACITY,
@@ -296,48 +260,6 @@ static int rn5t618_battery_temp(struct rn5t618_power_info *info,
 	return 0;
 }
 
-static int rn5t618_battery_health(struct rn5t618_power_info *info,
-				  union power_supply_propval *val)
-{
-	union power_supply_propval temp;
-	unsigned int v;
-	int ret;
-
-	ret = regmap_read(info->rn5t618->regmap, RN5T618_CHGSTATE, &v);
-	if (ret)
-		return ret;
-
-	switch (v & CHG_STATE_MASK) {
-	case CHG_STATE_VCHG_OVER_VOL:
-	case CHG_STATE_BAT_OVER_VOL:
-		val->intval = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
-		break;
-	case CHG_STATE_BAT_ERROR:
-		val->intval = POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
-		break;
-	case CHG_STATE_BAT_TEMP_ERR:
-		/* The charger only says "out of range": tell hot from cold. */
-		ret = rn5t618_battery_temp(info, &temp);
-		if (ret)
-			return ret;
-		val->intval = temp.intval < 250 ? POWER_SUPPLY_HEALTH_COLD :
-						  POWER_SUPPLY_HEALTH_OVERHEAT;
-		break;
-	case CHG_STATE_DIE_ERR:
-	case CHG_STATE_DIE_SHUTDOWN:
-		val->intval = POWER_SUPPLY_HEALTH_OVERHEAT;
-		break;
-	case CHG_STATE_NO_BAT:
-	case CHG_STATE_NO_BAT2:
-		val->intval = POWER_SUPPLY_HEALTH_UNKNOWN;
-		break;
-	default:
-		val->intval = POWER_SUPPLY_HEALTH_GOOD;
-	}
-
-	return 0;
-}
-
 static int rn5t618_battery_tte(struct rn5t618_power_info *info,
 			       union power_supply_propval *val)
 {
@@ -448,9 +370,6 @@ static int rn5t618_battery_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_PRESENT:
 		ret = rn5t618_battery_present(info, val);
 		break;
-	case POWER_SUPPLY_PROP_HEALTH:
-		ret = rn5t618_battery_health(info, val);
-		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		ret = rn5t618_battery_voltage_now(info, val);
 		break;
@@ -543,12 +462,6 @@ static int rn5t618_adp_get_property(struct power_supply *psy,
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 
 		break;
-	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		if (!online) {
-			val->intval = 0;
-			break;
-		}
-		/* fall through */
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		ret = regmap_read(info->rn5t618->regmap,
 				  RN5T618_REGISET1, &regval);
@@ -561,10 +474,9 @@ static int rn5t618_adp_get_property(struct power_supply *psy,
 		if (!info->channel_vadp)
 			return -ENODATA;
 
-		ret = iio_read_channel_processed(info->channel_vadp, &val->intval);
+		ret = iio_read_channel_processed_scale(info->channel_vadp, &val->intval, 1000);
 		if (ret < 0)
 			return ret;
-		val->intval *= 1000;
 
 		break;
 	default:
@@ -675,12 +587,6 @@ static int rn5t618_usb_get_property(struct power_supply *psy,
 			return -ENODATA;
 
 		return rc5t619_usb_get_type(info, val);
-	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		if (!online) {
-			val->intval = 0;
-			break;
-		}
-		/* fall through */
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		ret = regmap_read(info->rn5t618->regmap, RN5T618_CHGCTL1,
 				  &regval);
@@ -702,10 +608,9 @@ static int rn5t618_usb_get_property(struct power_supply *psy,
 		if (!info->channel_vusb)
 			return -ENODATA;
 
-		ret = iio_read_channel_processed(info->channel_vusb, &val->intval);
+		ret = iio_read_channel_processed_scale(info->channel_vusb, &val->intval, 1000);
 		if (ret < 0)
 			return ret;
-		val->intval *= 1000;
 
 		break;
 	default:
@@ -774,13 +679,6 @@ static const struct power_supply_desc rn5t618_adp_desc = {
 	.property_is_writeable  = rn5t618_adp_property_is_writeable,
 };
 
-static enum power_supply_usb_type rn5t618_usb_types[] = {
-	POWER_SUPPLY_USB_TYPE_SDP,
-	POWER_SUPPLY_USB_TYPE_CDP,
-	POWER_SUPPLY_USB_TYPE_DCP,
-	POWER_SUPPLY_USB_TYPE_UNKNOWN,
-};
-
 static const struct power_supply_desc rn5t618_usb_desc = {
 	.name                   = "rn5t618-usb",
 	.type                   = POWER_SUPPLY_TYPE_USB,
@@ -816,239 +714,8 @@ static irqreturn_t rn5t618_charger_irq(int irq, void *data)
 	power_supply_changed(info->usb);
 	power_supply_changed(info->adp);
 	power_supply_changed(info->battery);
-	mod_delayed_work(system_wq, &info->chg_work, 0);
 
 	return IRQ_HANDLED;
-}
-
-/*
- * ADP input limit policy. The OTP limit (500 mA) is the boot default. A
- * higher limit needs high_current_allowed (set by userspace after boot),
- * a DCP (2 A) or CDP (1.5 A) port, battery >= 3.5 V and a battery
- * temperature band: < 40 C full, >= 40 C 1 A, >= 45 C 500 mA.
- */
-static int rn5t618_port_cur(struct rn5t618_power_info *info)
-{
-	unsigned int gchgdet;
-	int cur = ADP_SDP_CUR;
-	int ret;
-
-	if (info->edev) {
-		if (extcon_get_state(info->edev, EXTCON_CHG_USB_CDP) > 0)
-			cur = ADP_CDP_CUR;
-		if (extcon_get_state(info->edev, EXTCON_CHG_USB_DCP) > 0)
-			cur = ADP_DCP_CUR;
-	}
-
-	/*
-	 * The PHY can report SDP for an adapter the PMIC classifies as DCP
-	 * (GCHGDET). Use the higher class of the two sources.
-	 */
-	if (info->rn5t618->variant == RC5T619) {
-		ret = regmap_read(info->rn5t618->regmap, RN5T618_GCHGDET,
-				  &gchgdet);
-		if (ret) {
-			dev_warn(&info->pdev->dev,
-				 "read GCHGDET failed: %d\n", ret);
-		} else {
-			switch (gchgdet & GCHGDET_TYPE_MASK) {
-			case GCHGDET_TYPE_DCP:
-				cur = max(cur, ADP_DCP_CUR);
-				break;
-			case GCHGDET_TYPE_CDP:
-				cur = max(cur, ADP_CDP_CUR);
-				break;
-			default:
-				break;
-			}
-		}
-	}
-
-	return cur;
-}
-
-/* Temperature band: 2 full, 1 1 A, 0 500 mA; 2 C hysteresis when stepping up */
-static int rn5t618_chg_band(int temp, int prev)
-{
-	if (temp >= CHG_TEMP_HOT)
-		return 0;
-	if (temp >= CHG_TEMP_WARM)
-		return (prev == 0 && temp > CHG_TEMP_HOT - CHG_TEMP_HYST) ? 0 : 1;
-	if (prev != 2 && temp >= CHG_TEMP_WARM - CHG_TEMP_HYST)
-		return 1;
-	return 2;
-}
-
-static bool rn5t618_boost_ok(struct rn5t618_power_info *info)
-{
-	union power_supply_propval cap;
-	struct thermal_zone_device *tz;
-	int soc_temp;
-
-	if (chg_boost == CHG_BOOST_ON)
-		return true;
-	if (chg_boost != CHG_BOOST_AUTO)
-		return false;
-	if (rn5t618_battery_capacity(info, &cap) || cap.intval >= CHG_BOOST_MAX_SOC)
-		return false;
-	tz = thermal_zone_get_zone_by_name("soc-thermal");
-	if (IS_ERR(tz) || thermal_zone_get_temp(tz, &soc_temp))
-		return false;
-	return soc_temp < CHG_BOOST_MAX_SOC_TEMP;
-}
-
-static int rn5t618_adp_target(struct rn5t618_power_info *info)
-{
-	union power_supply_propval temp, volt;
-	int cap = rn5t618_port_cur(info);
-	int band = 0;
-
-	if (chg_boost == CHG_BOOST_OFF || !rn5t618_boost_ok(info)) {
-		info->chg_band = 2;
-		return ADP_SDP_CUR;
-	}
-
-	if (!rn5t618_battery_temp(info, &temp))
-		band = rn5t618_chg_band(temp.intval, info->chg_band);
-	info->chg_band = band;
-
-	if (rn5t618_battery_voltage_now(info, &volt) ||
-	    volt.intval < CHG_MIN_VBAT_UV)
-		return ADP_SDP_CUR;
-
-	switch (band) {
-	case 2:
-		return cap;
-	case 1:
-		return min(cap, ADP_1A_CUR);
-	default:
-		return ADP_SDP_CUR;
-	}
-}
-
-/*
- * RC5T619 software JEITA, as stock popmetal ricoh619-battery.c
- * check_jeita_status(): charge current/voltage per temperature band,
- * charging off outside 0-55 C. Runs from rn5t618_chg_work every 30 s.
- */
-static int rc5t619_jeita_update(struct rn5t618_power_info *info)
-{
-	struct regmap *regmap = info->rn5t618->regmap;
-	union power_supply_propval temp;
-	unsigned int batset2, chgiset;
-	unsigned int vfchg;
-	unsigned int ichg;
-	int t;
-	int ret;
-
-	ret = rn5t618_battery_temp(info, &temp);
-	if (ret)
-		return ret;
-	t = temp.intval / 10;
-
-	if (t <= 0 || t >= JEITA_TEMP_MAX)
-		return regmap_update_bits(regmap, RN5T618_CHGCTL1, 0x03, 0);
-
-	if (t < JEITA_TEMP_L) {
-		vfchg = JEITA_VFCHG_H;
-		ichg = JEITA_ICHG_L;
-	} else if (t < JEITA_TEMP_H) {
-		vfchg = JEITA_VFCHG_H;
-		ichg = JEITA_ICHG_H;
-	} else {
-		vfchg = JEITA_VFCHG_L;
-		ichg = JEITA_ICHG_H;
-	}
-
-	ret = regmap_read(regmap, RN5T618_BATSET2, &batset2);
-	if (ret)
-		return ret;
-	if (((batset2 & 0x70) >> 4) != vfchg) {
-		ret = regmap_update_bits(regmap, RN5T618_CHGCTL1, 0x03, 0);
-		if (ret)
-			return ret;
-		ret = regmap_write(regmap, RN5T618_BATSET2,
-				   (vfchg << 4) | (batset2 & 0x8f));
-		if (ret)
-			return ret;
-	}
-
-	ret = regmap_read(regmap, RN5T618_CHGISET, &chgiset);
-	if (ret)
-		return ret;
-	ret = regmap_write(regmap, RN5T618_CHGISET,
-			   (chgiset & 0xc0) | ichg);
-	if (ret)
-		return ret;
-
-	return regmap_update_bits(regmap, RN5T618_CHGCTL1, 0x03, 0x03);
-}
-
-static void rn5t618_chg_work(struct work_struct *work)
-{
-	struct rn5t618_power_info *info =
-		container_of(to_delayed_work(work), struct rn5t618_power_info,
-			     chg_work);
-	int cur = rn5t618_adp_target(info);
-	int ret;
-
-	if (info->rn5t618->variant == RC5T619) {
-		ret = rc5t619_jeita_update(info);
-		if (ret)
-			dev_err(&info->pdev->dev, "JEITA update failed: %d\n", ret);
-	}
-
-	if (cur != info->adp_cur) {
-		ret = regmap_write(info->rn5t618->regmap, RN5T618_REGISET1,
-				   TO_CUR_REG(cur));
-		if (ret) {
-			dev_err(&info->pdev->dev, "set adp limit failed: %d\n",
-				ret);
-		} else {
-			info->adp_cur = cur;
-			dev_info(&info->pdev->dev, "adp input limit %d uA\n",
-				 cur);
-			power_supply_changed(info->adp);
-		}
-	}
-
-	schedule_delayed_work(&info->chg_work, msecs_to_jiffies(CHG_POLL_MS));
-}
-
-static int rn5t618_extcon_notifier(struct notifier_block *nb,
-				   unsigned long event, void *ptr)
-{
-	struct rn5t618_power_info *info =
-		container_of(nb, struct rn5t618_power_info, extcon_nb);
-
-	/* Called under the extcon spinlock: only queue the work here. */
-	mod_delayed_work(system_wq, &info->chg_work, 0);
-
-	return NOTIFY_OK;
-}
-
-static void rn5t618_chg_stop(void *data)
-{
-	struct rn5t618_power_info *info = data;
-
-	cancel_delayed_work_sync(&info->chg_work);
-}
-
-static int rn5t618_extcon_init(struct rn5t618_power_info *info)
-{
-	struct device *dev = &info->pdev->dev;
-	int ret;
-
-	if (!of_property_read_bool(dev->parent->of_node, "extcon"))
-		return 0;
-
-	info->edev = extcon_get_edev_by_phandle(dev->parent, 0);
-	if (IS_ERR(info->edev))
-		return PTR_ERR(info->edev);
-
-	info->extcon_nb.notifier_call = rn5t618_extcon_notifier;
-	return devm_extcon_register_notifier_all(dev, info->edev,
-						 &info->extcon_nb);
 }
 
 static int rn5t618_power_probe(struct platform_device *pdev)
@@ -1068,25 +735,18 @@ static int rn5t618_power_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, info);
 
-	INIT_DELAYED_WORK(&info->chg_work, rn5t618_chg_work);
-	ret = devm_add_action_or_reset(&pdev->dev, rn5t618_chg_stop, info);
-	if (ret)
-		return ret;
-
 	info->channel_vusb = devm_iio_channel_get(&pdev->dev, "vusb");
 	if (IS_ERR(info->channel_vusb)) {
-		if (PTR_ERR(info->channel_vusb) != -ENODEV)
-			return PTR_ERR(info->channel_vusb);
-		dev_info(&pdev->dev, "no vusb IIO channel, USB voltage unavailable\n");
-		info->channel_vusb = NULL;
+		if (PTR_ERR(info->channel_vusb) == -ENODEV)
+			return -EPROBE_DEFER;
+		return PTR_ERR(info->channel_vusb);
 	}
 
 	info->channel_vadp = devm_iio_channel_get(&pdev->dev, "vadp");
 	if (IS_ERR(info->channel_vadp)) {
-		if (PTR_ERR(info->channel_vadp) != -ENODEV)
-			return PTR_ERR(info->channel_vadp);
-		dev_info(&pdev->dev, "no vadp IIO channel, adapter voltage unavailable\n");
-		info->channel_vadp = NULL;
+		if (PTR_ERR(info->channel_vadp) == -ENODEV)
+			return -EPROBE_DEFER;
+		return PTR_ERR(info->channel_vadp);
 	}
 
 	ret = regmap_read(info->rn5t618->regmap, RN5T618_CONTROL, &v);
@@ -1103,14 +763,6 @@ static int rn5t618_power_probe(struct platform_device *pdev)
 		dev_info(&pdev->dev, "Expect imprecise results\n");
 		regmap_update_bits(info->rn5t618->regmap, RN5T618_CONTROL,
 				   FG_ENABLE, FG_ENABLE);
-	}
-
-	if (info->rn5t618->variant == RC5T619) {
-		/* Stock jt-hw-sw=0: PMIC HW JEITA off, SW JEITA in chg_work */
-		ret = regmap_update_bits(info->rn5t618->regmap, RN5T618_CHGCTL1,
-					 CHGCTL1_JEITA_HW, 0);
-		if (ret)
-			return ret;
 	}
 
 	psy_cfg.drv_data = info;
@@ -1154,18 +806,12 @@ static int rn5t618_power_probe(struct platform_device *pdev)
 						"rn5t618_power",
 						&pdev->dev);
 
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(&pdev->dev, "request IRQ:%d fail\n",
+				info->irq);
 			info->irq = -1;
+		}
 	}
-	ret = rn5t618_extcon_init(info);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "extcon init failed: %d\n", ret);
-		return ret;
-	}
-
-	/* Starts at the 500 mA default; raised only when allowed */
-	schedule_delayed_work(&info->chg_work, 0);
 
 	return 0;
 }

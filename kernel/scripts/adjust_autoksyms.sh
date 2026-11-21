@@ -1,13 +1,11 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
 
 # Script to update include/generated/autoksyms.h and dependency files
 #
 # Copyright:	(C) 2016  Linaro Limited
 # Created by:	Nicolas Pitre, January 2016
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License version 2 as
-# published by the Free Software Foundation.
 
 # Update the include/generated/autoksyms.h file.
 #
@@ -36,21 +34,18 @@ case "$KBUILD_VERBOSE" in
 	;;
 esac
 
-# We need access to CONFIG_ symbols
-. include/config/auto.conf
-
 # Generate a new symbol list file
-$CONFIG_SHELL $srctree/scripts/gen_autoksyms.sh "$new_ksyms_file"
+$CONFIG_SHELL $srctree/scripts/gen_autoksyms.sh --modorder "$new_ksyms_file"
 
 # Extract changes between old and new list and touch corresponding
 # dependency files.
 changed=$(
 count=0
 sort "$cur_ksyms_file" "$new_ksyms_file" | uniq -u |
-sed -n 's/^#define __KSYM_\(.*\) 1/\1/p' | tr "A-Z_" "a-z/" |
+sed -n 's/^#define __KSYM_\(.*\) 1/\1/p' |
 while read sympath; do
 	if [ -z "$sympath" ]; then continue; fi
-	depfile="include/ksym/${sympath}.h"
+	depfile="include/ksym/${sympath}"
 	mkdir -p "$(dirname "$depfile")"
 	touch "$depfile"
 	# Filesystems with coarse time precision may create timestamps

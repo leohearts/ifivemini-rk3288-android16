@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) International Business Machines Corp., 2006
  * Copyright (c) Nokia Corporation, 2006, 2007
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  * Author: Artem Bityutskiy (Битюцкий Артём)
  */
@@ -548,7 +535,14 @@ int ubi_io_sync_erase(struct ubi_device *ubi, int pnum, int torture)
 		return -EROFS;
 	}
 
-	if (ubi->nor_flash) {
+	/*
+	 * If the flash is ECC-ed then we have to erase the ECC block before we
+	 * can write to it. But the write is in preparation to an erase in the
+	 * first place. This means we cannot zero out EC and VID before the
+	 * erase and we just have to hope the flash starts erasing from the
+	 * start of the page.
+	 */
+	if (ubi->nor_flash && ubi->mtd->writesize == 1) {
 		err = nor_erase_prepare(ubi, pnum);
 		if (err)
 			return err;
@@ -830,6 +824,14 @@ int ubi_io_write_ec_hdr(struct ubi_device *ubi, int pnum,
 	if (ubi_dbg_power_cut(ubi, POWER_CUT_EC_WRITE))
 		return -EROFS;
 
+	if (IS_ENABLED(CONFIG_ARCH_ROCKCHIP)) {
+		/*
+		 * All FF data is relatively friendly to the data retention capability of SPI
+		 * Nand devices.
+		 */
+		memset((char *)ec_hdr + sizeof(struct ubi_ec_hdr), 0xFF,
+		       ubi->ec_hdr_alsize - sizeof(struct ubi_ec_hdr));
+	}
 	err = ubi_io_write(ubi, ec_hdr, pnum, 0, ubi->ec_hdr_alsize);
 	return err;
 }
@@ -919,12 +921,7 @@ static int validate_vid_hdr(const struct ubi_device *ubi,
 				ubi_err(ubi, "bad data_size");
 				goto bad;
 			}
-		} else if (lnum == used_ebs - 1) {
-			if (data_size == 0) {
-				ubi_err(ubi, "bad data_size at last LEB");
-				goto bad;
-			}
-		} else {
+		} else if (lnum > used_ebs - 1) {
 			ubi_err(ubi, "too high lnum");
 			goto bad;
 		}
@@ -1085,6 +1082,14 @@ int ubi_io_write_vid_hdr(struct ubi_device *ubi, int pnum,
 	if (ubi_dbg_power_cut(ubi, POWER_CUT_VID_WRITE))
 		return -EROFS;
 
+	if (IS_ENABLED(CONFIG_ARCH_ROCKCHIP)) {
+		/*
+		 * All FF data is relatively friendly to the data retention capability of SPI
+		 * Nand devices.
+		 */
+		memset((char *)p + sizeof(struct ubi_vid_hdr), 0xFF,
+		       ubi->vid_hdr_alsize - sizeof(struct ubi_vid_hdr));
+	}
 	err = ubi_io_write(ubi, p, pnum, ubi->vid_hdr_aloffset,
 			   ubi->vid_hdr_alsize);
 	return err;
@@ -1158,7 +1163,7 @@ fail:
  * @ubi: UBI device description object
  * @pnum: the physical eraseblock number to check
  *
- * This function returns zero if the erase counter header is all right and and
+ * This function returns zero if the erase counter header is all right and
  * a negative error code if not or if an error occurred.
  */
 static int self_check_peb_ec_hdr(const struct ubi_device *ubi, int pnum)
@@ -1307,10 +1312,10 @@ static int self_check_write(struct ubi_device *ubi, const void *buf, int pnum,
 	void *buf1;
 	loff_t addr = (loff_t)pnum * ubi->peb_size + offset;
 
-	if (!ubi_dbg_chk_io(ubi))
+	if (false)
 		return 0;
 
-	buf1 = __vmalloc(len, GFP_NOFS, PAGE_KERNEL);
+	buf1 = __vmalloc(len, GFP_NOFS);
 	if (!buf1) {
 		ubi_err(ubi, "cannot allocate memory to check writes");
 		return 0;
@@ -1374,7 +1379,7 @@ int ubi_self_check_all_ff(struct ubi_device *ubi, int pnum, int offset, int len)
 	if (!ubi_dbg_chk_io(ubi))
 		return 0;
 
-	buf = __vmalloc(len, GFP_NOFS, PAGE_KERNEL);
+	buf = __vmalloc(len, GFP_NOFS);
 	if (!buf) {
 		ubi_err(ubi, "cannot allocate memory to check for 0xFFs");
 		return 0;

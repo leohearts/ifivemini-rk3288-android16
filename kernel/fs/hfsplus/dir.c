@@ -204,7 +204,7 @@ static int hfsplus_readdir(struct file *file, struct dir_context *ctx)
 			fd.entrylength);
 		type = be16_to_cpu(entry.type);
 		len = NLS_MAX_CHARSET_SIZE * HFSPLUS_MAX_STRLEN;
-		err = hfsplus_uni2asc(sb, &fd.key->cat.name, strbuf, &len);
+		err = hfsplus_uni2asc_str(sb, &fd.key->cat.name, strbuf, &len);
 		if (err)
 			goto out;
 		if (type == HFSPLUS_FOLDER) {
@@ -434,8 +434,8 @@ out:
 	return res;
 }
 
-static int hfsplus_symlink(struct inode *dir, struct dentry *dentry,
-			   const char *symname)
+static int hfsplus_symlink(struct user_namespace *mnt_userns, struct inode *dir,
+			   struct dentry *dentry, const char *symname)
 {
 	struct hfsplus_sb_info *sbi = HFSPLUS_SB(dir->i_sb);
 	struct inode *inode;
@@ -476,8 +476,8 @@ out:
 	return res;
 }
 
-static int hfsplus_mknod(struct inode *dir, struct dentry *dentry,
-			 umode_t mode, dev_t rdev)
+static int hfsplus_mknod(struct user_namespace *mnt_userns, struct inode *dir,
+			 struct dentry *dentry, umode_t mode, dev_t rdev)
 {
 	struct hfsplus_sb_info *sbi = HFSPLUS_SB(dir->i_sb);
 	struct inode *inode;
@@ -517,18 +517,20 @@ out:
 	return res;
 }
 
-static int hfsplus_create(struct inode *dir, struct dentry *dentry, umode_t mode,
-			  bool excl)
+static int hfsplus_create(struct user_namespace *mnt_userns, struct inode *dir,
+			  struct dentry *dentry, umode_t mode, bool excl)
 {
-	return hfsplus_mknod(dir, dentry, mode, 0);
+	return hfsplus_mknod(&init_user_ns, dir, dentry, mode, 0);
 }
 
-static int hfsplus_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
+static int hfsplus_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
+			 struct dentry *dentry, umode_t mode)
 {
-	return hfsplus_mknod(dir, dentry, mode | S_IFDIR, 0);
+	return hfsplus_mknod(&init_user_ns, dir, dentry, mode | S_IFDIR, 0);
 }
 
-static int hfsplus_rename(struct inode *old_dir, struct dentry *old_dentry,
+static int hfsplus_rename(struct user_namespace *mnt_userns,
+			  struct inode *old_dir, struct dentry *old_dentry,
 			  struct inode *new_dir, struct dentry *new_dentry,
 			  unsigned int flags)
 {
@@ -550,8 +552,13 @@ static int hfsplus_rename(struct inode *old_dir, struct dentry *old_dentry,
 	res = hfsplus_rename_cat((u32)(unsigned long)old_dentry->d_fsdata,
 				 old_dir, &old_dentry->d_name,
 				 new_dir, &new_dentry->d_name);
-	if (!res)
+	if (!res) {
 		new_dentry->d_fsdata = old_dentry->d_fsdata;
+
+		res = hfsplus_cat_write_inode(old_dir);
+		if (!res)
+			res = hfsplus_cat_write_inode(new_dir);
+	}
 	return res;
 }
 
@@ -565,7 +572,10 @@ const struct inode_operations hfsplus_dir_inode_operations = {
 	.symlink		= hfsplus_symlink,
 	.mknod			= hfsplus_mknod,
 	.rename			= hfsplus_rename,
+	.getattr		= hfsplus_getattr,
 	.listxattr		= hfsplus_listxattr,
+	.fileattr_get		= hfsplus_fileattr_get,
+	.fileattr_set		= hfsplus_fileattr_set,
 };
 
 const struct file_operations hfsplus_dir_operations = {

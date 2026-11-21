@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
-/* Copyright (c) 2018 Rockchip Electronics Co. Ltd. */
+/* Copyright (c) 2018 Rockchip Electronics Co., Ltd. */
 
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
@@ -12,6 +12,7 @@
 #define SFC_MAX_IOSIZE_VER4		(0xFFFFFFFF)
 
 static void __iomem *g_sfc_reg;
+static u32 sfc_version;
 
 static void sfc_reset(void)
 {
@@ -42,12 +43,16 @@ u32 sfc_get_max_iosize(void)
 
 u32 sfc_get_max_dll_cells(void)
 {
-	if (sfc_get_version() == SFC_VER_5)
+	switch (sfc_get_version()) {
+	case SFC_VER_8:
+	case SFC_VER_6:
+	case SFC_VER_5:
 		return SCLK_SMP_SEL_MAX_V5;
-	else if (sfc_get_version() == SFC_VER_4)
+	case SFC_VER_4:
 		return SCLK_SMP_SEL_MAX_V4;
-	else
+	default:
 		return 0;
+	}
 }
 
 void sfc_set_delay_lines(u16 cells)
@@ -71,6 +76,7 @@ int sfc_init(void __iomem *reg_addr)
 
 	if (sfc_get_version() >= SFC_VER_4)
 		writel(1, g_sfc_reg + SFC_LEN_CTRL);
+	sfc_version = sfc_get_version();
 
 	return SFC_OK;
 }
@@ -87,6 +93,8 @@ int sfc_request(struct rk_sfc_op *op, u32 addr, void *data, u32 size)
 	union SFCCMD_DATA cmd;
 	int reg;
 	int timeout = 0;
+	u32 *p_data = (u32 *)data;
+	u32 temp = 0;
 
 	reg = readl(g_sfc_reg + SFC_FSR);
 
@@ -95,6 +103,20 @@ int sfc_request(struct rk_sfc_op *op, u32 addr, void *data, u32 size)
 		sfc_reset();
 
 	cmd.d32 = op->sfcmd.d32;
+
+	if (size && size < 4 && cmd.b.rw == SFC_WRITE) {
+		if (size == 1)
+			temp = *((u8 *)data);
+		else if (size == 2)
+			temp = *((u16 *)data);
+		else
+			temp = ((u8 *)data)[0] | ((u8 *)data)[1] << 8 | ((u8 *)data)[2] << 16;
+		p_data = &temp;
+	} else if (size >= 4 && ((uintptr_t)data & 0x3)) {
+		pr_err("%s data addr unaligned access\n", __func__);
+	} else if (size & 0x3 && cmd.b.rw == SFC_WRITE) {
+		pr_err("%s data size unaligned access\n", __func__);
+	}
 
 	if (cmd.b.addrbits == SFC_ADDR_XBITS) {
 		union SFCCTRL_DATA ctrl;
@@ -112,7 +134,7 @@ int sfc_request(struct rk_sfc_op *op, u32 addr, void *data, u32 size)
 	op->sfctrl.d32 |= 0x2;
 	cmd.b.datasize = size;
 
-	if (sfc_get_version() >= SFC_VER_4)
+	if (sfc_version >= SFC_VER_4)
 		writel(size, g_sfc_reg + SFC_LEN_EXT);
 	else
 		cmd.b.datasize = size;
@@ -152,7 +174,6 @@ int sfc_request(struct rk_sfc_op *op, u32 addr, void *data, u32 size)
 	} else {
 		u32 i, words, count, bytes;
 		union SFCFSR_DATA    fifostat;
-		u32 *p_data = (u32 *)data;
 
 		if (cmd.b.rw == SFC_WRITE) {
 			words  = (size + 3) >> 2;
@@ -234,6 +255,8 @@ int sfc_request(struct rk_sfc_op *op, u32 addr, void *data, u32 size)
 					break;
 				}
 
+				if (!bytes)
+					break;
 				sfc_delay(1);
 
 				if (timeout++ > 10000) {

@@ -66,7 +66,7 @@ struct ipoib_ah *ipoib_create_ah(struct net_device *dev,
 	ah->last_send = 0;
 	kref_init(&ah->ref);
 
-	vah = rdma_create_ah(pd, attr);
+	vah = rdma_create_ah(pd, attr, RDMA_CREATE_AH_SLEEPABLE);
 	if (IS_ERR(vah)) {
 		kfree(ah);
 		ah = (struct ipoib_ah *)vah;
@@ -293,7 +293,8 @@ int ipoib_dma_map_tx(struct ib_device *ca, struct ipoib_tx_buf *tx_req)
 		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
 		mapping[i + off] = ib_dma_map_page(ca,
 						 skb_frag_page(frag),
-						 frag->page_offset, skb_frag_size(frag),
+						 skb_frag_off(frag),
+						 skb_frag_size(frag),
 						 DMA_TO_DEVICE);
 		if (unlikely(ib_dma_mapping_error(ca, mapping[i + off])))
 			goto partial_error;
@@ -572,7 +573,7 @@ int ipoib_send(struct net_device *dev, struct sk_buff *skb,
 	unsigned int usable_sge = priv->max_send_sge - !!skb_headlen(skb);
 
 	if (skb_is_gso(skb)) {
-		hlen = skb_transport_offset(skb) + tcp_hdrlen(skb);
+		hlen = skb_tcp_all_headers(skb);
 		phead = skb->data;
 		if (unlikely(!skb_pull(skb, hlen))) {
 			ipoib_warn(priv, "linear data too small\n");
@@ -672,7 +673,6 @@ int ipoib_send(struct net_device *dev, struct sk_buff *skb,
 static void ipoib_reap_dead_ahs(struct ipoib_dev_priv *priv)
 {
 	struct ipoib_ah *ah, *tah;
-	LIST_HEAD(remove_list);
 	unsigned long flags;
 
 	netif_tx_lock_bh(priv->dev);
@@ -681,7 +681,7 @@ static void ipoib_reap_dead_ahs(struct ipoib_dev_priv *priv)
 	list_for_each_entry_safe(ah, tah, &priv->dead_ahs, list)
 		if ((int) priv->tx_tail - (int) ah->last_send >= 0) {
 			list_del(&ah->list);
-			rdma_destroy_ah(ah->ah);
+			rdma_destroy_ah(ah->ah, 0);
 			kfree(ah);
 		}
 
@@ -1057,13 +1057,11 @@ static bool ipoib_dev_addr_changed_valid(struct ipoib_dev_priv *priv)
 {
 	union ib_gid search_gid;
 	union ib_gid gid0;
-	union ib_gid *netdev_gid;
 	int err;
 	u16 index;
-	u8 port;
+	u32 port;
 	bool ret = false;
 
-	netdev_gid = (union ib_gid *)(priv->dev->dev_addr + 4);
 	if (rdma_query_gid(priv->ca, priv->port, 0, &gid0))
 		return false;
 
@@ -1073,7 +1071,8 @@ static bool ipoib_dev_addr_changed_valid(struct ipoib_dev_priv *priv)
 	 * to do it later
 	 */
 	priv->local_gid.global.subnet_prefix = gid0.global.subnet_prefix;
-	netdev_gid->global.subnet_prefix = gid0.global.subnet_prefix;
+	dev_addr_mod(priv->dev, 4, (u8 *)&gid0.global.subnet_prefix,
+		     sizeof(gid0.global.subnet_prefix));
 	search_gid.global.subnet_prefix = gid0.global.subnet_prefix;
 
 	search_gid.global.interface_id = priv->local_gid.global.interface_id;
@@ -1110,7 +1109,7 @@ static bool ipoib_dev_addr_changed_valid(struct ipoib_dev_priv *priv)
 	 * if he sets the device address back to be based on GID index 0,
 	 * he no longer wishs to control it.
 	 *
-	 * If the user doesn't control the the device address,
+	 * If the user doesn't control the device address,
 	 * IPOIB_FLAG_DEV_ADDR_SET is set and ib_find_gid failed it means
 	 * the port GUID has changed and GID at index 0 has changed
 	 * so we need to change priv->local_gid and priv->dev->dev_addr
@@ -1135,8 +1134,8 @@ static bool ipoib_dev_addr_changed_valid(struct ipoib_dev_priv *priv)
 			if (!test_bit(IPOIB_FLAG_DEV_ADDR_CTRL, &priv->flags)) {
 				memcpy(&priv->local_gid, &gid0,
 				       sizeof(priv->local_gid));
-				memcpy(priv->dev->dev_addr + 4, &gid0,
-				       sizeof(priv->local_gid));
+				dev_addr_mod(priv->dev, 4, (u8 *)&gid0,
+					     sizeof(priv->local_gid));
 				ret = true;
 			}
 		}

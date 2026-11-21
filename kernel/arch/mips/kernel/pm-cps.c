@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2014 Imagination Technologies
  * Author: Paul Burton <paul.burton@mips.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/cpuhotplug.h>
@@ -60,10 +56,7 @@ static DEFINE_PER_CPU_ALIGNED(u32*, ready_count);
 /* Indicates online CPUs coupled with the current CPU */
 static DEFINE_PER_CPU_ALIGNED(cpumask_t, online_coupled);
 
-/*
- * Used to synchronize entry to deep idle states. Actually per-core rather
- * than per-CPU.
- */
+/* Used to synchronize entry to deep idle states */
 static DEFINE_PER_CPU_ALIGNED(atomic_t, pm_barrier);
 
 /* Saved CPU state across the CPS_PM_POWER_GATED state */
@@ -122,9 +115,10 @@ int cps_pm_enter_state(enum cps_pm_state state)
 	cps_nc_entry_fn entry;
 	struct core_boot_config *core_cfg;
 	struct vpe_boot_config *vpe_cfg;
+	atomic_t *barrier;
 
 	/* Check that there is an entry function for this state */
-	entry = per_cpu(nc_asm_enter, core)[state];
+	entry = per_cpu(nc_asm_enter, cpu)[state];
 	if (!entry)
 		return -EINVAL;
 
@@ -160,7 +154,7 @@ int cps_pm_enter_state(enum cps_pm_state state)
 	smp_mb__after_atomic();
 
 	/* Create a non-coherent mapping of the core ready_count */
-	core_ready_count = per_cpu(ready_count, core);
+	core_ready_count = per_cpu(ready_count, cpu);
 	nc_addr = kmap_noncoherent(virt_to_page(core_ready_count),
 				   (unsigned long)core_ready_count);
 	nc_addr += ((unsigned long)core_ready_count & ~PAGE_MASK);
@@ -168,7 +162,8 @@ int cps_pm_enter_state(enum cps_pm_state state)
 
 	/* Ensure ready_count is zero-initialised before the assembly runs */
 	WRITE_ONCE(*nc_core_ready_count, 0);
-	coupled_barrier(&per_cpu(pm_barrier, core), online);
+	barrier = &per_cpu(pm_barrier, cpumask_first(&cpu_sibling_map[cpu]));
+	coupled_barrier(barrier, online);
 
 	/* Run the generated entry code */
 	left = entry(online, nc_core_ready_count);
@@ -311,7 +306,7 @@ static int cps_gen_flush_fsb(u32 **pp, struct uasm_label **pl,
 	}
 
 	/* Barrier ensuring previous cache invalidates are complete */
-	uasm_i_sync(pp, STYPE_SYNC);
+	uasm_i_sync(pp, __SYNC_full);
 	uasm_i_ehb(pp);
 
 	/* Check whether the pipeline stalled due to the FSB being full */
@@ -401,7 +396,7 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 
 	if (coupled_coherence) {
 		/* Increment ready_count */
-		uasm_i_sync(&p, STYPE_SYNC_MB);
+		uasm_i_sync(&p, __SYNC_mb);
 		uasm_build_label(&l, p, lbl_incready);
 		uasm_i_ll(&p, t1, 0, r_nc_count);
 		uasm_i_addiu(&p, t2, t1, 1);
@@ -410,7 +405,7 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 		uasm_i_addiu(&p, t1, t1, 1);
 
 		/* Barrier ensuring all CPUs see the updated r_nc_count value */
-		uasm_i_sync(&p, STYPE_SYNC_MB);
+		uasm_i_sync(&p, __SYNC_mb);
 
 		/*
 		 * If this is the last VPE to become ready for non-coherence
@@ -477,7 +472,7 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 			      Index_Writeback_Inv_D, lbl_flushdcache);
 
 	/* Barrier ensuring previous cache invalidates are complete */
-	uasm_i_sync(&p, STYPE_SYNC);
+	uasm_i_sync(&p, __SYNC_full);
 	uasm_i_ehb(&p);
 
 	if (mips_cm_revision() < CM_REV_CM3) {
@@ -491,7 +486,7 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 		uasm_i_lw(&p, t0, 0, r_pcohctl);
 
 		/* Barrier to ensure write to coherence control is complete */
-		uasm_i_sync(&p, STYPE_SYNC);
+		uasm_i_sync(&p, __SYNC_full);
 		uasm_i_ehb(&p);
 	}
 
@@ -538,7 +533,7 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 		}
 
 		/* Barrier to ensure write to CPC command is complete */
-		uasm_i_sync(&p, STYPE_SYNC);
+		uasm_i_sync(&p, __SYNC_full);
 		uasm_i_ehb(&p);
 	}
 
@@ -576,13 +571,13 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 	uasm_i_lw(&p, t0, 0, r_pcohctl);
 
 	/* Barrier to ensure write to coherence control is complete */
-	uasm_i_sync(&p, STYPE_SYNC);
+	uasm_i_sync(&p, __SYNC_full);
 	uasm_i_ehb(&p);
 
 	if (coupled_coherence && (state == CPS_PM_NC_WAIT)) {
 		/* Decrement ready_count */
 		uasm_build_label(&l, p, lbl_decready);
-		uasm_i_sync(&p, STYPE_SYNC_MB);
+		uasm_i_sync(&p, __SYNC_mb);
 		uasm_i_ll(&p, t1, 0, r_nc_count);
 		uasm_i_addiu(&p, t2, t1, -1);
 		uasm_i_sc(&p, t2, 0, r_nc_count);
@@ -590,7 +585,7 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 		uasm_i_andi(&p, v0, t1, (1 << fls(smp_num_siblings)) - 1);
 
 		/* Barrier ensuring all CPUs see the updated r_nc_count value */
-		uasm_i_sync(&p, STYPE_SYNC_MB);
+		uasm_i_sync(&p, __SYNC_mb);
 	}
 
 	if (coupled_coherence && (state == CPS_PM_CLOCK_GATED)) {
@@ -612,7 +607,7 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 		uasm_build_label(&l, p, lbl_secondary_cont);
 
 		/* Barrier ensuring all CPUs see the updated r_nc_count value */
-		uasm_i_sync(&p, STYPE_SYNC_MB);
+		uasm_i_sync(&p, __SYNC_mb);
 	}
 
 	/* The core is coherent, time to return to C code */
@@ -639,12 +634,14 @@ out_err:
 
 static int cps_pm_online_cpu(unsigned int cpu)
 {
-	enum cps_pm_state state;
-	unsigned core = cpu_core(&cpu_data[cpu]);
+	unsigned int sibling, core;
 	void *entry_fn, *core_rc;
+	enum cps_pm_state state;
+
+	core = cpu_core(&cpu_data[cpu]);
 
 	for (state = CPS_PM_NC_WAIT; state < CPS_PM_STATE_COUNT; state++) {
-		if (per_cpu(nc_asm_enter, core)[state])
+		if (per_cpu(nc_asm_enter, cpu)[state])
 			continue;
 		if (!test_bit(state, state_support))
 			continue;
@@ -656,16 +653,19 @@ static int cps_pm_online_cpu(unsigned int cpu)
 			clear_bit(state, state_support);
 		}
 
-		per_cpu(nc_asm_enter, core)[state] = entry_fn;
+		for_each_cpu(sibling, &cpu_sibling_map[cpu])
+			per_cpu(nc_asm_enter, sibling)[state] = entry_fn;
 	}
 
-	if (!per_cpu(ready_count, core)) {
+	if (!per_cpu(ready_count, cpu)) {
 		core_rc = kmalloc(sizeof(u32), GFP_KERNEL);
 		if (!core_rc) {
 			pr_err("Failed allocate core %u ready_count\n", core);
 			return -ENOMEM;
 		}
-		per_cpu(ready_count, core) = core_rc;
+
+		for_each_cpu(sibling, &cpu_sibling_map[cpu])
+			per_cpu(ready_count, sibling) = core_rc;
 	}
 
 	return 0;

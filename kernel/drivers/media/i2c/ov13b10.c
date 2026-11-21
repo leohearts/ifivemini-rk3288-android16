@@ -2,12 +2,17 @@
 /*
  * ov13b10 driver
  *
- * Copyright (C) 2020 Rockchip Electronics Co., Ltd.
+ * Copyright (C) 2025 Rockchip Electronics Co., Ltd.
  *
  * V0.0X01.0X01 add poweron function.
  * V0.0X01.0X02 fix mclk issue when probe multiple camera.
  * V0.0X01.0X03 add enum_frame_interval function.
  * V0.0X01.0X04 add quick stream on/off
+ * V0.0X01.0X05 fix default output 3840x2160 issue
+ * V0.0X01.0X06
+ * 1. default pd not output.
+ * 2. add stream/power debug info.
+ * 3. add write reg failed log.
  */
 
 #include <linux/clk.h>
@@ -37,7 +42,7 @@
 #include <linux/rk-preisp.h>
 #include "otp_eeprom.h"
 
-#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x04)
+#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x05)
 
 #ifndef V4L2_CID_DIGITAL_GAIN
 #define V4L2_CID_DIGITAL_GAIN		V4L2_CID_GAIN
@@ -45,7 +50,6 @@
 
 #define OV13B10_LINK_FREQ_1120MHZ	560000000   //1120MHz
 #define OV13B10_PIXEL_RATE		(OV13B10_LINK_FREQ_1120MHZ / 10 * 2 * 4)
-
 
 #define OV13B10_XVCLK_FREQ		24000000
 
@@ -112,14 +116,6 @@ static const char * const ov13b10_supply_names[] = {
 };
 
 #define OV13B10_NUM_SUPPLIES ARRAY_SIZE(ov13b10_supply_names)
-
-enum ov13b10_max_pad {
-	PAD0, /* link to isp */
-	PAD1, /* link to csi wr0 | hdr x2:L x3:M */
-	PAD2, /* link to csi wr1 | hdr      x3:L */
-	PAD3, /* link to csi wr2 | hdr x2:M x3:S */
-	PAD_MAX,
-};
 
 struct regval {
 	u16 addr;
@@ -575,8 +571,8 @@ static const struct regval ov13b10_4208x3120_regs[] = {
 	{0x4837, 0x0e},
 	{0x484b, 0x01},
 	{0x4883, 0x02},
-	{0x5000, 0xff},
-	{0x5001, 0x0f},
+	{0x5000, 0xfd},
+	{0x5001, 0x0d},
 	{0x5045, 0x20},
 	{0x5046, 0x20},
 	{0x5047, 0xa4},
@@ -599,7 +595,7 @@ static const struct ov13b10_mode supported_modes[] = {
 		.vts_def = 0x0c7c,
 		.reg_list = ov13b10_4208x3120_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 };
 
@@ -639,8 +635,11 @@ static int ov13b10_write_reg(struct i2c_client *client, u16 reg,
 	while (val_i < 4)
 		buf[buf_i++] = val_p[val_i++];
 
-	if (i2c_master_send(client, buf, len + 2) != len + 2)
+	if (i2c_master_send(client, buf, len + 2) != len + 2) {
+		dev_err(&client->dev,
+			"ov13b10 write reg(0x%x val:0x%x) failed !\n", reg, val);
 		return -EIO;
+	}
 
 	return 0;
 }
@@ -722,7 +721,7 @@ ov13b10_find_best_fit(struct ov13b10 *ov13b10, struct v4l2_subdev_format *fmt)
 }
 
 static int ov13b10_set_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_pad_config *cfg,
+			   struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
@@ -738,7 +737,7 @@ static int ov13b10_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&ov13b10->mutex);
 		return -ENOTTY;
@@ -760,7 +759,7 @@ static int ov13b10_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov13b10_get_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_pad_config *cfg,
+			   struct v4l2_subdev_state *sd_state,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
@@ -769,7 +768,7 @@ static int ov13b10_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&ov13b10->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&ov13b10->mutex);
 		return -ENOTTY;
@@ -786,7 +785,7 @@ static int ov13b10_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov13b10_enum_mbus_code(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
 
@@ -798,7 +797,7 @@ static int ov13b10_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov13b10_enum_frame_sizes(struct v4l2_subdev *sd,
-				    struct v4l2_subdev_pad_config *cfg,
+				    struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
@@ -848,63 +847,87 @@ static int ov13b10_g_frame_interval(struct v4l2_subdev *sd,
 static void ov13b10_get_otp(struct otp_info *otp,
 			       struct rkmodule_inf *inf)
 {
-	u32 i;
+	u32 i, j;
+	u32 w, h;
 
-	if (otp->total_checksum) {
-		/* awb */
-		if (otp->awb_data.flag) {
-			inf->awb.flag = 1;
-			inf->awb.r_value = otp->awb_data.r_ratio;
-			inf->awb.b_value = otp->awb_data.b_ratio;
-			inf->awb.gr_value = otp->awb_data.g_ratio;
-			inf->awb.gb_value = 0x0;
+	/* awb */
+	if (otp->awb_data.flag) {
+		inf->awb.flag = 1;
+		inf->awb.r_value = otp->awb_data.r_ratio;
+		inf->awb.b_value = otp->awb_data.b_ratio;
+		inf->awb.gr_value = otp->awb_data.g_ratio;
+		inf->awb.gb_value = 0x0;
 
-			inf->awb.golden_r_value = otp->awb_data.r_golden;
-			inf->awb.golden_b_value = otp->awb_data.b_golden;
-			inf->awb.golden_gr_value = otp->awb_data.g_golden;
-			inf->awb.golden_gb_value = 0x0;
+		inf->awb.golden_r_value = otp->awb_data.r_golden;
+		inf->awb.golden_b_value = otp->awb_data.b_golden;
+		inf->awb.golden_gr_value = otp->awb_data.g_golden;
+		inf->awb.golden_gb_value = 0x0;
+	}
+
+	/* lsc */
+	if (otp->lsc_data.flag) {
+		inf->lsc.flag = 1;
+		inf->lsc.width = otp->basic_data.size.width;
+		inf->lsc.height = otp->basic_data.size.height;
+		inf->lsc.table_size = otp->lsc_data.table_size;
+
+		for (i = 0; i < 289; i++) {
+			inf->lsc.lsc_r[i] = (otp->lsc_data.data[i * 2] << 8) |
+					     otp->lsc_data.data[i * 2 + 1];
+			inf->lsc.lsc_gr[i] = (otp->lsc_data.data[i * 2 + 578] << 8) |
+					      otp->lsc_data.data[i * 2 + 579];
+			inf->lsc.lsc_gb[i] = (otp->lsc_data.data[i * 2 + 1156] << 8) |
+					      otp->lsc_data.data[i * 2 + 1157];
+			inf->lsc.lsc_b[i] = (otp->lsc_data.data[i * 2 + 1734] << 8) |
+					     otp->lsc_data.data[i * 2 + 1735];
 		}
+	}
 
-		/* lsc */
-		if (otp->lsc_data.flag) {
-			inf->lsc.flag = 1;
-			inf->lsc.width = otp->basic_data.size.width;
-			inf->lsc.height = otp->basic_data.size.height;
-			inf->lsc.table_size = otp->lsc_data.table_size;
-
-			for (i = 0; i < 289; i++) {
-				inf->lsc.lsc_r[i] = (otp->lsc_data.data[i * 2] << 8) |
-						     otp->lsc_data.data[i * 2 + 1];
-				inf->lsc.lsc_gr[i] = (otp->lsc_data.data[i * 2 + 578] << 8) |
-						      otp->lsc_data.data[i * 2 + 579];
-				inf->lsc.lsc_gb[i] = (otp->lsc_data.data[i * 2 + 1156] << 8) |
-						      otp->lsc_data.data[i * 2 + 1157];
-				inf->lsc.lsc_b[i] = (otp->lsc_data.data[i * 2 + 1734] << 8) |
-						     otp->lsc_data.data[i * 2 + 1735];
+	/* pdaf */
+	if (otp->pdaf_data.flag) {
+		inf->pdaf.flag = 1;
+		inf->pdaf.gainmap_width = otp->pdaf_data.gainmap_width;
+		inf->pdaf.gainmap_height = otp->pdaf_data.gainmap_height;
+		inf->pdaf.dcc_mode = otp->pdaf_data.dcc_mode;
+		inf->pdaf.dcc_dir = otp->pdaf_data.dcc_dir;
+		inf->pdaf.dccmap_width = otp->pdaf_data.dccmap_width;
+		inf->pdaf.dccmap_height = otp->pdaf_data.dccmap_height;
+		w = otp->pdaf_data.gainmap_width;
+		h = otp->pdaf_data.gainmap_height;
+		for (i = 0; i < h; i++) {
+			for (j = 0; j < w; j++) {
+				inf->pdaf.gainmap[i * w + j] =
+					(otp->pdaf_data.gainmap[(i * w + j) * 2] << 8) |
+					otp->pdaf_data.gainmap[(i * w + j) * 2 + 1];
+			}
+		}
+		w = otp->pdaf_data.dccmap_width;
+		h = otp->pdaf_data.dccmap_height;
+		for (i = 0; i < h; i++) {
+			for (j = 0; j < w; j++) {
+				inf->pdaf.dccmap[i * w + j] =
+					(otp->pdaf_data.dccmap[(i * w + j) * 2] << 8) |
+					otp->pdaf_data.dccmap[(i * w + j) * 2 + 1];
 			}
 		}
 	}
+
+	/* af */
+	if (otp->af_data.flag) {
+		inf->af.flag = 1;
+		inf->af.dir_cnt = 1;
+		inf->af.af_otp[0].vcm_start = otp->af_data.af_inf;
+		inf->af.af_otp[0].vcm_end = otp->af_data.af_macro;
+		inf->af.af_otp[0].vcm_dir = 0;
+	}
+
 }
 
-static int ov13b10_g_mbus_config(struct v4l2_subdev *sd,
+static int ov13b10_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
 				struct v4l2_mbus_config *config)
 {
-	struct ov13b10 *ov13b10 = to_ov13b10(sd);
-	const struct ov13b10_mode *mode = ov13b10->cur_mode;
-	u32 val = 0;
-
-	if (mode->hdr_mode == NO_HDR)
-		val = 1 << (OV13B10_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	if (mode->hdr_mode == HDR_X2)
-		val = 1 << (OV13B10_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK |
-		V4L2_MBUS_CSI2_CHANNEL_1;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes  = OV13B10_LANES;
 
 	return 0;
 }
@@ -1134,6 +1157,12 @@ static int ov13b10_s_stream(struct v4l2_subdev *sd, int on)
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
 	struct i2c_client *client = ov13b10->client;
 
+	dev_info(&client->dev, "%s: on: %d, %dx%d@%d\n", __func__, on,
+		 ov13b10->cur_mode->width,
+		 ov13b10->cur_mode->height,
+		 DIV_ROUND_CLOSEST(ov13b10->cur_mode->max_fps.denominator,
+				   ov13b10->cur_mode->max_fps.numerator));
+
 	mutex_lock(&ov13b10->mutex);
 	on = !!on;
 	if (on == ov13b10->streaming)
@@ -1170,6 +1199,8 @@ static int ov13b10_s_power(struct v4l2_subdev *sd, int on)
 	int ret = 0;
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
 	struct i2c_client *client = ov13b10->client;
+
+	dev_info(&client->dev, "%s on(%d)\n", __func__, on);
 
 	mutex_lock(&ov13b10->mutex);
 
@@ -1304,7 +1335,7 @@ static int ov13b10_runtime_suspend(struct device *dev)
 static int ov13b10_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
-	struct v4l2_mbus_framefmt *try_fmt = v4l2_subdev_get_try_format(sd, fh->pad, 0);
+	struct v4l2_mbus_framefmt *try_fmt = v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct ov13b10_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&ov13b10->mutex);
@@ -1322,7 +1353,7 @@ static int ov13b10_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int ov13b10_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
@@ -1353,13 +1384,13 @@ static int ov13b10_enum_frame_interval(struct v4l2_subdev *sd,
  * to the alignment rules.
  */
 static int ov13b10_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
 
 	if (sel->target == V4L2_SEL_TGT_CROP_BOUNDS) {
-		if (ov13b10->cur_width == 4208) {
+		if (ov13b10->cur_mode->width == 4208) {
 			sel->r.left = CROP_START(ov13b10->cur_mode->width, 4208);
 			sel->r.width = 4208;
 			sel->r.top = CROP_START(ov13b10->cur_mode->height, 3120);
@@ -1397,7 +1428,6 @@ static const struct v4l2_subdev_core_ops ov13b10_core_ops = {
 static const struct v4l2_subdev_video_ops ov13b10_video_ops = {
 	.s_stream = ov13b10_s_stream,
 	.g_frame_interval = ov13b10_g_frame_interval,
-	.g_mbus_config = ov13b10_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops ov13b10_pad_ops = {
@@ -1406,7 +1436,8 @@ static const struct v4l2_subdev_pad_ops ov13b10_pad_ops = {
 	.enum_frame_interval = ov13b10_enum_frame_interval,
 	.get_fmt = ov13b10_get_fmt,
 	.set_fmt = ov13b10_set_fmt,
-	.get_selection = ov13b10_get_selection, // Xin add
+	.get_selection = ov13b10_get_selection,
+	.get_mbus_config = ov13b10_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops ov13b10_subdev_ops = {
@@ -1683,7 +1714,6 @@ static int ov13b10_probe(struct i2c_client *client,
 	}
 	if (i == ov13b10->cfg_num)
 		ov13b10->cur_mode = &supported_modes[0];
-	ov13b10->cur_width = DST_WIDTH;
 
 	ov13b10->xvclk = devm_clk_get(dev, "xvclk");
 	if (IS_ERR(ov13b10->xvclk)) {
@@ -1790,7 +1820,7 @@ continue_probe:
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 ov13b10->module_index, facing,
 		 OV13B10_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1816,7 +1846,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int ov13b10_remove(struct i2c_client *client)
+static void ov13b10_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
@@ -1832,8 +1862,6 @@ static int ov13b10_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__ov13b10_power_off(ov13b10);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)
@@ -1855,8 +1883,8 @@ static struct i2c_driver ov13b10_i2c_driver = {
 		.pm = &ov13b10_pm_ops,
 		.of_match_table = of_match_ptr(ov13b10_of_match),
 	},
-	.probe		= &ov13b10_probe,
-	.remove		= &ov13b10_remove,
+	.probe		= ov13b10_probe,
+	.remove		= ov13b10_remove,
 	.id_table	= ov13b10_match_id,
 };
 

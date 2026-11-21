@@ -72,7 +72,7 @@ static rndis_resp_t *rndis_add_response(struct rndis_params *params,
 
 #ifdef CONFIG_USB_GADGET_DEBUG_FILES
 
-static const struct file_operations rndis_proc_fops;
+static const struct proc_ops rndis_proc_ops;
 
 #endif /* CONFIG_USB_GADGET_DEBUG_FILES */
 
@@ -640,6 +640,7 @@ static int rndis_set_response(struct rndis_params *params,
 	BufLength = le32_to_cpu(buf->InformationBufferLength);
 	BufOffset = le32_to_cpu(buf->InformationBufferOffset);
 	if ((BufLength > RNDIS_MAX_TOTAL_SIZE) ||
+	    (BufOffset > RNDIS_MAX_TOTAL_SIZE) ||
 	    (BufOffset + 8 >= RNDIS_MAX_TOTAL_SIZE))
 		    return -EINVAL;
 
@@ -868,12 +869,12 @@ EXPORT_SYMBOL_GPL(rndis_msg_parser);
 
 static inline int rndis_get_nr(void)
 {
-	return ida_simple_get(&rndis_ida, 0, 0, GFP_KERNEL);
+	return ida_alloc_max(&rndis_ida, 999, GFP_KERNEL);
 }
 
 static inline void rndis_put_nr(int nr)
 {
-	ida_simple_remove(&rndis_ida, nr);
+	ida_free(&rndis_ida, nr);
 }
 
 struct rndis_params *rndis_register(void (*resp_avail)(void *v), void *v)
@@ -905,7 +906,7 @@ struct rndis_params *rndis_register(void (*resp_avail)(void *v), void *v)
 
 		sprintf(name, NAME_TEMPLATE, i);
 		proc_entry = proc_create_data(name, 0660, NULL,
-					      &rndis_proc_fops, params);
+					      &rndis_proc_ops, params);
 		if (!proc_entry) {
 			kfree(params);
 			rndis_put_nr(i);
@@ -1104,7 +1105,7 @@ static int rndis_proc_show(struct seq_file *m, void *v)
 			 "used      : %s\n"
 			 "state     : %s\n"
 			 "medium    : 0x%08X\n"
-			 "speed     : %d\n"
+			 "speed     : %u\n"
 			 "cable     : %s\n"
 			 "vendor ID : 0x%08X\n"
 			 "vendor    : %s\n",
@@ -1128,7 +1129,7 @@ static int rndis_proc_show(struct seq_file *m, void *v)
 static ssize_t rndis_proc_write(struct file *file, const char __user *buffer,
 				size_t count, loff_t *ppos)
 {
-	rndis_params *p = PDE_DATA(file_inode(file));
+	rndis_params *p = pde_data(file_inode(file));
 	u32 speed = 0;
 	int i, fl_speed = 0;
 
@@ -1172,16 +1173,15 @@ static ssize_t rndis_proc_write(struct file *file, const char __user *buffer,
 
 static int rndis_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, rndis_proc_show, PDE_DATA(inode));
+	return single_open(file, rndis_proc_show, pde_data(inode));
 }
 
-static const struct file_operations rndis_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= rndis_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-	.write		= rndis_proc_write,
+static const struct proc_ops rndis_proc_ops = {
+	.proc_open	= rndis_proc_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+	.proc_write	= rndis_proc_write,
 };
 
 #define	NAME_TEMPLATE "driver/rndis-%03d"

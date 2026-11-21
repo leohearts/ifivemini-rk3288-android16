@@ -1,6 +1,6 @@
 /* drivers/input/sensors/access/akm09911.c
  *
- * Copyright (C) 2012-2015 ROCKCHIP.
+ * Copyright (C) 2012-2015 Rockchip Electronics Co., Ltd.
  * Author: luowei <lw@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -611,7 +611,7 @@ static struct miscdevice compass_dev_device = {
 	.fops = &compass_dev_fops,
 };
 
-struct sensor_operate compass_akm09911_ops = {
+static struct sensor_operate compass_akm09911_ops = {
 	.name				= "akm09911",
 	.type				= SENSOR_TYPE_COMPASS,
 	.id_i2c				= COMPASS_ID_AK09911,
@@ -637,9 +637,9 @@ static int compass_akm09911_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &compass_akm09911_ops);
 }
 
-static int compass_akm09911_remove(struct i2c_client *client)
+static void compass_akm09911_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &compass_akm09911_ops);
+	sensor_unregister_device(client, NULL, &compass_akm09911_ops);
 }
 
 static const struct i2c_device_id compass_akm09911_id[] = {
@@ -649,7 +649,7 @@ static const struct i2c_device_id compass_akm09911_id[] = {
 
 static struct i2c_driver compass_akm09911_driver = {
 	.probe = compass_akm09911_probe,
-	.remove = compass_akm09911_remove,
+	.remove = (void *)compass_akm09911_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = compass_akm09911_id,
 	.driver = {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * RTC driver for Rockchip RK808
  *
@@ -5,15 +6,6 @@
  *
  * Author: Chris Zhong <zyw@rock-chips.com>
  * Author: Zhang Qing <zhangqing@rock-chips.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/module.h>
@@ -21,6 +13,7 @@
 #include <linux/rtc.h>
 #include <linux/bcd.h>
 #include <linux/mfd/rk808.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
 
@@ -36,6 +29,7 @@
 #define BIT_RTC_CTRL_REG_RTC_READSEL_M		BIT(7)
 #define BIT_RTC_INTERRUPTS_REG_IT_ALARM_M	BIT(3)
 #define RTC_STATUS_MASK		0xFE
+#define RTC_ALARM_STATUS			BIT(6)
 
 #define SECONDS_REG_MSK		0x7F
 #define MINUTES_REG_MAK		0x7F
@@ -240,10 +234,8 @@ static int rk808_rtc_readalarm(struct device *dev, struct rtc_wkalrm *alrm)
 		return ret;
 	}
 
-	dev_dbg(dev, "alrm read RTC date/time %4d-%02d-%02d(%d) %02d:%02d:%02d\n",
-		1900 + alrm->time.tm_year, alrm->time.tm_mon + 1,
-		alrm->time.tm_mday, alrm->time.tm_wday, alrm->time.tm_hour,
-		alrm->time.tm_min, alrm->time.tm_sec);
+	dev_dbg(dev, "alrm read RTC date/time %ptRd(%d) %ptRt\n",
+		&alrm->time, alrm->time.tm_wday, &alrm->time);
 
 	alrm->enabled = (int_reg & BIT_RTC_INTERRUPTS_REG_IT_ALARM_M) ? 1 : 0;
 
@@ -258,6 +250,12 @@ static int rk808_rtc_stop_alarm(struct rk808_rtc *rk808_rtc)
 	ret = regmap_update_bits(rk808->regmap, rk808_rtc->creg->int_reg,
 				 BIT_RTC_INTERRUPTS_REG_IT_ALARM_M, 0);
 
+	/*
+	 * The rtc alarm status(BIT(6)) must be cleared after alarm 1s or
+	 * after the alarm is disabled.
+	 */
+	ret = regmap_write(rk808->regmap, rk808_rtc->creg->status_reg,
+			   RTC_ALARM_STATUS);
 	return ret;
 }
 
@@ -285,10 +283,8 @@ static int rk808_rtc_setalarm(struct device *dev, struct rtc_wkalrm *alrm)
 		dev_err(dev, "Failed to stop alarm: %d\n", ret);
 		return ret;
 	}
-	dev_dbg(dev, "alrm set RTC date/time %4d-%02d-%02d(%d) %02d:%02d:%02d\n",
-		1900 + alrm->time.tm_year, alrm->time.tm_mon + 1,
-		alrm->time.tm_mday, alrm->time.tm_wday, alrm->time.tm_hour,
-		alrm->time.tm_min, alrm->time.tm_sec);
+	dev_dbg(dev, "alrm set RTC date/time %ptRd(%d) %ptRt\n",
+		&alrm->time, alrm->time.tm_wday, &alrm->time);
 
 	if (rk808_rtc->flag & RTC_NEED_TRANSITIONS)
 		gregorian_to_rockchip(&alrm->time);
@@ -371,8 +367,7 @@ static const struct rtc_class_ops rk808_rtc_ops = {
 /* Turn off the alarm if it should not be a wake source. */
 static int rk808_rtc_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct rk808_rtc *rk808_rtc = dev_get_drvdata(&pdev->dev);
+	struct rk808_rtc *rk808_rtc = dev_get_drvdata(dev);
 
 	if (device_may_wakeup(dev))
 		enable_irq_wake(rk808_rtc->irq);
@@ -385,8 +380,7 @@ static int rk808_rtc_suspend(struct device *dev)
  */
 static int rk808_rtc_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct rk808_rtc *rk808_rtc = dev_get_drvdata(&pdev->dev);
+	struct rk808_rtc *rk808_rtc = dev_get_drvdata(dev);
 
 	if (device_may_wakeup(dev))
 		disable_irq_wake(rk808_rtc->irq);
@@ -421,19 +415,10 @@ static int rk808_rtc_probe(struct platform_device *pdev)
 	struct device_node *np;
 	int ret;
 
-	switch (rk808->variant) {
-	case RK805_ID:
-	case RK808_ID:
-	case RK816_ID:
-	case RK818_ID:
-		np = of_get_child_by_name(pdev->dev.parent->of_node, "rtc");
-		if (np && !of_device_is_available(np)) {
-			dev_info(&pdev->dev, "device is disabled\n");
-			return -EINVAL;
-		}
-		break;
-	default:
-		break;
+	np = of_get_child_by_name(pdev->dev.parent->of_node, "rtc");
+	if (np && !of_device_is_available(np)) {
+		dev_info(&pdev->dev, "device is disabled\n");
+		return -EINVAL;
 	}
 
 	rk808_rtc = devm_kzalloc(&pdev->dev, sizeof(*rk808_rtc), GFP_KERNEL);
@@ -477,7 +462,7 @@ static int rk808_rtc_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(&pdev->dev,
 			"Failed to write RTC status: %d\n", ret);
-			return ret;
+		return ret;
 	}
 
 	device_init_wakeup(&pdev->dev, 1);
@@ -489,12 +474,8 @@ static int rk808_rtc_probe(struct platform_device *pdev)
 	rk808_rtc->rtc->ops = &rk808_rtc_ops;
 
 	rk808_rtc->irq = platform_get_irq(pdev, 0);
-	if (rk808_rtc->irq < 0) {
-		if (rk808_rtc->irq != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "Wake up is not possible as irq = %d\n",
-				rk808_rtc->irq);
+	if (rk808_rtc->irq < 0)
 		return rk808_rtc->irq;
-	}
 
 	/* request alarm irq of rk808 */
 	ret = devm_request_threaded_irq(&pdev->dev, rk808_rtc->irq, NULL,
@@ -506,11 +487,22 @@ static int rk808_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	return rtc_register_device(rk808_rtc->rtc);
+	return devm_rtc_register_device(rk808_rtc->rtc);
 }
+
+static const struct platform_device_id rk8xx_rtc_id_table[] = {
+	{ "rk805-rtc", 0 },
+	{ "rk809-rtc", 0 },
+	{ "rk816-rtc", 0 },
+	{ "rk817-rtc", 0 },
+	{ "rk818-rtc", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, rk8xx_rtc_id_table);
 
 static struct platform_driver rk808_rtc_driver = {
 	.probe = rk808_rtc_probe,
+	.id_table = rk8xx_rtc_id_table,
 	.driver = {
 		.name = "rk808-rtc",
 		.pm = &rk808_rtc_pm_ops,

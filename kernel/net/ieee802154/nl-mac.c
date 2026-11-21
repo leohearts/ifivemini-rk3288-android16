@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Netlink interface for IEEE 802.15.4 stack
  *
  * Copyright 2007, 2008 Siemens AG
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  * Written by:
  * Sergey Lapin <slapin@ossfans.org>
@@ -157,7 +149,7 @@ static struct net_device *ieee802154_nl_get_dev(struct genl_info *info)
 	if (info->attrs[IEEE802154_ATTR_DEV_NAME]) {
 		char name[IFNAMSIZ + 1];
 
-		nla_strlcpy(name, info->attrs[IEEE802154_ATTR_DEV_NAME],
+		nla_strscpy(name, info->attrs[IEEE802154_ATTR_DEV_NAME],
 			    sizeof(name));
 		dev = dev_get_by_name(&init_net, name);
 	} else if (info->attrs[IEEE802154_ATTR_DEV_INDEX]) {
@@ -1194,7 +1186,7 @@ static int llsec_iter_devkeys(struct llsec_dump_data *data)
 {
 	struct ieee802154_llsec_device *dpos;
 	struct ieee802154_llsec_device_key *kpos;
-	int rc = 0, idx = 0, idx2;
+	int idx = 0, idx2;
 
 	list_for_each_entry(dpos, &data->table->devices, list) {
 		if (idx++ < data->s_idx)
@@ -1210,7 +1202,7 @@ static int llsec_iter_devkeys(struct llsec_dump_data *data)
 						      data->nlmsg_seq,
 						      dpos->hwaddr, kpos,
 						      data->dev)) {
-				return rc = -EMSGSIZE;
+				return -EMSGSIZE;
 			}
 
 			data->s_idx2++;
@@ -1219,7 +1211,7 @@ static int llsec_iter_devkeys(struct llsec_dump_data *data)
 		data->s_idx++;
 	}
 
-	return rc;
+	return 0;
 }
 
 int ieee802154_llsec_dump_devkeys(struct sk_buff *skb,

@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Thunderbolt XDomain property support
  *
  * Copyright (C) 2017, Intel Corporation
  * Authors: Michael Jamet <michael.jamet@intel.com>
  *          Mika Westerberg <mika.westerberg@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/err.h>
@@ -179,6 +176,10 @@ static struct tb_property_dir *__tb_property_parse_dir(const u32 *block,
 	} else {
 		dir->uuid = kmemdup(&block[dir_offset], sizeof(*dir->uuid),
 				    GFP_KERNEL);
+		if (!dir->uuid) {
+			tb_property_free_dir(dir);
+			return NULL;
+		}
 		content_offset = dir_offset + 4;
 		content_len = dir_len - 4; /* Length includes UUID */
 	}
@@ -498,6 +499,77 @@ ssize_t tb_property_format_dir(const struct tb_property_dir *dir, u32 *block,
 
 	ret = __tb_property_format_dir(dir, block, 0, block_len);
 	return ret < 0 ? ret : 0;
+}
+
+/**
+ * tb_property_copy_dir() - Take a deep copy of directory
+ * @dir: Directory to copy
+ *
+ * This function takes a deep copy of @dir and returns back the copy. In
+ * case of error returns %NULL. The resulting directory needs to be
+ * released by calling tb_property_free_dir().
+ */
+struct tb_property_dir *tb_property_copy_dir(const struct tb_property_dir *dir)
+{
+	struct tb_property *property, *p = NULL;
+	struct tb_property_dir *d;
+
+	if (!dir)
+		return NULL;
+
+	d = tb_property_create_dir(dir->uuid);
+	if (!d)
+		return NULL;
+
+	list_for_each_entry(property, &dir->properties, list) {
+		struct tb_property *p;
+
+		p = tb_property_alloc(property->key, property->type);
+		if (!p)
+			goto err_free;
+
+		p->length = property->length;
+
+		switch (property->type) {
+		case TB_PROPERTY_TYPE_DIRECTORY:
+			p->value.dir = tb_property_copy_dir(property->value.dir);
+			if (!p->value.dir)
+				goto err_free;
+			break;
+
+		case TB_PROPERTY_TYPE_DATA:
+			p->value.data = kmemdup(property->value.data,
+						property->length * 4,
+						GFP_KERNEL);
+			if (!p->value.data)
+				goto err_free;
+			break;
+
+		case TB_PROPERTY_TYPE_TEXT:
+			p->value.text = kzalloc(p->length * 4, GFP_KERNEL);
+			if (!p->value.text)
+				goto err_free;
+			strcpy(p->value.text, property->value.text);
+			break;
+
+		case TB_PROPERTY_TYPE_VALUE:
+			p->value.immediate = property->value.immediate;
+			break;
+
+		default:
+			break;
+		}
+
+		list_add_tail(&p->list, &d->properties);
+	}
+
+	return d;
+
+err_free:
+	kfree(p);
+	tb_property_free_dir(d);
+
+	return NULL;
 }
 
 /**

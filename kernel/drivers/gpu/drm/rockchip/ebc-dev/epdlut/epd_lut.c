@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2020 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2020 Rockchip Electronics Co., Ltd.
  *
  * Author: Zorro Liu <zorro.liu@rock-chips.com>
  */
@@ -69,10 +69,4 @@ const char *epd_lut_get_wf_version(void)
 int epd_lut_get(struct epd_lut_data *output, enum epd_lut_type lut_type, int temperture)
 {
 	return lut_get(output, lut_type, temperture);
-}
-
-//you can change overlay lut mode here
-int epd_overlay_lut(void)
-{
-	return WF_TYPE_GRAY2;
 }

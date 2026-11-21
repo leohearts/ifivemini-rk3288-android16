@@ -1,6 +1,6 @@
 /* drivers/input/sensors/access/kxtik.c
  *
- * Copyright (C) 2012-2015 ROCKCHIP.
+ * Copyright (C) 2012-2015 Rockchip Electronics Co., Ltd.
  * Author: luowei <lw@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -213,7 +213,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return result;
 }
 
-struct sensor_operate proximity_stk3171_ops = {
+static struct sensor_operate proximity_stk3171_ops = {
 	.name				= "ps_stk3171",
 	.type				= SENSOR_TYPE_PROXIMITY,	//sensor type and it should be correct
 	.id_i2c				= PROXIMITY_ID_STK3171,		//i2c id number
@@ -238,9 +238,9 @@ static int proximity_stk3171_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &proximity_stk3171_ops);
 }
 
-static int proximity_stk3171_remove(struct i2c_client *client)
+static void proximity_stk3171_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &proximity_stk3171_ops);
+	sensor_unregister_device(client, NULL, &proximity_stk3171_ops);
 }
 
 static const struct i2c_device_id proximity_stk3171_id[] = {
@@ -250,7 +250,7 @@ static const struct i2c_device_id proximity_stk3171_id[] = {
 
 static struct i2c_driver proximity_stk3171_driver = {
 	.probe = proximity_stk3171_probe,
-	.remove = proximity_stk3171_remove,
+	.remove = (void *)proximity_stk3171_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = proximity_stk3171_id,
 	.driver = {

@@ -32,7 +32,7 @@
 		vin-supply = <&vcc3v3_sys>;
 	};
 
-	vcc3v3_pcie: gpio-regulator {
+	vcc3v3_pcie: vcc3v3-pcie {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v3_pcie";
 		regulator-min-microvolt = <3300000>;
@@ -43,7 +43,7 @@
 		vin-supply = <&dc_12v>;
 	};
 
-	qsgmii_3v3: gpio-regulator {
+	qsgmii_3v3: qsgmii-3v3 {
 		compatible = "regulator-gpio";
 		regulator-name = "qsgmii_3v3";
 		regulator-min-microvolt = <0100000>;
@@ -72,6 +72,13 @@
 	};
 };
 
+&bt_sound {
+	status = "disabled";
+	simple-audio-card,cpu {
+		sound-dai = <&i2s2_2ch>;
+	};
+};
+
 &combphy0_us {
 	status = "okay";
 };
@@ -82,6 +89,42 @@
 
 &combphy2_psq {
 	status = "okay";
+};
+
+&csi2_dphy_hw {
+	status = "okay";
+};
+
+&csi2_dphy0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			hdmi_to_mipi_in: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&lt6911uxc_out>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csidphy_out: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&mipi_csi2_input>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+	};
 };
 
 /*
@@ -168,6 +211,10 @@
 	power-supply = <&vcc3v3_lcd0_n>;
 };
 
+&hynitron {
+	power-supply = <&vcc3v3_lcd0_n>;
+};
+
 &i2c3 {
 	status = "okay";
 
@@ -219,6 +266,12 @@
 	status = "disabled";
 };
 
+&i2s2_2ch {
+	pinctrl-0 = <&i2s2m0_sclktx &i2s2m0_lrcktx &i2s2m0_sdi &i2s2m0_sdo>;
+	rockchip,bclk-fs = <32>;
+	status = "disabled";
+};
+
 &mdio1 {
 	qsgmii_phy0: phy@0 {
 		compatible = "ethernet-phy-id001c.c942", "ethernet-phy-ieee802.3-c22";
@@ -235,6 +288,39 @@
 	qsgmii_phy3: phy@3 {
 		compatible = "ethernet-phy-id001c.c942", "ethernet-phy-ieee802.3-c22";
 		reg = <0x3>;
+	};
+};
+
+&mipi_csi2 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi_csi2_input: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&csidphy_out>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi_csi2_output: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&cif_mipi_in>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
 	};
 };
 
@@ -297,6 +383,7 @@
 		};
 	};
 
+	/delete-node/ wireless-bluetooth;
 	wireless-bluetooth {
 		uart1_gpios: uart1-gpios {
 			rockchip,pins = <2 RK_PB5 RK_FUNC_GPIO &pcfg_pull_none>;
@@ -417,6 +504,25 @@
 	status = "disabled";
 };
 
+&rkcif_mipi_lvds {
+	status = "okay";
+
+	port {
+		cif_mipi_in: endpoint {
+			remote-endpoint = <&mipi_csi2_output>;
+			data-lanes = <1 2 3 4>;
+		};
+	};
+};
+
+&rkcif_mmu {
+	status = "okay";
+};
+
+&rkcif {
+	status = "okay";
+};
+
 &route_dsi0 {
 	status = "okay";
 	connect = <&vp1_out_dsi0>;
@@ -437,7 +543,8 @@
 
 &sdmmc1 {
 	max-frequency = <150000000>;
-	supports-sdio;
+	no-sd;
+	no-mmc;
 	bus-width = <4>;
 	disable-wp;
 	cap-sd-highspeed;
@@ -475,10 +582,12 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&wifi_host_wake_irq>;
 	WIFI,host_wake_irq = <&gpio2 RK_PB2 GPIO_ACTIVE_HIGH>;
+	WIFI,poweren_gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_HIGH>;
 };
 
 &wireless_bluetooth {
 	compatible = "bluetooth-platdata";
+	bt_port = "/dev/ttyS1";
 	clocks = <&pmucru CLK_RTC_32K>;
 	clock-names = "ext_clock";
 	//wifi-bt-power-toggle;
@@ -493,93 +602,5 @@
 };
 
 &xpcs {
-	status = "okay";
-};
-
-&csi2_dphy_hw {
-	status = "okay";
-};
-
-&csi2_dphy0 {
-	status = "okay";
-
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		port@0 {
-			reg = <0>;
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			hdmi_to_mipi_in: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&lt6911uxc_out>;
-				data-lanes = <1 2 3 4>;
-			};
-		};
-
-		port@1 {
-			reg = <1>;
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			csidphy_out: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&mipi_csi2_input>;
-				data-lanes = <1 2 3 4>;
-			};
-		};
-	};
-};
-
-&mipi_csi2 {
-	status = "okay";
-
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			reg = <0>;
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			mipi_csi2_input: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&csidphy_out>;
-				data-lanes = <1 2 3 4>;
-			};
-		};
-
-		port@1 {
-			reg = <1>;
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			mipi_csi2_output: endpoint@0 {
-				reg = <0>;
-				remote-endpoint = <&cif_mipi_in>;
-				data-lanes = <1 2 3 4>;
-			};
-		};
-	};
-};
-
-&rkcif {
-	status = "okay";
-};
-
-&rkcif_mipi_lvds {
-	status = "okay";
-
-	port {
-		cif_mipi_in: endpoint {
-			remote-endpoint = <&mipi_csi2_output>;
-			data-lanes = <1 2 3 4>;
-		};
-	};
-};
-
-&rkcif_mmu {
 	status = "okay";
 };

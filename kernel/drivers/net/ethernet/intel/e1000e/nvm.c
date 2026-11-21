@@ -392,7 +392,7 @@ s32 e1000e_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 				break;
 			}
 		}
-		usleep_range(10000, 20000);
+		usleep_range(10000, 11000);
 		nvm->ops.release(hw);
 	}
 
@@ -556,6 +556,12 @@ s32 e1000e_validate_nvm_checksum_generic(struct e1000_hw *hw)
 			return ret_val;
 		}
 		checksum += nvm_data;
+	}
+
+	if (hw->mac.type == e1000_pch_tgp &&
+	    nvm_data == NVM_CHECKSUM_UNINITIALIZED) {
+		e_dbg("Uninitialized NVM Checksum on TGP platform - ignoring\n");
+		return 0;
 	}
 
 	if (checksum != (u16)NVM_SUM) {

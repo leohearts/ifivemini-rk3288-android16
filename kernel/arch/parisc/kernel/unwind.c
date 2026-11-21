@@ -14,6 +14,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/sort.h>
+#include <linux/sched/task_stack.h>
 
 #include <linux/uaccess.h>
 #include <asm/assembly.h>
@@ -42,7 +43,7 @@ static DEFINE_SPINLOCK(unwind_lock);
  * we can call unwind_init as early in the bootup process as 
  * possible (before the slab allocator is initialized)
  */
-static struct unwind_table kernel_unwind_table __read_mostly;
+static struct unwind_table kernel_unwind_table __ro_after_init;
 static LIST_HEAD(unwind_tables);
 
 static inline const struct unwind_table_entry *
@@ -299,17 +300,15 @@ static void unwind_frame_regs(struct unwind_frame_info *info)
 			info->prev_sp = sp - 64;
 			info->prev_ip = 0;
 
-			/* The stack is at the end inside the thread_union
-			 * struct. If we reach data, we have reached the
-			 * beginning of the stack and should stop unwinding. */
-			if (info->prev_sp >= (unsigned long) task_thread_info(info->t) &&
-			    info->prev_sp < ((unsigned long) task_thread_info(info->t)
-						+ THREAD_SZ_ALGN)) {
+			/* Check if stack is inside kernel stack area */
+			if ((info->prev_sp - (unsigned long) task_stack_page(info->t))
+					>= THREAD_SIZE) {
 				info->prev_sp = 0;
 				break;
 			}
 
-			if (get_user(tmp, (unsigned long *)(info->prev_sp - RP_OFFSET))) 
+			if (copy_from_kernel_nofault(&tmp,
+			    (void *)info->prev_sp - RP_OFFSET, sizeof(tmp)))
 				break;
 			info->prev_ip = tmp;
 			sp = info->prev_sp;

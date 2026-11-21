@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Marvell Wireless LAN device driver: major data structures and prototypes
+ * NXP Wireless LAN device driver: major data structures and prototypes
  *
- * Copyright (C) 2011-2014, Marvell International Ltd.
- *
- * This software file (the "File") is distributed by Marvell International
- * Ltd. under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available by writing to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
- * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
+ * Copyright 2011-2020 NXP
  */
 
 #ifndef _MWIFIEX_MAIN_H_
@@ -49,6 +37,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/of_irq.h>
+#include <linux/workqueue.h>
 
 #include "decl.h"
 #include "ioctl.h"
@@ -524,6 +513,7 @@ enum mwifiex_adapter_work_flags {
 	MWIFIEX_IS_SUSPENDED,
 	MWIFIEX_IS_HS_CONFIGURED,
 	MWIFIEX_IS_HS_ENABLING,
+	MWIFIEX_IS_REQUESTING_FW_VEREXT,
 };
 
 struct mwifiex_band_config {
@@ -646,7 +636,7 @@ struct mwifiex_private {
 	struct wireless_dev wdev;
 	struct mwifiex_chan_freq_power cfp;
 	u32 versionstrsel;
-	char version_str[128];
+	char version_str[MWIFIEX_VERSION_STR_LENGTH];
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *dfs_dev_dir;
 #endif
@@ -748,7 +738,7 @@ struct mwifiex_bss_prio_tbl {
 struct cmd_ctrl_node {
 	struct list_head list;
 	struct mwifiex_private *priv;
-	u32 cmd_oid;
+	u32 cmd_no;
 	u32 cmd_flag;
 	struct sk_buff *cmd_skb;
 	struct sk_buff *resp_skb;
@@ -986,6 +976,7 @@ struct mwifiex_adapter {
 	struct timer_list wakeup_timer;
 	struct mwifiex_hs_config_param hs_cfg;
 	u8 hs_activated;
+	u8 hs_activated_manually;
 	u16 hs_activate_wait_q_woken;
 	wait_queue_head_t hs_activate_wait_q;
 	u8 event_body[MAX_EVENT_SIZE];
@@ -1017,10 +1008,12 @@ struct mwifiex_adapter {
 
 	/* For synchronizing FW initialization with device lifecycle. */
 	struct completion *fw_done;
+	bool is_up;
 
 	bool ext_scan;
 	u8 fw_api_ver;
 	u8 key_api_major_ver, key_api_minor_ver;
+	u8 max_p2p_conn, max_sta_conn;
 	struct memory_type_mapping *mem_type_mapping_tbl;
 	u8 num_mem_types;
 	bool scan_chan_gap_enabled;
@@ -1051,7 +1044,9 @@ struct mwifiex_adapter {
 	/* Device dump data/length */
 	void *devdump_data;
 	int devdump_len;
-	struct timer_list devdump_timer;
+	struct delayed_work devdump_work;
+
+	bool ignore_btcoex_events;
 };
 
 void mwifiex_process_tx_queue(struct mwifiex_adapter *adapter);
@@ -1306,6 +1301,9 @@ mwifiex_get_priv_by_id(struct mwifiex_adapter *adapter,
 
 	for (i = 0; i < adapter->priv_num; i++) {
 		if (adapter->priv[i]) {
+			if (adapter->priv[i]->bss_mode == NL80211_IFTYPE_UNSPECIFIED)
+				continue;
+
 			if ((adapter->priv[i]->bss_num == bss_num) &&
 			    (adapter->priv[i]->bss_type == bss_type))
 				break;

@@ -352,7 +352,7 @@ static const char *mdacon_startup(void)
 	return "MDA-2";
 }
 
-static void mdacon_init(struct vc_data *c, int init)
+static void mdacon_init(struct vc_data *c, bool init)
 {
 	c->vc_complement_mask = 0x0800;	 /* reverse video */
 	c->vc_display_fg = &mda_display_fg;
@@ -394,8 +394,10 @@ static inline u16 mda_convert_attr(u16 ch)
 		(ch & 0x00ff) | attr;
 }
 
-static u8 mdacon_build_attr(struct vc_data *c, u8 color, u8 intensity, 
-			    u8 blink, u8 underline, u8 reverse, u8 italic)
+static u8 mdacon_build_attr(struct vc_data *c, u8 color,
+			    enum vc_intensity intensity,
+			    bool blink, bool underline, bool reverse,
+			    bool italic)
 {
 	/* The attribute is just a bit vector:
 	 *
@@ -405,11 +407,11 @@ static u8 mdacon_build_attr(struct vc_data *c, u8 color, u8 intensity,
 	 *	Bit 7    : blink
 	 */
 
-	return (intensity & 3) |
-		((underline & 1) << 2) |
-		((reverse   & 1) << 3) |
-		(!!italic << 4) |
-		((blink     & 1) << 7);
+	return (intensity & VCI_MASK) |
+		(underline << 2) |
+		(reverse << 3) |
+		(italic << 4) |
+		(blink << 7);
 }
 
 static void mdacon_invert_region(struct vc_data *c, u16 *p, int count)
@@ -440,26 +442,21 @@ static void mdacon_putcs(struct vc_data *c, const unsigned short *s,
 	}
 }
 
-static void mdacon_clear(struct vc_data *c, int y, int x, 
-			  int height, int width)
+static void mdacon_clear(struct vc_data *c, unsigned int y, unsigned int x,
+			 unsigned int width)
 {
 	u16 *dest = mda_addr(x, y);
 	u16 eattr = mda_convert_attr(c->vc_video_erase_char);
 
-	if (width <= 0 || height <= 0)
+	if (width <= 0)
 		return;
 
-	if (x==0 && width==mda_num_columns) {
-		scr_memsetw(dest, eattr, height*width*2);
-	} else {
-		for (; height > 0; height--, dest+=mda_num_columns)
-			scr_memsetw(dest, eattr, width*2);
-	}
+	scr_memsetw(dest, eattr, width * 2);
 }
-                        
-static int mdacon_switch(struct vc_data *c)
+
+static bool mdacon_switch(struct vc_data *c)
 {
-	return 1;	/* redrawing needed */
+	return true;	/* redrawing needed */
 }
 
 static int mdacon_blank(struct vc_data *c, int blank, int mode_switch)
@@ -488,9 +485,9 @@ static void mdacon_cursor(struct vc_data *c, int mode)
 		return;
 	}
 
-	mda_set_cursor(c->vc_y*mda_num_columns*2 + c->vc_x*2);
+	mda_set_cursor(c->state.y * mda_num_columns * 2 + c->state.x * 2);
 
-	switch (c->vc_cursor_type & 0x0f) {
+	switch (CUR_SIZE(c->vc_cursor_type)) {
 
 		case CUR_LOWER_THIRD:	mda_set_cursor_size(10, 13); break;
 		case CUR_LOWER_HALF:	mda_set_cursor_size(7,  13); break;

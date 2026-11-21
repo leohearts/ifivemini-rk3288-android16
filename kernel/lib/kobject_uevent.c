@@ -200,7 +200,7 @@ int kobject_synth_uevent(struct kobject *kobj, const char *buf, size_t count)
 
 	r = kobject_action_type(buf, count, &action, &action_args);
 	if (r) {
-		msg = "unknown uevent action string\n";
+		msg = "unknown uevent action string";
 		goto out;
 	}
 
@@ -212,7 +212,7 @@ int kobject_synth_uevent(struct kobject *kobj, const char *buf, size_t count)
 	r = kobject_action_args(action_args,
 				count - (action_args - buf), &env);
 	if (r == -EINVAL) {
-		msg = "incorrect uevent action arguments\n";
+		msg = "incorrect uevent action arguments";
 		goto out;
 	}
 
@@ -224,7 +224,7 @@ int kobject_synth_uevent(struct kobject *kobj, const char *buf, size_t count)
 out:
 	if (r) {
 		devpath = kobject_get_path(kobj, GFP_KERNEL);
-		printk(KERN_WARNING "synth uevent: %s: %s",
+		pr_warn("synth uevent: %s: %s\n",
 		       devpath ?: "unknown device",
 		       msg ?: "failed to send uevent");
 		kfree(devpath);
@@ -240,6 +240,7 @@ static int kobj_usermode_filter(struct kobject *kobj)
 	ops = kobj_ns_ops(kobj);
 	if (ops) {
 		const void *init_ns, *ns;
+
 		ns = kobj->ktype->namespace(kobj);
 		init_ns = ops->initial_ns();
 		return ns != init_ns;
@@ -391,6 +392,7 @@ static int kobject_uevent_net_broadcast(struct kobject *kobj,
 	ops = kobj_ns_ops(kobj);
 	if (!ops && kobj->kset) {
 		struct kobject *ksobj = &kobj->kset->kobj;
+
 		if (ksobj->parent != NULL)
 			ops = kobj_ns_ops(ksobj->parent);
 	}
@@ -430,8 +432,23 @@ static void zap_modalias_env(struct kobj_uevent_env *env)
 		len = strlen(env->envp[i]) + 1;
 
 		if (i != env->envp_idx - 1) {
+			/* @env->envp[] contains pointers to @env->buf[]
+			 * with @env->buflen chars, and we are removing
+			 * variable MODALIAS here pointed by @env->envp[i]
+			 * with length @len as shown below:
+			 *
+			 * 0               @env->buf[]      @env->buflen
+			 * ---------------------------------------------
+			 * ^             ^              ^              ^
+			 * |             |->   @len   <-| target block |
+			 * @env->envp[0] @env->envp[i]  @env->envp[i + 1]
+			 *
+			 * so the "target block" indicated above is moved
+			 * backward by @len, and its right size is
+			 * @env->buflen - (@env->envp[i + 1] - @env->envp[0]).
+			 */
 			memmove(env->envp[i], env->envp[i + 1],
-				env->buflen - len);
+				env->buflen - (env->envp[i + 1] - env->envp[0]));
 
 			for (j = i; j < env->envp_idx - 1; j++)
 				env->envp[j] = env->envp[j + 1] - len;
@@ -499,7 +516,7 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 	}
 	/* skip the event, if the filter returns zero. */
 	if (uevent_ops && uevent_ops->filter)
-		if (!uevent_ops->filter(kset, kobj)) {
+		if (!uevent_ops->filter(kobj)) {
 			pr_debug("kobject: '%s' (%p): %s: filter function "
 				 "caused the event to drop!\n",
 				 kobject_name(kobj), kobj, __func__);
@@ -508,7 +525,7 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 
 	/* originating subsystem */
 	if (uevent_ops && uevent_ops->name)
-		subsystem = uevent_ops->name(kset, kobj);
+		subsystem = uevent_ops->name(kobj);
 	else
 		subsystem = kobject_name(&kset->kobj);
 	if (!subsystem) {
@@ -516,21 +533,6 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 			 "event to drop!\n", kobject_name(kobj), kobj,
 			 __func__);
 		return 0;
-	}
-
-	if (IS_ENABLED(CONFIG_ARCH_ROCKCHIP) &&
-	    IS_ENABLED(CONFIG_FREEZER) &&
-	    IS_ENABLED(CONFIG_ANDROID)) {
-		/*
-		 * Android healthd try to listen power_supply subsystem uevent,
-		 * but which will block system from suspend on big.LITTLE system
-		 * because thermal_cooling_device_unregister will called when
-		 * cpufreq_exit. So ignore this uevent when suspend.
-		 */
-		extern bool pm_freezing;
-
-		if (pm_freezing && !strcmp(subsystem, "thermal"))
-			return 0;
 	}
 
 	/* environment buffer */
@@ -567,7 +569,7 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 
 	/* let the kset specific function add its stuff */
 	if (uevent_ops && uevent_ops->uevent) {
-		retval = uevent_ops->uevent(kset, kobj, env);
+		retval = uevent_ops->uevent(kobj, env);
 		if (retval) {
 			pr_debug("kobject: '%s' (%p): %s: uevent() returned "
 				 "%d\n", kobject_name(kobj), kobj,
@@ -598,7 +600,7 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 
 	mutex_lock(&uevent_sock_mutex);
 	/* we will send an event, so request a new sequence number */
-	retval = add_uevent_var(env, "SEQNUM=%llu", (unsigned long long)++uevent_seqnum);
+	retval = add_uevent_var(env, "SEQNUM=%llu", ++uevent_seqnum);
 	if (retval) {
 		mutex_unlock(&uevent_sock_mutex);
 		goto exit;
@@ -782,8 +784,7 @@ static int uevent_net_init(struct net *net)
 
 	ue_sk->sk = netlink_kernel_create(net, NETLINK_KOBJECT_UEVENT, &cfg);
 	if (!ue_sk->sk) {
-		printk(KERN_ERR
-		       "kobject_uevent: unable to create netlink socket!\n");
+		pr_err("kobject_uevent: unable to create netlink socket!\n");
 		kfree(ue_sk);
 		return -ENODEV;
 	}

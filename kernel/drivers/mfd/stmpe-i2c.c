@@ -1,10 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ST Microelectronics MFD: stmpe's i2c client specific driver
  *
  * Copyright (C) ST-Ericsson SA 2010
  * Copyright (C) ST Microelectronics SA 2011
  *
- * License Terms: GNU General Public License, version 2
  * Author: Rabin Vincent <rabin.vincent@stericsson.com> for ST-Ericsson
  * Author: Viresh Kumar <vireshk@kernel.org> for ST Microelectronics
  */
@@ -91,11 +91,11 @@ stmpe_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 	return stmpe_probe(&i2c_ci, partnum);
 }
 
-static int stmpe_i2c_remove(struct i2c_client *i2c)
+static void stmpe_i2c_remove(struct i2c_client *i2c)
 {
 	struct stmpe *stmpe = dev_get_drvdata(&i2c->dev);
 
-	return stmpe_remove(stmpe);
+	stmpe_remove(stmpe);
 }
 
 static const struct i2c_device_id stmpe_i2c_id[] = {
@@ -139,3 +139,4 @@ module_exit(stmpe_exit);
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("STMPE MFD I2C Interface Driver");
 MODULE_AUTHOR("Rabin Vincent <rabin.vincent@stericsson.com>");
+MODULE_LICENSE("GPL");

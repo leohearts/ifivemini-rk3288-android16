@@ -41,6 +41,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 #include <media/media-entity.h>
@@ -720,13 +721,13 @@ static struct v4l2_subdev *get_remote_sensor(struct v4l2_subdev *sd)
 	struct media_entity *sensor_me;
 
 	local = &sd->entity.pads[MIPI_DPHY_RX_PAD_SINK];
-	remote = media_entity_remote_pad(local);
+	remote = media_pad_remote_pad_first(local);
 	if (!remote) {
 		v4l2_warn(sd, "No link between dphy and sensor\n");
 		return NULL;
 	}
 
-	sensor_me = media_entity_remote_pad(local)->entity;
+	sensor_me = media_pad_remote_pad_first(local)->entity;
 	return media_entity_to_v4l2_subdev(sensor_me);
 }
 
@@ -749,6 +750,9 @@ static int mipidphy_get_sensor_data_rate(struct v4l2_subdev *sd)
 	struct v4l2_ctrl *link_freq;
 	struct v4l2_querymenu qm = { .id = V4L2_CID_LINK_FREQ, };
 	int ret;
+
+	if (!sensor_sd)
+		return -ENODEV;
 
 	link_freq = v4l2_ctrl_find(sensor_sd->ctrl_handler, V4L2_CID_LINK_FREQ);
 	if (!link_freq) {
@@ -777,31 +781,25 @@ static int mipidphy_update_sensor_mbus(struct v4l2_subdev *sd)
 {
 	struct mipidphy_priv *priv = to_dphy_priv(sd);
 	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
-	struct mipidphy_sensor *sensor = sd_to_sensor(priv, sensor_sd);
+	struct mipidphy_sensor *sensor;
 	struct v4l2_mbus_config mbus;
 	int ret;
 
-	ret = v4l2_subdev_call(sensor_sd, video, g_mbus_config, &mbus);
+	if (!sensor_sd)
+		return -ENODEV;
+	sensor = sd_to_sensor(priv, sensor_sd);
+	if (!sensor)
+		return -ENODEV;
+	ret = v4l2_subdev_call(sensor_sd, pad, get_mbus_config, 0, &mbus);
 	if (ret)
 		return ret;
 
 	sensor->mbus = mbus;
-	switch (mbus.flags & V4L2_MBUS_CSI2_LANES) {
-	case V4L2_MBUS_CSI2_1_LANE:
-		sensor->lanes = 1;
-		break;
-	case V4L2_MBUS_CSI2_2_LANE:
-		sensor->lanes = 2;
-		break;
-	case V4L2_MBUS_CSI2_3_LANE:
-		sensor->lanes = 3;
-		break;
-	case V4L2_MBUS_CSI2_4_LANE:
-		sensor->lanes = 4;
-		break;
-	default:
-		return -EINVAL;
-	}
+	if (mbus.type == V4L2_MBUS_CSI2_DPHY ||
+	    mbus.type == V4L2_MBUS_CSI2_CPHY)
+		sensor->lanes = mbus.bus.mipi_csi2.num_data_lanes;
+	else if (mbus.type == V4L2_MBUS_CCP2)
+		sensor->lanes = mbus.bus.mipi_csi1.data_lane;
 
 	return 0;
 }
@@ -899,7 +897,7 @@ static int mipidphy_g_frame_interval(struct v4l2_subdev *sd,
 	return -EINVAL;
 }
 
-static int mipidphy_g_mbus_config(struct v4l2_subdev *sd,
+static int mipidphy_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				  struct v4l2_mbus_config *config)
 {
 	struct mipidphy_priv *priv = to_dphy_priv(sd);
@@ -909,6 +907,8 @@ static int mipidphy_g_mbus_config(struct v4l2_subdev *sd,
 	if (!sensor_sd)
 		return -ENODEV;
 	sensor = sd_to_sensor(priv, sensor_sd);
+	if (!sensor)
+		return -ENODEV;
 	mipidphy_update_sensor_mbus(sd);
 	*config = sensor->mbus;
 
@@ -925,7 +925,7 @@ static int mipidphy_s_power(struct v4l2_subdev *sd, int on)
 		return pm_runtime_put(priv->dev);
 }
 
-static int mipidphy_runtime_suspend(struct device *dev)
+static int __maybe_unused mipidphy_runtime_suspend(struct device *dev)
 {
 	struct media_entity *me = dev_get_drvdata(dev);
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(me);
@@ -940,7 +940,7 @@ static int mipidphy_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int mipidphy_runtime_resume(struct device *dev)
+static int __maybe_unused mipidphy_runtime_resume(struct device *dev)
 {
 	struct media_entity *me = dev_get_drvdata(dev);
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(me);
@@ -965,18 +965,21 @@ err:
 
 /* dphy accepts all fmt/size from sensor */
 static int mipidphy_get_set_fmt(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_format *fmt)
 {
 	struct mipidphy_priv *priv = to_dphy_priv(sd);
 	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
-	struct mipidphy_sensor *sensor = sd_to_sensor(priv, sensor_sd);
+	struct mipidphy_sensor *sensor;
 	int ret;
 	/*
 	 * Do not allow format changes and just relay whatever
 	 * set currently in the sensor.
 	 */
 	if (!sensor_sd)
+		return -ENODEV;
+	sensor = sd_to_sensor(priv, sensor_sd);
+	if (!sensor)
 		return -ENODEV;
 	ret = v4l2_subdev_call(sensor_sd, pad, get_fmt, NULL, fmt);
 	if (!ret && fmt->pad == 0)
@@ -985,7 +988,7 @@ static int mipidphy_get_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int mipidphy_get_selection(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_selection *sel)
 {
 	struct v4l2_subdev *sensor = get_remote_sensor(sd);
@@ -997,6 +1000,7 @@ static const struct v4l2_subdev_pad_ops mipidphy_subdev_pad_ops = {
 	.set_fmt = mipidphy_get_set_fmt,
 	.get_fmt = mipidphy_get_set_fmt,
 	.get_selection = mipidphy_get_selection,
+	.get_mbus_config = mipidphy_g_mbus_config,
 };
 
 static const struct v4l2_subdev_core_ops mipidphy_core_ops = {
@@ -1005,7 +1009,6 @@ static const struct v4l2_subdev_core_ops mipidphy_core_ops = {
 
 static const struct v4l2_subdev_video_ops mipidphy_video_ops = {
 	.g_frame_interval = mipidphy_g_frame_interval,
-	.g_mbus_config = mipidphy_g_mbus_config,
 	.s_stream = mipidphy_s_stream,
 };
 
@@ -1146,11 +1149,17 @@ static int mipidphy_rx_stream_on(struct mipidphy_priv *priv,
 				 struct v4l2_subdev *sd)
 {
 	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
-	struct mipidphy_sensor *sensor = sd_to_sensor(priv, sensor_sd);
+	struct mipidphy_sensor *sensor;
 	const struct dphy_drv_data *drv_data = priv->drv_data;
 	const struct hsfreq_range *hsfreq_ranges = drv_data->hsfreq_ranges;
 	int num_hsfreq_ranges = drv_data->num_hsfreq_ranges;
 	int i, hsfreq = 0;
+
+	if (!sensor_sd)
+		return -ENODEV;
+	sensor = sd_to_sensor(priv, sensor_sd);
+	if (!sensor)
+		return -ENODEV;
 
 	for (i = 0; i < num_hsfreq_ranges; i++) {
 		if (hsfreq_ranges[i].range_h >= priv->data_rate_mbps) {
@@ -1237,11 +1246,17 @@ static int mipidphy_txrx_stream_on(struct mipidphy_priv *priv,
 				   struct v4l2_subdev *sd)
 {
 	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
-	struct mipidphy_sensor *sensor = sd_to_sensor(priv, sensor_sd);
+	struct mipidphy_sensor *sensor;
 	const struct dphy_drv_data *drv_data = priv->drv_data;
 	const struct hsfreq_range *hsfreq_ranges = drv_data->hsfreq_ranges;
 	int num_hsfreq_ranges = drv_data->num_hsfreq_ranges;
 	int i, hsfreq = 0;
+
+	if (!sensor_sd)
+		return -ENODEV;
+	sensor = sd_to_sensor(priv, sensor_sd);
+	if (!sensor)
+		return -ENODEV;
 
 	for (i = 0; i < num_hsfreq_ranges; i++) {
 		if (hsfreq_ranges[i].range_h >= priv->data_rate_mbps) {
@@ -1356,13 +1371,19 @@ static int csi_mipidphy_stream_on(struct mipidphy_priv *priv,
 				  struct v4l2_subdev *sd)
 {
 	struct v4l2_subdev *sensor_sd = get_remote_sensor(sd);
-	struct mipidphy_sensor *sensor = sd_to_sensor(priv, sensor_sd);
+	struct mipidphy_sensor *sensor;
 	const struct dphy_drv_data *drv_data = priv->drv_data;
 	const struct hsfreq_range *hsfreq_ranges = drv_data->hsfreq_ranges;
 	int num_hsfreq_ranges = drv_data->num_hsfreq_ranges;
 	int i, hsfreq = 0;
 	u32 val = 0;
 	u32 clk_mode = 0x03;
+
+	if (!sensor_sd)
+		return -ENODEV;
+	sensor = sd_to_sensor(priv, sensor_sd);
+	if (!sensor)
+		return -ENODEV;
 
 	write_grf_reg(priv, GRF_DVP_V18SEL, 0x1);
 
@@ -1378,15 +1399,15 @@ static int csi_mipidphy_stream_on(struct mipidphy_priv *priv,
 	write_csiphy_reg(priv, CSIPHY_CTRL_PWRCTL, 0xe0);
 	usleep_range(500, 1000);
 
-	if (sensor->mbus.type == V4L2_MBUS_CSI2) {
+	if (sensor->mbus.type == V4L2_MBUS_CSI2_DPHY) {
 		/* Reset dphy digital part */
 		write_csiphy_reg(priv, CSIPHY_CTRL_DIG_RST, 0x1e);
 		write_csiphy_reg(priv, CSIPHY_CTRL_DIG_RST, 0x1f);
 		if (drv_data->chip_id == CHIP_ID_RK3326S) {
-			if (sensor->mbus.flags & V4L2_MBUS_CSI2_CONTINUOUS_CLOCK)
-				clk_mode = 0x03;
-			else if (sensor->mbus.flags & V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK)
+			if (sensor->mbus.bus.mipi_csi2.flags & V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK)
 				clk_mode = 0;
+			else
+				clk_mode = 0x03;
 			write_csiphy_reg(priv, CSIPHY_CLK_MODE, clk_mode);
 		}
 	} else {
@@ -1652,7 +1673,8 @@ rockchip_mipidphy_notifier_unbind(struct v4l2_async_notifier *notifier,
 						  notifier);
 	struct mipidphy_sensor *sensor = sd_to_sensor(priv, sd);
 
-	sensor->sd = NULL;
+	if (sensor)
+		sensor->sd = NULL;
 }
 
 static const struct
@@ -1661,50 +1683,83 @@ v4l2_async_notifier_operations rockchip_mipidphy_async_ops = {
 	.unbind = rockchip_mipidphy_notifier_unbind,
 };
 
-static int rockchip_mipidphy_fwnode_parse(struct device *dev,
-					  struct v4l2_fwnode_endpoint *vep,
-					  struct v4l2_async_subdev *asd)
+/* Parse fwnode with port0, if an empty function is used, each node will parse
+ * all ports, causing the device to repeatedly join the link and unable to
+ * complete the link
+ */
+static int rockchip_mipidphy_fwnode_parse(struct mipidphy_priv *priv)
 {
-	struct sensor_async_subdev *s_asd =
-			container_of(asd, struct sensor_async_subdev, asd);
-	struct v4l2_mbus_config *config = &s_asd->mbus;
+	struct device *dev = priv->dev;
+	struct fwnode_handle *ep = NULL;
+	struct sensor_async_subdev *s_asd = NULL;
+	struct fwnode_handle *remote_ep = NULL;
+	struct v4l2_mbus_config *config = NULL;
+	struct v4l2_fwnode_endpoint vep = {
+		.bus_type = V4L2_MBUS_CSI2_DPHY
+	};
+	struct device *remote_dev = NULL;
+	int ret = 0;
 
-	if (vep->base.port != 0) {
-		dev_err(dev, "The PHY has only port 0\n");
-		return -EINVAL;
+	fwnode_graph_for_each_endpoint(dev_fwnode(dev), ep) {
+		ret = v4l2_fwnode_endpoint_parse(ep, &vep);
+		if (ret)
+			goto err_parse;
+
+		/* only add fwnode form port 0 to notifier list */
+		if (vep.base.port != 0)
+			continue;
+
+		remote_ep = fwnode_graph_get_remote_port_parent(ep);
+
+		/* skip device dts status is disabled */
+		if (!fwnode_device_is_available(remote_ep)) {
+			fwnode_handle_put(remote_ep);
+			continue;
+		}
+
+		/* check sensor register state on i2c/spi bus for gki*/
+		if (!IS_ENABLED(CONFIG_NO_GKI)) {
+			remote_dev = bus_find_device_by_fwnode(&i2c_bus_type, remote_ep);
+			if (!remote_dev || !remote_dev->driver) {
+				remote_dev = bus_find_device_by_fwnode(&spi_bus_type, remote_ep);
+				if (!remote_dev || !remote_dev->driver) {
+					fwnode_handle_put(remote_ep);
+					continue;
+				}
+			}
+		}
+
+		fwnode_handle_put(remote_ep);
+
+		s_asd = v4l2_async_nf_add_fwnode_remote(&priv->notifier, ep,
+							struct
+							sensor_async_subdev);
+		if (IS_ERR(s_asd)) {
+			ret = PTR_ERR(s_asd);
+			goto err_parse;
+		}
+
+		config = &s_asd->mbus;
+		if (vep.bus_type == V4L2_MBUS_CSI2_DPHY ||
+		    vep.bus_type == V4L2_MBUS_CSI2_CPHY) {
+			config->type = vep.bus_type;
+			config->bus.mipi_csi2.flags = vep.bus.mipi_csi2.flags;
+			s_asd->lanes = vep.bus.mipi_csi2.num_data_lanes;
+		} else if (vep.bus_type == V4L2_MBUS_CCP2) {
+			/* V4L2_MBUS_CCP2 for lvds */
+			config->type = V4L2_MBUS_CCP2;
+			s_asd->lanes = vep.bus.mipi_csi1.data_lane;
+		} else {
+			dev_err(dev, "Only CSI2 and CCP2 bus type is currently supported\n");
+			ret = -EINVAL;
+			goto err_parse;
+		}
 	}
-
-	if (vep->bus_type == V4L2_MBUS_CSI2) {
-		config->type = V4L2_MBUS_CSI2;
-		config->flags = vep->bus.mipi_csi2.flags;
-		s_asd->lanes = vep->bus.mipi_csi2.num_data_lanes;
-	} else if (vep->bus_type == V4L2_MBUS_CCP2) {
-		/* V4L2_MBUS_CCP2 for lvds */
-		config->type = V4L2_MBUS_CCP2;
-		s_asd->lanes = vep->bus.mipi_csi1.data_lane;
-	} else {
-		dev_err(dev, "Only CSI2 and CCP2 bus type is currently supported\n");
-		return -EINVAL;
-	}
-
-	switch (s_asd->lanes) {
-	case 1:
-		config->flags |= V4L2_MBUS_CSI2_1_LANE;
-		break;
-	case 2:
-		config->flags |= V4L2_MBUS_CSI2_2_LANE;
-		break;
-	case 3:
-		config->flags |= V4L2_MBUS_CSI2_3_LANE;
-		break;
-	case 4:
-		config->flags |= V4L2_MBUS_CSI2_4_LANE;
-		break;
-	default:
-		return -EINVAL;
-	}
-
 	return 0;
+
+err_parse:
+	fwnode_handle_put(ep);
+	return ret;
 }
 
 static int rockchip_mipidphy_media_init(struct mipidphy_priv *priv)
@@ -1721,23 +1776,19 @@ static int rockchip_mipidphy_media_init(struct mipidphy_priv *priv)
 	if (ret < 0)
 		return ret;
 
-	ret = v4l2_async_notifier_parse_fwnode_endpoints_by_port(
-		priv->dev, &priv->notifier,
-		sizeof(struct sensor_async_subdev), 0,
-		rockchip_mipidphy_fwnode_parse);
+	v4l2_async_nf_init(&priv->notifier);
+
+	ret = rockchip_mipidphy_fwnode_parse(priv);
 	if (ret < 0)
 		return ret;
 
-	if (!priv->notifier.num_subdevs)
-		return -ENODEV;	/* no endpoint */
-
 	priv->sd.subdev_notifier = &priv->notifier;
 	priv->notifier.ops = &rockchip_mipidphy_async_ops;
-	ret = v4l2_async_subdev_notifier_register(&priv->sd, &priv->notifier);
+	ret = v4l2_async_subdev_nf_register(&priv->sd, &priv->notifier);
 	if (ret) {
 		dev_err(priv->dev,
 			"failed to register async notifier : %d\n", ret);
-		v4l2_async_notifier_cleanup(&priv->notifier);
+		v4l2_async_nf_cleanup(&priv->notifier);
 		return ret;
 	}
 
@@ -1751,7 +1802,6 @@ static int rockchip_mipidphy_probe(struct platform_device *pdev)
 	struct mipidphy_priv *priv;
 	struct regmap *grf;
 	struct resource *res;
-	const struct of_device_id *of_id;
 	const struct dphy_drv_data *drv_data;
 	int i, ret;
 
@@ -1759,10 +1809,6 @@ static int rockchip_mipidphy_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 	priv->dev = dev;
-
-	of_id = of_match_device(rockchip_mipidphy_match_id, dev);
-	if (!of_id)
-		return -EINVAL;
 
 	grf = syscon_node_to_regmap(dev->parent->of_node);
 	if (IS_ERR(grf)) {
@@ -1779,9 +1825,11 @@ static int rockchip_mipidphy_probe(struct platform_device *pdev)
 	if (priv->phy_index < 0)
 		priv->phy_index = 0;
 
-	drv_data = of_id->data;
+	drv_data = device_get_match_data(dev);
 	if (soc_is_px30s())
 		drv_data = &rk3326s_mipidphy_drv_data;
+	if (!drv_data)
+		return -EINVAL;
 
 	for (i = 0; i < drv_data->num_clks; i++) {
 		priv->clks[i] = devm_clk_get(dev, drv_data->clks[i]);

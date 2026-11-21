@@ -10,11 +10,14 @@
 #include <media/v4l2-subdev.h>
 #include <media/videobuf2-dma-contig.h>
 #include <media/videobuf2-dma-sg.h>
-#include <linux/dma-iommu.h>
 #include "dev.h"
 #include "regs.h"
 
 #define CIF_ISP_REQ_BUFS_MIN 0
+
+static bool rkisp_rdbk_no_trigger;
+module_param_named(rdbk_no_trigger, rkisp_rdbk_no_trigger, bool, 0644);
+MODULE_PARM_DESC(rdbk_no_trigger, "rkisp rdbk no using ioctl: RKISP_CMD_TRIGGER_READ_BACK");
 
 static const struct capture_fmt dmarx_fmts[] = {
 	/* bayer raw */
@@ -197,6 +200,65 @@ static const struct capture_fmt rawrd_fmts[] = {
 		.fmt_type = FMT_YUV,
 		.bpp = { 16 },
 		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_SRGGB14,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 14 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_SGRBG14,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 14 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_SGBRG14,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 14 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_SBGGR14,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 14 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_SRGGB16,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 16 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_SGRBG16,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 16 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_SGBRG16,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 16 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_SBGGR16,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 16 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_Y14,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 14 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_Y16,
+		.fmt_type = FMT_BAYER,
+		.bpp = { 16 },
+		.mplanes = 1,
+	}, {
+		.fourcc = V4L2_PIX_FMT_NV16,
+		.fmt_type = FMT_YUV,
+		.bpp = { 8, 16 },
+		.cplanes = 2,
+		.mplanes = 1,
+		.uv_swap = 0,
+		.write_format = CIF_MI_DMA_CTRL_READ_FMT_SPLANAR,
+		.output_format = CIF_MI_DMA_CTRL_FMT_YUV422,
 	}
 };
 
@@ -320,6 +382,24 @@ static int rawrd_config_mi(struct rkisp_stream *stream)
 	struct rkisp_device *dev = stream->ispdev;
 	u32 val;
 
+	if (stream->out_isp_fmt.fourcc == V4L2_PIX_FMT_NV16) {
+		val = stream->out_fmt.plane_fmt[0].bytesperline;
+		val /= DIV_ROUND_UP(stream->out_isp_fmt.bpp[0], 8);
+		rkisp_write(dev, CIF_MI_DMA_Y_LLENGTH, val, false);
+		val = stream->out_fmt.width;
+		rkisp_write(dev, CIF_MI_DMA_Y_PIC_WIDTH, val, false);
+		val = stream->out_fmt.width * stream->out_fmt.height;
+		rkisp_write(dev, CIF_MI_DMA_Y_PIC_SIZE, val, false);
+		val = stream->out_isp_fmt.write_format |
+		      stream->out_isp_fmt.output_format |
+		      CIF_MI_DMA_CTRL_BURST_LEN_LUM_16 |
+		      CIF_MI_DMA_CTRL_BURST_LEN_CHROM_16;
+		rkisp_write(dev, CIF_MI_DMA_CTRL, val, false);
+		val = CIF_VI_DPCL_DMA_SW_YCNR;
+		rkisp_set_bits(dev, CIF_VI_DPCL, CIF_VI_DPCL_DMA_SW_MASK, val, false);
+		return 0;
+	}
+
 	val = rkisp_read(dev, CSI2RX_DATA_IDS_1, true);
 	val &= ~SW_CSI_ID0(0xff);
 	switch (stream->out_isp_fmt.fourcc) {
@@ -343,12 +423,26 @@ static int rawrd_config_mi(struct rkisp_stream *stream)
 	case V4L2_PIX_FMT_VYUY:
 		val |= CIF_CSI2_DT_YUV422_8b;
 		break;
+	case V4L2_PIX_FMT_SRGGB14:
+	case V4L2_PIX_FMT_SBGGR14:
+	case V4L2_PIX_FMT_SGRBG14:
+	case V4L2_PIX_FMT_SGBRG14:
+	case V4L2_PIX_FMT_Y14:
+		val |= CIF_CSI2_DT_RAW14;
+		break;
+	case V4L2_PIX_FMT_SRGGB16:
+	case V4L2_PIX_FMT_SBGGR16:
+	case V4L2_PIX_FMT_SGRBG16:
+	case V4L2_PIX_FMT_SGBRG16:
+	case V4L2_PIX_FMT_Y16:
+		val |= CIF_CSI2_DT_RAW16;
+		break;
 	default:
 		val |= CIF_CSI2_DT_RAW12;
 	}
-	rkisp_write(dev, CSI2RX_RAW_RD_CTRL,
-		    stream->memory << 2, false);
-	rkisp_write(dev, CSI2RX_DATA_IDS_1, val, false);
+	rkisp_unite_write(dev, CSI2RX_RAW_RD_CTRL,
+			  stream->memory << 2, false);
+	rkisp_unite_write(dev, CSI2RX_DATA_IDS_1, val, false);
 	rkisp_rawrd_set_pic_size(dev, stream->out_fmt.width,
 				 stream->out_fmt.height);
 	mi_raw_length(stream);
@@ -364,25 +458,76 @@ static void update_rawrd(struct rkisp_stream *stream)
 {
 	struct rkisp_device *dev = stream->ispdev;
 	void __iomem *base = dev->base_addr;
+	struct capture_fmt *fmt = &stream->out_isp_fmt;
+	u32 val = 0, y_reg;
 
 	if (stream->curr_buf) {
-		rkisp_write(dev, stream->config->mi.y_base_ad_init,
-			    stream->curr_buf->buff_addr[RKISP_PLANE_Y],
-			    false);
+		if (fmt->fourcc == V4L2_PIX_FMT_NV16) {
+			y_reg = CIF_MI_DMA_Y_PIC_START_AD;
+
+			val = stream->curr_buf->buff_addr[RKISP_PLANE_CB];
+			rkisp_write(dev, CIF_MI_DMA_CB_PIC_START_AD, val, false);
+		} else {
+			y_reg = stream->config->mi.y_base_ad_init;
+		}
+
+		val = 0;
+		if (dev->vicap_in.merge_num > 1) {
+			val = stream->out_fmt.plane_fmt[0].bytesperline;
+			val /= dev->vicap_in.merge_num;
+			val *= dev->vicap_in.index;
+		}
+		val += stream->curr_buf->buff_addr[RKISP_PLANE_Y];
+		rkisp_write(dev, y_reg, val, false);
+
+		if (dev->unite_div > ISP_UNITE_DIV1) {
+			struct rkisp_unite_window *win;
+			u32 bpl = stream->out_fmt.plane_fmt[0].bytesperline;
+			u32 i, j, idx, offs, offs_h, offs_v = 0;
+
+			for (i = 0; i < dev->unite.v_div; i++) {
+				offs_h = 0;
+				for (j = 0; j < dev->unite.h_div; j++) {
+					idx = i * dev->unite.h_div + j;
+					rkisp_idx_write(dev, y_reg, val + offs_v + offs_h, idx, false);
+					/* read offs_h for next window */
+					win = &dev->unite.win[idx];
+					offs = win->act_width - win->right_extend;
+					if (j + 1 < dev->unite.h_div) {
+						win = &dev->unite.win[idx + 1];
+						offs -= win->left_extend;
+					}
+					if (stream->memory)
+						offs *= DIV_ROUND_UP(fmt->bpp[0], 8);
+					else
+						offs = offs * fmt->bpp[0] / 8;
+					offs_h += offs;
+				}
+				idx = i * dev->unite.h_div;
+				win = &dev->unite.win[idx];
+				offs = win->act_height - win->down_extend;
+				if (i + 1 < dev->unite.v_div) {
+					idx = (i + 1) * dev->unite.h_div;
+					win = &dev->unite.win[idx];
+					offs -= win->up_extend;
+				}
+				offs *= bpl;
+				offs_v += offs;
+			}
+		}
 		stream->frame_end = false;
-		if (stream->id == RKISP_STREAM_RAWRD2 &&
-		    stream->out_isp_fmt.fmt_type == FMT_YUV) {
+		if (stream->id == RKISP_STREAM_RAWRD2 && dev->is_rdbk_no_trigger) {
 			struct vb2_v4l2_buffer *vbuf = &stream->curr_buf->vb;
 			struct isp2x_csi_trigger trigger = {
 				.frame_timestamp = vbuf->vb2_buf.timestamp,
 				.sof_timestamp = vbuf->vb2_buf.timestamp,
 				.frame_id = vbuf->sequence,
-				.mode = T_START_X1,
+				.mode = 0,
 				.times = 0,
 			};
 
 			if (!vbuf->sequence)
-				trigger.frame_id = atomic_inc_return(&dev->isp_sdev.frm_sync_seq);
+				trigger.frame_id = ++dev->dmarx_dev.cur_frame.id;
 			rkisp_rdbk_trigger_event(dev, T_CMD_QUEUE, &trigger);
 		}
 	} else if (dev->dmarx_dev.trigger == T_AUTO) {
@@ -424,17 +569,65 @@ static struct streams_ops rkisp2_dmarx_streams_ops = {
 	.update_mi = update_rawrd,
 };
 
+static void dmarx_buf_to_vicap(struct rkisp_stream *stream, struct rkisp_buffer *buf)
+{
+	struct rkisp_device *dev = stream->ispdev;
+	struct v4l2_subdev *sd = dev->active_sensor->sd;
+	struct rkisp_rx_buf *rx_buf = buf->other;
+	u32 val, reg;
+	int on = 1;
+
+	if (rx_buf->is_switch && stream->id == RKISP_STREAM_RAWRD2) {
+		switch (dev->rd_mode) {
+		case HDR_RDBK_FRAME3:
+			dev->rd_mode = HDR_LINEX3_DDR;
+			break;
+		case HDR_RDBK_FRAME2:
+			dev->rd_mode = HDR_LINEX2_DDR;
+			break;
+		default:
+			dev->rd_mode = HDR_NORMAL;
+		}
+		dev->hdr.op_mode = dev->rd_mode;
+		val = SW_IBUF_OP_MODE(dev->hdr.op_mode);
+		rkisp_unite_write(dev, CSI2RX_CTRL0, val, false);
+		val = ISP21_MIPI_DROP_FRM;
+		rkisp_unite_set_bits(dev, CSI2RX_MASK_STAT, 0, val, false);
+		rkisp_unite_clear_bits(dev, CIF_ISP_IMSC, CIF_ISP_FRAME_IN, false);
+		if (dev->isp_ver >= ISP_V33) {
+			val = ISP33_PP_ENC_PIPE_EN;
+			rkisp_unite_clear_bits(dev, CTRL_SWS_CFG, val, false);
+			if (dev->hdr_wrap_line) {
+				val = stream->out_fmt.plane_fmt[0].bytesperline * dev->hdr_wrap_line;
+				rkisp_unite_write(dev, ISP32_MI_RAW0_RD_SIZE, val, false);
+			}
+			if (dev->unite_div == ISP_UNITE_DIV2) {
+				mi_raw_length(stream);
+				reg = stream->config->mi.y_base_ad_init;
+				rkisp_unite_write(dev, reg, rx_buf->dma, false);
+				dev->unite_index = ISP_UNITE_LEFT;
+				dev->params_vdev.rdbk_times = 2;
+			}
+		}
+		dev_info(dev->dev, "switch online seq:%d mode:0x%x refcnt:%d\n",
+			 rx_buf->sequence, dev->rd_mode, atomic_read(&dev->hw_dev->refcnt));
+		if (dev->hw_dev->is_single)
+			v4l2_subdev_call(sd, core, ioctl, RKISP_VICAP_CMD_HW_LINK, &on);
+	}
+	rx_buf->runtime_us = dev->isp_sdev.dbg.interval / 1000;
+	v4l2_subdev_call(sd, video, s_rx_buffer, rx_buf, NULL);
+}
+
 static int dmarx_frame_end(struct rkisp_stream *stream)
 {
+	struct rkisp_buffer *buf = NULL;
 	unsigned long lock_flags = 0;
 
 	spin_lock_irqsave(&stream->vbq_lock, lock_flags);
 	if (stream->curr_buf) {
-		vb2_buffer_done(&stream->curr_buf->vb.vb2_buf,
-			VB2_BUF_STATE_DONE);
+		buf = stream->curr_buf;
 		stream->curr_buf = NULL;
 	}
-
 	if (!list_empty(&stream->buf_queue)) {
 		stream->curr_buf =
 			list_first_entry(&stream->buf_queue,
@@ -443,9 +636,16 @@ static int dmarx_frame_end(struct rkisp_stream *stream)
 		list_del(&stream->curr_buf->queue);
 	}
 
-	if (stream->streaming)
+	if (stream->curr_buf)
 		stream->ops->update_mi(stream);
 	spin_unlock_irqrestore(&stream->vbq_lock, lock_flags);
+
+	if (buf) {
+		if (buf->other)
+			dmarx_buf_to_vicap(stream, buf);
+		else
+			vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+	}
 	return 0;
 }
 
@@ -458,10 +658,11 @@ static void dmarx_stop(struct rkisp_stream *stream)
 	int ret = 0;
 
 	stream->stopping = true;
-	if ((dev->isp_state & ISP_START) && !stream->frame_end) {
+	if ((dev->isp_state & ISP_START) && !stream->frame_end &&
+	    !dev->hw_dev->is_shutdown) {
 		ret = wait_event_timeout(stream->done,
 					 !stream->streaming,
-					 msecs_to_jiffies(100));
+					 msecs_to_jiffies(300));
 		if (!ret)
 			v4l2_warn(v4l2_dev,
 				  "dmarx:%d waiting on event return error %d\n",
@@ -513,9 +714,10 @@ static int rkisp_queue_setup(struct vb2_queue *queue,
 	}
 
 	rkisp_chk_tb_over(dev);
-	v4l2_dbg(1, rkisp_debug, &dev->v4l2_dev, "%s count %d, size %d\n",
-		 v4l2_type_names[queue->type], *num_buffers, sizes[0]);
+	v4l2_dbg(1, rkisp_debug, &dev->v4l2_dev, "%s %s count %d, size %d\n",
+		 stream->vnode.vdev.name, v4l2_type_names[queue->type], *num_buffers, sizes[0]);
 
+	dev->is_rdbk_no_trigger = rkisp_rdbk_no_trigger;
 	return 0;
 }
 
@@ -535,6 +737,7 @@ static void rkisp_buf_queue(struct vb2_buffer *vb)
 	struct sg_table *sgt;
 	int i;
 
+	ispbuf->other = NULL;
 	memset(ispbuf->buff_addr, 0, sizeof(ispbuf->buff_addr));
 	for (i = 0; i < isp_fmt->mplanes; i++) {
 		void *vaddr = vb2_plane_vaddr(vb, i);
@@ -602,15 +805,15 @@ static void destroy_buf_queue(struct rkisp_stream *stream,
 	unsigned long lock_flags = 0;
 
 	spin_lock_irqsave(&stream->vbq_lock, lock_flags);
-	if (stream->curr_buf) {
+	if (stream->curr_buf && !stream->curr_buf->other)
 		list_add_tail(&stream->curr_buf->queue, &stream->buf_queue);
-		stream->curr_buf = NULL;
-	}
+	stream->curr_buf = NULL;
 	while (!list_empty(&stream->buf_queue)) {
 		buf = list_first_entry(&stream->buf_queue,
 			struct rkisp_buffer, queue);
 		list_del(&buf->queue);
-		vb2_buffer_done(&buf->vb.vb2_buf, state);
+		if (!buf->other)
+			vb2_buffer_done(&buf->vb.vb2_buf, state);
 	}
 	spin_unlock_irqrestore(&stream->vbq_lock, lock_flags);
 }
@@ -618,6 +821,10 @@ static void destroy_buf_queue(struct rkisp_stream *stream,
 static void dmarx_stop_streaming(struct vb2_queue *queue)
 {
 	struct rkisp_stream *stream = queue->drv_priv;
+	struct v4l2_device *v4l2_dev = &stream->ispdev->v4l2_dev;
+
+	v4l2_dbg(1, rkisp_debug, v4l2_dev, "%s %s id:%d\n",
+		 __func__, stream->vnode.vdev.name, stream->id);
 
 	if (!stream->streaming)
 		return;
@@ -626,8 +833,9 @@ static void dmarx_stop_streaming(struct vb2_queue *queue)
 	destroy_buf_queue(stream, VB2_BUF_STATE_ERROR);
 
 	if (stream->id == RKISP_STREAM_RAWRD2 &&
-	    (stream->ispdev->isp_ver == ISP_V20 || stream->ispdev->isp_ver == ISP_V21))
+	    stream->ispdev->isp_ver >= ISP_V20)
 		kfifo_reset(&stream->ispdev->rdbk_kfifo);
+	stream->ispdev->is_rdbk_no_trigger = false;
 }
 
 static int dmarx_start_streaming(struct vb2_queue *queue,
@@ -638,19 +846,20 @@ static int dmarx_start_streaming(struct vb2_queue *queue,
 	struct v4l2_device *v4l2_dev = &dev->v4l2_dev;
 	int ret = -1;
 
+	v4l2_dbg(1, rkisp_debug, v4l2_dev, "%s %s id:%d\n",
+		 __func__, stream->vnode.vdev.name, stream->id);
+
 	if (WARN_ON(stream->streaming))
 		return -EBUSY;
 
 	if (!stream->linked) {
-		v4l2_err(v4l2_dev, "check video link\n");
+		v4l2_err(v4l2_dev, "check %s link\n", stream->vnode.vdev.name);
 		goto free_buf_queue;
 	}
 
 	ret = dmarx_start(stream);
 	if (ret < 0) {
-		v4l2_err(v4l2_dev,
-			 "start dmarx stream:%d failed\n",
-			 stream->id);
+		v4l2_err(v4l2_dev, "start %s failed\n", stream->vnode.vdev.name);
 		goto free_buf_queue;
 	}
 	return 0;
@@ -685,6 +894,8 @@ static int rkisp_init_vb2_queue(struct vb2_queue *q,
 	q->allow_cache_hints = 1;
 	q->bidirectional = 1;
 	q->gfp_flags = GFP_DMA32;
+	if (stream->ispdev->hw_dev->is_dma_contig)
+		q->dma_attrs = DMA_ATTR_FORCE_CONTIGUOUS;
 	return vb2_queue_init(q);
 }
 
@@ -697,6 +908,26 @@ static int rkisp_set_fmt(struct rkisp_stream *stream,
 	unsigned int planes;
 	u32 xsubs = 1, ysubs = 1;
 	unsigned int i;
+
+	if (stream->ispdev->isp_ver < ISP_V35 &&
+	    (pixm->pixelformat == V4L2_PIX_FMT_SBGGR14 ||
+	     pixm->pixelformat == V4L2_PIX_FMT_SGBRG14 ||
+	     pixm->pixelformat == V4L2_PIX_FMT_SGRBG14 ||
+	     pixm->pixelformat == V4L2_PIX_FMT_SRGGB14 ||
+	     pixm->pixelformat == V4L2_PIX_FMT_Y14)) {
+		if (pixm->pixelformat == V4L2_PIX_FMT_SBGGR14)
+			pixm->pixelformat = V4L2_PIX_FMT_SBGGR12;
+		else if (pixm->pixelformat == V4L2_PIX_FMT_SGBRG14)
+			pixm->pixelformat = V4L2_PIX_FMT_SGBRG12;
+		else if (pixm->pixelformat == V4L2_PIX_FMT_SGRBG14)
+			pixm->pixelformat = V4L2_PIX_FMT_SGRBG12;
+		else if (pixm->pixelformat == V4L2_PIX_FMT_SRGGB14)
+			pixm->pixelformat = V4L2_PIX_FMT_SRGGB12;
+		else
+			pixm->pixelformat = V4L2_PIX_FMT_Y12;
+		v4l2_warn(&stream->ispdev->v4l2_dev,
+			 "no support raw14, rawrd format force to raw12\n");
+	}
 
 	fmt = find_fmt(stream, pixm->pixelformat);
 	if (!fmt) {
@@ -736,18 +967,34 @@ static int rkisp_set_fmt(struct rkisp_stream *stream,
 		    fmt->fmt_type == FMT_BAYER)
 			height += RKMODULE_EXTEND_LINE;
 
-		if ((stream->ispdev->isp_ver == ISP_V20 ||
-		     stream->ispdev->isp_ver == ISP_V21) &&
+		if (stream->ispdev->isp_ver >= ISP_V20 &&
 		    fmt->fmt_type == FMT_BAYER &&
+		    fmt->bpp[0] != 16 &&
 		    !stream->memory &&
 		    stream->id != RKISP_STREAM_DMARX)
 			bytesperline = ALIGN(width * fmt->bpp[i] / 8, 256);
 		else
 			bytesperline = width * DIV_ROUND_UP(fmt->bpp[i], 8);
-		/* stride is only available for sp stream and y plane */
-		if (i != 0 ||
-		    plane_fmt->bytesperline < bytesperline)
-			plane_fmt->bytesperline = bytesperline;
+
+		if (stream->ispdev->vicap_in.merge_num > 1)
+			bytesperline *= stream->ispdev->vicap_in.merge_num;
+		/* bytesperline from user */
+		if (plane_fmt->bytesperline) {
+			bytesperline = width * fmt->bpp[i] / 8;
+			if (plane_fmt->bytesperline < bytesperline) {
+				bytesperline = ALIGN(bytesperline, 4);
+				v4l2_err(&stream->ispdev->v4l2_dev,
+					 "rawrd bytesperline:%d error, force to %d\n",
+					 plane_fmt->bytesperline, bytesperline);
+			} else {
+				bytesperline = ALIGN(plane_fmt->bytesperline, 4);
+				if (bytesperline != plane_fmt->bytesperline)
+					v4l2_err(&stream->ispdev->v4l2_dev,
+						 "rawrd bytesperline need 4 align, force to %d\n",
+						 bytesperline);
+			}
+		}
+		plane_fmt->bytesperline = bytesperline;
 
 		plane_fmt->sizeimage = plane_fmt->bytesperline * height;
 
@@ -770,7 +1017,7 @@ static int rkisp_set_fmt(struct rkisp_stream *stream,
 			DIV_ROUND_UP(fmt->bpp[0], 8);
 
 		v4l2_dbg(1, rkisp_debug, &stream->ispdev->v4l2_dev,
-			 "%s: stream: %d req(%d, %d) out(%d, %d)\n", __func__,
+			 "%s: rx:%d req(%d, %d) out(%d, %d)\n", __func__,
 			 stream->id, pixm->width, pixm->height,
 			 stream->out_fmt.width, stream->out_fmt.height);
 	}
@@ -786,6 +1033,9 @@ static const struct v4l2_file_operations rkisp_fops = {
 	.unlocked_ioctl = video_ioctl2,
 	.poll = vb2_fop_poll,
 	.mmap = vb2_fop_mmap,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = video_ioctl2,
+#endif
 };
 
 static int rkisp_try_fmt_vid_out_mplane(struct file *file, void *fh,
@@ -820,7 +1070,8 @@ static int rkisp_s_fmt_vid_out_mplane(struct file *file,
 	struct rkisp_device *dev = stream->ispdev;
 
 	if (vb2_is_busy(&node->buf_queue)) {
-		v4l2_err(&dev->v4l2_dev, "%s queue busy\n", __func__);
+		v4l2_err(&dev->v4l2_dev, "%s rx:%d queue busy\n",
+			 __func__, stream->id);
 		return -EBUSY;
 	}
 
@@ -844,7 +1095,7 @@ static int rkisp_querycap(struct file *file, void *priv,
 	struct device *dev = stream->ispdev->dev;
 	struct video_device *vdev = video_devdata(file);
 
-	strlcpy(cap->card, vdev->name, sizeof(cap->card));
+	strscpy(cap->card, vdev->name, sizeof(cap->card));
 	snprintf(cap->driver, sizeof(cap->driver),
 		 "%s_v%d", dev->driver->name,
 		 stream->ispdev->isp_ver >> 4);
@@ -904,7 +1155,7 @@ static const struct v4l2_ioctl_ops rkisp_dmarx_ioctl = {
 	.vidioc_streamon = vb2_ioctl_streamon,
 	.vidioc_streamoff = vb2_ioctl_streamoff,
 	.vidioc_try_fmt_vid_out_mplane = rkisp_try_fmt_vid_out_mplane,
-	.vidioc_enum_fmt_vid_out_mplane = rkisp_enum_fmt_vid_out_mplane,
+	.vidioc_enum_fmt_vid_out = rkisp_enum_fmt_vid_out_mplane,
 	.vidioc_s_fmt_vid_out_mplane = rkisp_s_fmt_vid_out_mplane,
 	.vidioc_g_fmt_vid_out_mplane = rkisp_g_fmt_vid_out_mplane,
 	.vidioc_querycap = rkisp_querycap,
@@ -945,7 +1196,7 @@ static int rkisp_register_dmarx_video(struct rkisp_stream *stream)
 		V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
 	vdev->queue = &node->buf_queue;
 
-	ret = video_register_device(vdev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
 		v4l2_err(v4l2_dev,
 			 "%s failed with error %d\n", __func__, ret);
@@ -1023,25 +1274,25 @@ static int dmarx_init(struct rkisp_device *dev, u32 id)
 
 	switch (id) {
 	case RKISP_STREAM_DMARX:
-		strlcpy(vdev->name, DMA_VDEV_NAME,
+		strscpy(vdev->name, DMA_VDEV_NAME,
 			sizeof(vdev->name));
 		stream->ops = &rkisp_dmarx_streams_ops;
 		stream->config = &rkisp_dmarx_stream_config;
 		break;
 	case RKISP_STREAM_RAWRD0:
-		strlcpy(vdev->name, DMARX0_VDEV_NAME,
+		strscpy(vdev->name, DMARX0_VDEV_NAME,
 			sizeof(vdev->name));
 		stream->ops = &rkisp2_dmarx_streams_ops;
 		stream->config = &rkisp2_dmarx0_stream_config;
 		break;
 	case RKISP_STREAM_RAWRD1:
-		strlcpy(vdev->name, DMARX1_VDEV_NAME,
+		strscpy(vdev->name, DMARX1_VDEV_NAME,
 			sizeof(vdev->name));
 		stream->ops = &rkisp2_dmarx_streams_ops;
 		stream->config = &rkisp2_dmarx1_stream_config;
 		break;
 	case RKISP_STREAM_RAWRD2:
-		strlcpy(vdev->name, DMARX2_VDEV_NAME,
+		strscpy(vdev->name, DMARX2_VDEV_NAME,
 			sizeof(vdev->name));
 		stream->ops = &rkisp2_dmarx_streams_ops;
 		stream->config = &rkisp2_dmarx2_stream_config;
@@ -1072,44 +1323,58 @@ void rkisp_rawrd_set_pic_size(struct rkisp_device *dev,
 {
 	struct rkisp_isp_subdev *sdev = &dev->isp_sdev;
 	u8 mult = sdev->in_fmt.fmt_type == FMT_YUV ? 2 : 1;
+	u32 w, h;
 
 	/* rx height should equal to isp height + offset for read back mode */
 	height = sdev->in_crop.top + sdev->in_crop.height;
+
+	w = width;
+	h = height;
 
 	/* isp20 extend line for normal read back mode to fix internal bug */
 	if (dev->isp_ver == ISP_V20 &&
 	    sdev->in_fmt.fmt_type == FMT_BAYER &&
 	    sdev->out_fmt.fmt_type != FMT_BAYER &&
 	    dev->rd_mode == HDR_RDBK_FRAME1)
-		height += RKMODULE_EXTEND_LINE;
+		h += RKMODULE_EXTEND_LINE;
 
-	rkisp_write(dev, CSI2RX_RAW_RD_PIC_SIZE, height << 16 | width * mult, false);
+	w *= mult;
+	rkisp_unite_write(dev, CSI2RX_RAW_RD_PIC_SIZE, h << 16 | w, false);
+
+	if (dev->unite_div > ISP_UNITE_DIV1) {
+		u32 i, j, idx;
+
+		for (i = 0; i < dev->unite.v_div; i++) {
+			for (j = 0; j < dev->unite.h_div; j++) {
+				idx = i * dev->unite.h_div + j;
+				w = dev->unite.win[idx].act_width;
+				h = dev->unite.win[idx].act_height;
+				rkisp_idx_write(dev, CSI2RX_RAW_RD_PIC_SIZE, h << 16 | w, idx, false);
+			}
+		}
+	}
 }
 
 void rkisp_dmarx_get_frame(struct rkisp_device *dev, u32 *id,
 			   u64 *sof_timestamp, u64 *timestamp,
-			   bool sync)
+			   bool is_cur_frame)
 {
 	unsigned long flag = 0;
 	u64 sof_time = 0, frame_timestamp = 0;
 	u32 frame_id = 0;
 
-	if (!dev->dmarx_dev.trigger && id) {
-		*id = atomic_read(&dev->isp_sdev.frm_sync_seq) - 1;
-		return;
-	}
-
 	spin_lock_irqsave(&dev->rdbk_lock, flag);
-	if (sync) {
+	if (is_cur_frame) {
 		frame_id = dev->dmarx_dev.cur_frame.id;
 		sof_time = dev->dmarx_dev.cur_frame.sof_timestamp;
 		frame_timestamp = dev->dmarx_dev.cur_frame.timestamp;
 	} else {
-		frame_id = dev->dmarx_dev.pre_frame.id;
-		sof_time = dev->dmarx_dev.pre_frame.sof_timestamp;
-		frame_timestamp = dev->dmarx_dev.pre_frame.timestamp;
+		frame_id = dev->dmarx_dev.cur_be_frame.id;
+		sof_time = dev->dmarx_dev.cur_be_frame.sof_timestamp;
+		frame_timestamp = dev->dmarx_dev.cur_be_frame.timestamp;
 	}
 	spin_unlock_irqrestore(&dev->rdbk_lock, flag);
+
 	if (id)
 		*id = frame_id;
 	if (sof_timestamp)
@@ -1131,7 +1396,7 @@ int rkisp_register_dmarx_vdev(struct rkisp_device *dev)
 	if (ret < 0)
 		goto err;
 #endif
-	if (dev->isp_ver == ISP_V20 || dev->isp_ver == ISP_V21) {
+	if (dev->isp_ver >= ISP_V20) {
 		ret = dmarx_init(dev, RKISP_STREAM_RAWRD0);
 		if (ret < 0)
 			goto err_free_dmarx;
@@ -1139,12 +1404,13 @@ int rkisp_register_dmarx_vdev(struct rkisp_device *dev)
 		if (ret < 0)
 			goto err_free_dmarx0;
 	}
-	if (dev->isp_ver == ISP_V20) {
+	if (dev->isp_ver == ISP_V20 || dev->isp_ver == ISP_V30) {
 		ret = dmarx_init(dev, RKISP_STREAM_RAWRD1);
 		if (ret < 0)
 			goto err_free_dmarx2;
 	}
-
+	dmarx_dev->cur_be_frame.id = -1;
+	dmarx_dev->cur_frame.id = -1;
 	return 0;
 err_free_dmarx2:
 	rkisp_unregister_dmarx_video(&dmarx_dev->stream[RKISP_STREAM_RAWRD2]);
@@ -1168,14 +1434,14 @@ void rkisp_unregister_dmarx_vdev(struct rkisp_device *dev)
 	rkisp_unregister_dmarx_video(stream);
 #endif
 
-	if (dev->isp_ver == ISP_V20 || dev->isp_ver == ISP_V21) {
+	if (dev->isp_ver >= ISP_V20) {
 		stream = &dmarx_dev->stream[RKISP_STREAM_RAWRD0];
 		rkisp_unregister_dmarx_video(stream);
 
 		stream = &dmarx_dev->stream[RKISP_STREAM_RAWRD2];
 		rkisp_unregister_dmarx_video(stream);
 	}
-	if (dev->isp_ver == ISP_V20) {
+	if (dev->isp_ver == ISP_V20 || dev->isp_ver == ISP_V30) {
 		stream = &dmarx_dev->stream[RKISP_STREAM_RAWRD1];
 		rkisp_unregister_dmarx_video(stream);
 	}

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Rockchip machine ASoC driver for Rockchip HDMI audio output
+ * Rockchip machine ASoC driver for Rockchip HDMI audio
  *
- * Copyright (C) 2021 Rockchip Electronics Co., Ltd
+ * Copyright (C) 2021 Rockchip Electronics Co., Ltd.
  *
  * Authors: XiaoTan Luo <lxt@rock-chips.com>
  *
@@ -57,7 +57,7 @@ static int rk_hdmi_fill_widget_info(struct device *dev,
 
 static int rk_dailink_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct rk_hdmi_data *rk_data = snd_soc_card_get_drvdata(rtd->card);
 	struct device *dev = rtd->card->dev;
@@ -87,11 +87,11 @@ static int rk_dailink_init(struct snd_soc_pcm_runtime *rtd)
 	if (ret < 0)
 		return ret;
 
-	ret = snd_soc_card_jack_new(rtd->card,
-				    rk_data->hdmi_jack_pin.pin,
-				    rk_data->hdmi_jack_pin.mask,
-				    &rk_data->hdmi_jack,
-				    &rk_data->hdmi_jack_pin, 1);
+	ret = snd_soc_card_jack_new_pins(rtd->card,
+					 rk_data->hdmi_jack_pin.pin,
+					 rk_data->hdmi_jack_pin.mask,
+					 &rk_data->hdmi_jack,
+					 &rk_data->hdmi_jack_pin, 1);
 	if (ret) {
 		dev_err(dev, "Can't new HDMI Jack %d\n", ret);
 		return ret;
@@ -104,9 +104,9 @@ static int rk_dailink_init(struct snd_soc_pcm_runtime *rtd)
 static int rk_hdmi_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	struct rk_hdmi_data *rk_data = snd_soc_card_get_drvdata(rtd->card);
 	unsigned int mclk;
 	int ret;
@@ -133,16 +133,55 @@ static int rk_hdmi_hw_params(struct snd_pcm_substream *substream,
 
 }
 
-static struct snd_soc_ops rk_ops = {
+static const struct snd_soc_ops rk_ops = {
 	.hw_params = rk_hdmi_hw_params,
 };
+
+static unsigned int rk_hdmi_parse_daifmt(struct device_node *node,
+				struct device_node *codec,
+				char *prefix)
+{
+	struct device_node *bitclkmaster = NULL;
+	struct device_node *framemaster = NULL;
+	unsigned int daifmt;
+
+	daifmt = snd_soc_daifmt_parse_format(node, prefix);
+
+	snd_soc_daifmt_parse_clock_provider_as_phandle(node, prefix, &bitclkmaster, &framemaster);
+	if (!bitclkmaster && !framemaster) {
+		/*
+		 * No dai-link level and master setting was not found from
+		 * sound node level, revert back to legacy DT parsing and
+		 * take the settings from codec node.
+		 */
+		pr_debug("%s: Revert to legacy daifmt parsing\n", __func__);
+
+		daifmt |= snd_soc_daifmt_parse_clock_provider_as_flag(codec, NULL);
+	} else {
+		daifmt |= snd_soc_daifmt_clock_provider_from_bitmap(
+				((codec == bitclkmaster) << 4) | (codec == framemaster));
+	}
+
+	/*
+	 * If there is NULL format means that the format isn't specified, we
+	 * need to set i2s format by default.
+	 */
+	if (!(daifmt & SND_SOC_DAIFMT_FORMAT_MASK))
+		daifmt |= SND_SOC_DAIFMT_I2S;
+
+	of_node_put(bitclkmaster);
+	of_node_put(framemaster);
+	return daifmt;
+}
 
 static int rk_hdmi_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct snd_soc_dai_link_component *codecs;
+	struct snd_soc_dai_link_component *platforms;
+	struct snd_soc_dai_link_component *cpus;
 	struct of_phandle_args args;
-	struct device_node *codec_np, *cpu_np;
+	struct device_node *cpu_np;
 	struct rk_hdmi_data *rk_data;
 	int count;
 	u32 val;
@@ -152,29 +191,41 @@ static int rk_hdmi_probe(struct platform_device *pdev)
 	if (!rk_data)
 		return -ENOMEM;
 
+	cpus = devm_kzalloc(&pdev->dev, sizeof(*cpus), GFP_KERNEL);
+	if (!cpus)
+		return -ENOMEM;
+
+	platforms = devm_kzalloc(&pdev->dev, sizeof(*platforms), GFP_KERNEL);
+	if (!platforms)
+		return -ENOMEM;
+
 	rk_data->card.dev = &pdev->dev;
 	rk_data->dai.init = &rk_dailink_init;
 	rk_data->dai.ops = &rk_ops;
-	rk_data->dai.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
-			       SND_SOC_DAIFMT_CBS_CFS;
+	rk_data->dai.cpus = cpus;
+	rk_data->dai.platforms = platforms;
+	rk_data->dai.num_cpus = 1;
+	rk_data->dai.num_platforms = 1;
 	/* Parse the card name from DT */
 	ret = snd_soc_of_parse_card_name(&rk_data->card, "rockchip,card-name");
 	if (ret < 0)
 		return ret;
 	rk_data->dai.name = rk_data->card.name;
 	rk_data->dai.stream_name = rk_data->card.name;
-	count = of_count_phandle_with_args(np, "rockchip,codec", NULL);
+	count = of_count_phandle_with_args(np, "rockchip,codec", "#sound-dai-cells");
 	if (count < 0 || count > MAX_CODECS)
 		return -EINVAL;
 
 	/* refine codecs, remove unavailable node */
 	for (i = 0; i < count; i++) {
-		codec_np = of_parse_phandle(np, "rockchip,codec", i);
-		if (!codec_np)
+		ret = of_parse_phandle_with_args(np, "rockchip,codec", "#sound-dai-cells", i, &args);
+		if (ret) {
+			dev_err(&pdev->dev, "error getting codec phandle index %d\n", i);
 			return -ENODEV;
-		if (of_device_is_available(codec_np))
+		}
+		if (of_device_is_available(args.np))
 			idx++;
-		of_node_put(codec_np);
+		of_node_put(args.np);
 	}
 
 	if (!idx)
@@ -182,25 +233,23 @@ static int rk_hdmi_probe(struct platform_device *pdev)
 
 	codecs = devm_kcalloc(&pdev->dev, idx,
 			      sizeof(*codecs), GFP_KERNEL);
+	if (!codecs)
+		return -ENOMEM;
+
 	rk_data->dai.codecs = codecs;
 	rk_data->dai.num_codecs = idx;
 	idx = 0;
 	for (i = 0; i < count; i++) {
-		codec_np = of_parse_phandle(np, "rockchip,codec", i);
-		if (!codec_np)
-			return -ENODEV;
-		if (!of_device_is_available(codec_np))
-			continue;
-
-		ret = of_parse_phandle_with_fixed_args(np, "rockchip,codec",
-						       0, i, &args);
+		ret = of_parse_phandle_with_args(np, "rockchip,codec", "#sound-dai-cells", i, &args);
 		if (ret) {
-			of_node_put(codec_np);
-			return ret;
+			dev_err(&pdev->dev, "error getting codec phandle index %d\n", i);
+			return -ENODEV;
 		}
-
-		codecs[idx].of_node = codec_np;
-		of_node_put(codec_np);
+		if (!of_device_is_available(args.np)) {
+			of_node_put(args.np);
+			continue;
+		}
+		codecs[idx].of_node = args.np;
 		ret = snd_soc_get_dai_name(&args, &codecs[idx].dai_name);
 		if (ret)
 			return ret;
@@ -211,6 +260,7 @@ static int rk_hdmi_probe(struct platform_device *pdev)
 	if (!cpu_np)
 		return -ENODEV;
 
+	rk_data->dai.dai_fmt = rk_hdmi_parse_daifmt(np, codecs[0].of_node, "rockchip,");
 	rk_data->mclk_fs = DEFAULT_MCLK_FS;
 	if (!of_property_read_u32(np, "rockchip,mclk-fs", &val))
 		rk_data->mclk_fs = val;
@@ -218,8 +268,8 @@ static int rk_hdmi_probe(struct platform_device *pdev)
 	rk_data->jack_det =
 		of_property_read_bool(np, "rockchip,jack-det");
 
-	rk_data->dai.cpu_of_node = cpu_np;
-	rk_data->dai.platform_of_node = cpu_np;
+	rk_data->dai.cpus->of_node = cpu_np;
+	rk_data->dai.platforms->of_node = cpu_np;
 	of_node_put(cpu_np);
 
 	rk_data->hdmi_jack_pin.pin = rk_data->card.name;

@@ -407,7 +407,8 @@
 
 &sdmmc0 {
 	max-frequency = <50000000>;
-	supports-sd;
+	no-sdio;
+	no-mmc;
 	bus-width = <4>;
 	cap-mmc-highspeed;
 	cap-sd-highspeed;
@@ -422,7 +423,8 @@
 
 &sdmmc1 {
 	max-frequency = <150000000>;
-	supports-sdio;
+	no-sd;
+	no-mmc;
 	bus-width = <4>;
 	disable-wp;
 	cap-sd-highspeed;
@@ -518,6 +520,7 @@
 		};
 	};
 
+	/delete-node/ wireless-bluetooth;
 	wireless-bluetooth {
 		uart1_gpios: uart1-gpios {
 			rockchip,pins = <2 RK_PB5 RK_FUNC_GPIO &pcfg_pull_none>;

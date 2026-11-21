@@ -1116,6 +1116,12 @@ static ssize_t ieee1284_id_show(struct device *dev, struct device_attribute *att
 
 static DEVICE_ATTR_RO(ieee1284_id);
 
+static struct attribute *usblp_attrs[] = {
+	&dev_attr_ieee1284_id.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(usblp);
+
 static int usblp_probe(struct usb_interface *intf,
 		       const struct usb_device_id *id)
 {
@@ -1190,9 +1196,6 @@ static int usblp_probe(struct usb_interface *intf,
 
 	/* Retrieve and store the device ID string. */
 	usblp_cache_device_id_string(usblp);
-	retval = device_create_file(&intf->dev, &dev_attr_ieee1284_id);
-	if (retval)
-		goto abort_intfdata;
 
 #ifdef DEBUG
 	usblp_check_status(usblp, 0);
@@ -1223,7 +1226,6 @@ static int usblp_probe(struct usb_interface *intf,
 
 abort_intfdata:
 	usb_set_intfdata(intf, NULL);
-	device_remove_file(&intf->dev, &dev_attr_ieee1284_id);
 abort:
 	kfree(usblp->readbuf);
 	kfree(usblp->statusbuf);
@@ -1335,11 +1337,12 @@ static int usblp_set_protocol(struct usblp *usblp, int protocol)
 	if (protocol < USBLP_FIRST_PROTOCOL || protocol > USBLP_LAST_PROTOCOL)
 		return -EINVAL;
 
+	alts = usblp->protocol[protocol].alt_setting;
+	if (alts < 0)
+		return -EINVAL;
+
 	/* Don't unnecessarily set the interface if there's a single alt. */
 	if (usblp->intf->num_altsetting > 1) {
-		alts = usblp->protocol[protocol].alt_setting;
-		if (alts < 0)
-			return -EINVAL;
 		r = usb_set_interface(usblp->dev, usblp->ifnum, alts);
 		if (r < 0) {
 			printk(KERN_ERR "usblp: can't set desired altsetting %d on interface %d\n",
@@ -1397,8 +1400,6 @@ static void usblp_disconnect(struct usb_interface *intf)
 		dev_err(&intf->dev, "bogus disconnect\n");
 		BUG();
 	}
-
-	device_remove_file(&intf->dev, &dev_attr_ieee1284_id);
 
 	mutex_lock(&usblp_mutex);
 	mutex_lock(&usblp->mut);
@@ -1461,6 +1462,7 @@ static struct usb_driver usblp_driver = {
 	.suspend =	usblp_suspend,
 	.resume =	usblp_resume,
 	.id_table =	usblp_ids,
+	.dev_groups =	usblp_groups,
 	.supports_autosuspend =	1,
 };
 

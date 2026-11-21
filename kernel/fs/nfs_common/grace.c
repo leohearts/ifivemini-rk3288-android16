@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Common code for control of lockd and nfsv4 grace periods.
  *
@@ -41,7 +42,6 @@ EXPORT_SYMBOL_GPL(locks_start_grace);
 
 /**
  * locks_end_grace
- * @net: net namespace that this lock manager belongs to
  * @lm: who this grace period is for
  *
  * Call this function to state that the given lock manager is ready to
@@ -81,6 +81,7 @@ __state_in_grace(struct net *net, bool open)
 
 /**
  * locks_in_grace
+ * @net: network namespace
  *
  * Lock managers call this function to determine when it is OK for them
  * to answer ordinary lock requests, and when they should accept only

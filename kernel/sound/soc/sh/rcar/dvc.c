@@ -86,14 +86,8 @@ static void rsnd_dvc_volume_parameter(struct rsnd_dai_stream *io,
 			val[i] = rsnd_kctrl_valm(dvc->volume, i);
 
 	/* Enable Digital Volume */
-	rsnd_mod_write(mod, DVC_VOL0R, val[0]);
-	rsnd_mod_write(mod, DVC_VOL1R, val[1]);
-	rsnd_mod_write(mod, DVC_VOL2R, val[2]);
-	rsnd_mod_write(mod, DVC_VOL3R, val[3]);
-	rsnd_mod_write(mod, DVC_VOL4R, val[4]);
-	rsnd_mod_write(mod, DVC_VOL5R, val[5]);
-	rsnd_mod_write(mod, DVC_VOL6R, val[6]);
-	rsnd_mod_write(mod, DVC_VOL7R, val[7]);
+	for (i = 0; i < RSND_MAX_CHANNELS; i++)
+		rsnd_mod_write(mod, DVC_VOLxR(i), val[i]);
 }
 
 static void rsnd_dvc_volume_init(struct rsnd_dai_stream *io,
@@ -192,7 +186,11 @@ static int rsnd_dvc_init(struct rsnd_mod *mod,
 			 struct rsnd_dai_stream *io,
 			 struct rsnd_priv *priv)
 {
-	rsnd_mod_power_on(mod);
+	int ret;
+
+	ret = rsnd_mod_power_on(mod);
+	if (ret < 0)
+		return ret;
 
 	rsnd_dvc_activation(mod);
 
@@ -288,8 +286,21 @@ static struct dma_chan *rsnd_dvc_dma_req(struct rsnd_dai_stream *io,
 	struct rsnd_priv *priv = rsnd_mod_to_priv(mod);
 
 	return rsnd_dma_request_channel(rsnd_dvc_of_node(priv),
-					mod, "tx");
+					DVC_NAME, mod, "tx");
 }
+
+#ifdef CONFIG_DEBUG_FS
+static void rsnd_dvc_debug_info(struct seq_file *m,
+				struct rsnd_dai_stream *io,
+				struct rsnd_mod *mod)
+{
+	rsnd_debugfs_mod_reg_show(m, mod, RSND_GEN2_SCU,
+				  0xe00 + rsnd_mod_id(mod) * 0x100, 0x60);
+}
+#define DEBUG_INFO .debug_info = rsnd_dvc_debug_info
+#else
+#define DEBUG_INFO
+#endif
 
 static struct rsnd_mod_ops rsnd_dvc_ops = {
 	.name		= DVC_NAME,
@@ -298,6 +309,8 @@ static struct rsnd_mod_ops rsnd_dvc_ops = {
 	.init		= rsnd_dvc_init,
 	.quit		= rsnd_dvc_quit,
 	.pcm_new	= rsnd_dvc_pcm_new,
+	.get_status	= rsnd_mod_get_status,
+	DEBUG_INFO
 };
 
 struct rsnd_mod *rsnd_dvc_mod_get(struct rsnd_priv *priv, int id)
@@ -357,7 +370,7 @@ int rsnd_dvc_probe(struct rsnd_priv *priv)
 		}
 
 		ret = rsnd_mod_init(priv, rsnd_mod_get(dvc), &rsnd_dvc_ops,
-				    clk, rsnd_mod_get_status, RSND_MOD_DVC, i);
+				    clk, RSND_MOD_DVC, i);
 		if (ret) {
 			of_node_put(np);
 			goto rsnd_dvc_probe_done;

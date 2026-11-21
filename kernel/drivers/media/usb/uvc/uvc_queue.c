@@ -1,14 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *      uvc_queue.c  --  USB Video Class driver - Buffers management
  *
  *      Copyright (C) 2005-2010
  *          Laurent Pinchart (laurent.pinchart@ideasonboard.com)
- *
- *      This program is free software; you can redistribute it and/or modify
- *      it under the terms of the GNU General Public License as published by
- *      the Free Software Foundation; either version 2 of the License, or
- *      (at your option) any later version.
- *
  */
 
 #include <linux/atomic.h>
@@ -36,12 +31,6 @@
  * spinlock to protect the IRQ queue that holds the buffers to be processed by
  * the driver.
  */
-
-static inline struct uvc_streaming *
-uvc_queue_to_stream(struct uvc_video_queue *queue)
-{
-	return container_of(queue, struct uvc_streaming, queue);
-}
 
 static inline struct uvc_buffer *uvc_vbuf_to_buffer(struct vb2_v4l2_buffer *buf)
 {
@@ -84,7 +73,7 @@ static int uvc_queue_setup(struct vb2_queue *vq,
 
 	switch (vq->type) {
 	case V4L2_BUF_TYPE_META_CAPTURE:
-		size = UVC_METATADA_BUF_SIZE;
+		size = UVC_METADATA_BUF_SIZE;
 		break;
 
 	default:
@@ -114,7 +103,8 @@ static int uvc_buffer_prepare(struct vb2_buffer *vb)
 
 	if (vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT &&
 	    vb2_get_plane_payload(vb, 0) > vb2_plane_size(vb, 0)) {
-		uvc_trace(UVC_TRACE_CAPTURE, "[E] Bytes used out of bounds.\n");
+		uvc_dbg(uvc_queue_to_stream(queue)->dev, CAPTURE,
+			"[E] Bytes used out of bounds\n");
 		return -EINVAL;
 	}
 
@@ -145,7 +135,8 @@ static void uvc_buffer_queue(struct vb2_buffer *vb)
 		kref_init(&buf->ref);
 		list_add_tail(&buf->queue, &queue->irqqueue);
 	} else {
-		/* If the device is disconnected return the buffer to userspace
+		/*
+		 * If the device is disconnected return the buffer to userspace
 		 * directly. The next QBUF call will fail with -ENODEV.
 		 */
 		buf->state = UVC_BUF_STATE_ERROR;
@@ -176,7 +167,7 @@ static int uvc_start_streaming(struct vb2_queue *vq, unsigned int count)
 
 	queue->buf_used = 0;
 
-	ret = uvc_video_enable(stream, 1);
+	ret = uvc_video_start_streaming(stream);
 	if (ret == 0)
 		return 0;
 
@@ -194,7 +185,7 @@ static void uvc_stop_streaming(struct vb2_queue *vq)
 	lockdep_assert_irqs_enabled();
 
 	if (vq->type != V4L2_BUF_TYPE_META_CAPTURE)
-		uvc_video_enable(uvc_queue_to_stream(queue), 0);
+		uvc_video_stop_streaming(uvc_queue_to_stream(queue));
 
 	spin_lock_irq(&queue->irqlock);
 	uvc_queue_return_buffers(queue, UVC_BUF_STATE_ERROR);
@@ -303,12 +294,13 @@ int uvc_create_buffers(struct uvc_video_queue *queue,
 	return ret;
 }
 
-int uvc_queue_buffer(struct uvc_video_queue *queue, struct v4l2_buffer *buf)
+int uvc_queue_buffer(struct uvc_video_queue *queue,
+		     struct media_device *mdev, struct v4l2_buffer *buf)
 {
 	int ret;
 
 	mutex_lock(&queue->mutex);
-	ret = vb2_qbuf(&queue->queue, buf);
+	ret = vb2_qbuf(&queue->queue, mdev, buf);
 	mutex_unlock(&queue->mutex);
 
 	return ret;
@@ -421,7 +413,8 @@ void uvc_queue_cancel(struct uvc_video_queue *queue, int disconnect)
 
 	spin_lock_irqsave(&queue->irqlock, flags);
 	uvc_queue_return_buffers(queue, UVC_BUF_STATE_ERROR);
-	/* This must be protected by the irqlock spinlock to avoid race
+	/*
+	 * This must be protected by the irqlock spinlock to avoid race
 	 * conditions between uvc_buffer_queue and the disconnection event that
 	 * could result in an interruptible wait in uvc_dequeue_buffer. Do not
 	 * blindly replace this logic by checking for the UVC_QUEUE_DISCONNECTED
@@ -490,7 +483,8 @@ static void uvc_queue_buffer_complete(struct kref *ref)
 
 	buf->state = buf->error ? UVC_BUF_STATE_ERROR : UVC_BUF_STATE_DONE;
 	vb2_set_plane_payload(&buf->buf.vb2_buf, 0, buf->bytesused);
-	vb2_buffer_done(&buf->buf.vb2_buf, VB2_BUF_STATE_DONE);
+	vb2_buffer_done(&buf->buf.vb2_buf, buf->error ? VB2_BUF_STATE_ERROR :
+							VB2_BUF_STATE_DONE);
 }
 
 /*

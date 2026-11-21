@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2018 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2018 Rockchip Electronics Co., Ltd.
  *
  * Author: Wyon Bi <bivvy.bi@rock-chips.com>
  */
@@ -11,13 +11,14 @@
 #include <linux/regmap.h>
 #include <linux/mfd/rk618.h>
 
-#include <drm/drmP.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_of.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_panel.h>
+#include <drm/drm_probe_helper.h>
 
 #include <video/of_display_timing.h>
 #include <video/mipi_display.h>
@@ -594,7 +595,7 @@ static int rk618_dsi_pre_enable(struct rk618_dsi *dsi)
 	/* Packet handler configuration */
 	value = GEN_VID_RX(dsi->channel) | EN_CRC_RX | EN_ECC_RX | EN_BTA;
 
-	if (!(dsi->mode_flags & MIPI_DSI_MODE_EOT_PACKET))
+	if (!(dsi->mode_flags & MIPI_DSI_MODE_NO_EOT_PACKET))
 		value |= EN_EOTP_TX;
 
 	regmap_write(dsi->regmap, DSI_PCKHDL_CFG, value);
@@ -602,10 +603,10 @@ static int rk618_dsi_pre_enable(struct rk618_dsi *dsi)
 	/* Video mode configuration */
 	value = EN_LP_VACT | EN_LP_VBP | EN_LP_VFP | EN_LP_VSA;
 
-	if (!(dsi->mode_flags & MIPI_DSI_MODE_VIDEO_HFP))
+	if (!(dsi->mode_flags & MIPI_DSI_MODE_VIDEO_NO_HFP))
 		value |= EN_LP_HFP;
 
-	if (!(dsi->mode_flags & MIPI_DSI_MODE_VIDEO_HBP))
+	if (!(dsi->mode_flags & MIPI_DSI_MODE_VIDEO_NO_HBP))
 		value |= EN_LP_HBP;
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_BURST)
@@ -736,7 +737,7 @@ static int rk618_dsi_connector_get_modes(struct drm_connector *connector)
 {
 	struct rk618_dsi *dsi = connector_to_dsi(connector);
 
-	return drm_panel_get_modes(dsi->panel);
+	return drm_panel_get_modes(dsi->panel, connector);
 }
 
 static const struct drm_connector_helper_funcs
@@ -753,9 +754,6 @@ rk618_dsi_connector_detect(struct drm_connector *connector, bool force)
 
 static void rk618_dsi_connector_destroy(struct drm_connector *connector)
 {
-	struct rk618_dsi *dsi = connector_to_dsi(connector);
-
-	drm_panel_detach(dsi->panel);
 	drm_connector_cleanup(connector);
 }
 
@@ -793,8 +791,8 @@ static void rk618_dsi_bridge_disable(struct drm_bridge *bridge)
 }
 
 static void rk618_dsi_bridge_mode_set(struct drm_bridge *bridge,
-				      struct drm_display_mode *mode,
-				      struct drm_display_mode *adj)
+				      const struct drm_display_mode *mode,
+				      const struct drm_display_mode *adj)
 {
 	struct rk618_dsi *dsi = bridge_to_dsi(bridge);
 
@@ -804,7 +802,8 @@ static void rk618_dsi_bridge_mode_set(struct drm_bridge *bridge,
 		drm_mode_copy(&dsi->mode, adj);
 }
 
-static int rk618_dsi_bridge_attach(struct drm_bridge *bridge)
+static int rk618_dsi_bridge_attach(struct drm_bridge *bridge,
+				   enum drm_bridge_attach_flags flags)
 {
 	struct rk618_dsi *dsi = bridge_to_dsi(bridge);
 	struct drm_connector *connector = &dsi->connector;
@@ -821,11 +820,6 @@ static int rk618_dsi_bridge_attach(struct drm_bridge *bridge)
 	drm_connector_helper_add(connector, &rk618_dsi_connector_helper_funcs);
 	drm_connector_attach_encoder(connector, bridge->encoder);
 
-	ret = drm_panel_attach(dsi->panel, connector);
-	if (ret) {
-		dev_err(dsi->dev, "Failed to attach panel\n");
-		return ret;
-	}
 	dsi->sub_dev.connector = &dsi->connector;
 	dsi->sub_dev.of_node = dsi->dev->of_node;
 	rockchip_drm_register_sub_dev(&dsi->sub_dev);
@@ -957,10 +951,10 @@ static ssize_t rk618_dsi_host_transfer(struct mipi_dsi_host *host,
 	switch (packet.payload_length) {
 	case 3:
 		value |= packet.payload[2] << 16;
-		/* Fall through */
+		fallthrough;
 	case 2:
 		value |= packet.payload[1] << 8;
-		/* Fall through */
+		fallthrough;
 	case 1:
 		value |= packet.payload[0];
 		regmap_write(dsi->regmap, DSI_GEN_PLD_DATA, value);
@@ -1019,10 +1013,10 @@ static ssize_t rk618_dsi_host_transfer(struct mipi_dsi_host *host,
 			switch (length) {
 			case 3:
 				payload[2] = (value >> 16) & 0xff;
-				/* Fall through */
+				fallthrough;
 			case 2:
 				payload[1] = (value >> 8) & 0xff;
-				/* Fall through */
+				fallthrough;
 			case 1:
 				payload[0] = value & 0xff;
 				return length;

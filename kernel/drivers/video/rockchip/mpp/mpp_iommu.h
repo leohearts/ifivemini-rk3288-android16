@@ -13,6 +13,20 @@
 
 #include <linux/iommu.h>
 #include <linux/dma-mapping.h>
+#include <linux/interrupt.h>
+#include <linux/iova.h>
+
+enum iommu_dma_cookie_type {
+	IOMMU_DMA_IOVA_COOKIE,
+	IOMMU_DMA_MSI_COOKIE,
+};
+
+/* Keep in mind: member order must keep align with struct iommu_dma_cookie */
+struct mpp_iommu_dma_cookie {
+	enum iommu_dma_cookie_type type;
+	/* Full allocator for IOMMU_DMA_IOVA_COOKIE */
+	struct iova_domain iovad;
+};
 
 struct mpp_dma_buffer {
 	/* link to dma session buffer list */
@@ -43,6 +57,12 @@ struct mpp_dma_session {
 	/* the buffer used in session */
 	struct list_head unused_list;
 	struct list_head used_list;
+	/*
+	 * For those buffer import by ioctl MPP_CMD_TRANS_FD_TO_IOVA,
+	 * move to static_list instead of used_list and don't increase extra kref,
+	 * so that it will release when user space call ioctl MPP_CMD_RELEASE_FD.
+	 */
+	struct list_head static_list;
 	struct mpp_dma_buffer dma_bufs[MPP_SESSION_MAX_BUFFERS];
 	/* the mutex for the above buffer list */
 	struct mutex list_mutex;
@@ -64,8 +84,11 @@ struct mpp_rk_iommu {
 	u32 is_paged;
 };
 
+struct mpp_dev;
+
 struct mpp_iommu_info {
-	struct rw_semaphore rw_sem;
+	struct rw_semaphore *rw_sem;
+	struct rw_semaphore rw_sem_self;
 
 	struct device *dev;
 	struct platform_device *pdev;
@@ -73,6 +96,15 @@ struct mpp_iommu_info {
 	struct iommu_group *group;
 	struct mpp_rk_iommu *iommu;
 	iommu_fault_handler_t hdl;
+
+	spinlock_t dev_lock;
+	struct mpp_dev *dev_active;
+
+	int irq;
+	int got_irq;
+	/* flag for mark iommu whether shared */
+	bool shared;
+	struct mpp_taskqueue *queue;
 };
 
 struct mpp_dma_session *
@@ -85,7 +117,7 @@ int mpp_dma_free(struct mpp_dma_buffer *buffer);
 
 struct mpp_dma_buffer *
 mpp_dma_import_fd(struct mpp_iommu_info *iommu_info,
-		  struct mpp_dma_session *dma, int fd);
+		  struct mpp_dma_session *dma, int fd, int static_use);
 int mpp_dma_release(struct mpp_dma_session *dma,
 		    struct mpp_dma_buffer *buffer);
 int mpp_dma_release_fd(struct mpp_dma_session *dma, int fd);
@@ -94,6 +126,9 @@ int mpp_dma_unmap_kernel(struct mpp_dma_session *dma,
 			 struct mpp_dma_buffer *buffer);
 int mpp_dma_map_kernel(struct mpp_dma_session *dma,
 		       struct mpp_dma_buffer *buffer);
+struct mpp_dma_buffer *mpp_dma_find_buffer_fd(struct mpp_dma_session *dma, int fd);
+void mpp_dma_buf_sync(struct mpp_dma_buffer *buffer, u32 offset, u32 length,
+		      enum dma_data_direction dir, bool for_cpu);
 
 struct mpp_iommu_info *
 mpp_iommu_probe(struct device *dev);
@@ -104,11 +139,17 @@ int mpp_iommu_detach(struct mpp_iommu_info *info);
 
 int mpp_iommu_refresh(struct mpp_iommu_info *info, struct device *dev);
 int mpp_iommu_flush_tlb(struct mpp_iommu_info *info);
+int mpp_av1_iommu_disable(struct device *dev);
+int mpp_av1_iommu_enable(struct device *dev);
+
+int mpp_iommu_dev_activate(struct mpp_iommu_info *info, struct mpp_dev *dev);
+int mpp_iommu_dev_deactivate(struct mpp_iommu_info *info, struct mpp_dev *dev);
+int mpp_iommu_reserve_iova(struct mpp_iommu_info *info, dma_addr_t iova, size_t size);
 
 static inline int mpp_iommu_down_read(struct mpp_iommu_info *info)
 {
 	if (info)
-		down_read(&info->rw_sem);
+		down_read(info->rw_sem);
 
 	return 0;
 }
@@ -116,7 +157,7 @@ static inline int mpp_iommu_down_read(struct mpp_iommu_info *info)
 static inline int mpp_iommu_up_read(struct mpp_iommu_info *info)
 {
 	if (info)
-		up_read(&info->rw_sem);
+		up_read(info->rw_sem);
 
 	return 0;
 }
@@ -124,7 +165,7 @@ static inline int mpp_iommu_up_read(struct mpp_iommu_info *info)
 static inline int mpp_iommu_down_write(struct mpp_iommu_info *info)
 {
 	if (info)
-		down_write(&info->rw_sem);
+		down_write(info->rw_sem);
 
 	return 0;
 }
@@ -132,9 +173,21 @@ static inline int mpp_iommu_down_write(struct mpp_iommu_info *info)
 static inline int mpp_iommu_up_write(struct mpp_iommu_info *info)
 {
 	if (info)
-		up_write(&info->rw_sem);
+		up_write(info->rw_sem);
 
 	return 0;
+}
+
+static inline void mpp_iommu_enable_irq(struct mpp_iommu_info *info)
+{
+	if (info && info->got_irq)
+		enable_irq(info->irq);
+}
+
+static inline void mpp_iommu_disable_irq(struct mpp_iommu_info *info)
+{
+	if (info && info->got_irq)
+		disable_irq(info->irq);
 }
 
 #endif

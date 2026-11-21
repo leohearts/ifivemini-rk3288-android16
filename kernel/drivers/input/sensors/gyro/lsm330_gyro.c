@@ -1,7 +1,7 @@
 /*
  * kernel/drivers/input/sensors/accel/lsm330_gyro.c
  *
- * Copyright (C) 2012-2016 Rockchip Co.,Ltd.
+ * Copyright (C) 2012-2016 Rockchip Electronics Co., Ltd.
  * Author: Bin Yang <yangbin@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -208,7 +208,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return ret;
 }
 
-struct sensor_operate gyro_lsm330_ops = {
+static struct sensor_operate gyro_lsm330_ops = {
 	.name			= "lsm330_gyro",
 	.type			= SENSOR_TYPE_GYROSCOPE,
 	.id_i2c			= GYRO_ID_LSM330,
@@ -232,9 +232,9 @@ static int gyro_lsm330_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &gyro_lsm330_ops);
 }
 
-static int gyro_lsm330_remove(struct i2c_client *client)
+static void gyro_lsm330_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &gyro_lsm330_ops);
+	sensor_unregister_device(client, NULL, &gyro_lsm330_ops);
 }
 
 static const struct i2c_device_id gyro_lsm330_id[] = {
@@ -244,7 +244,7 @@ static const struct i2c_device_id gyro_lsm330_id[] = {
 
 static struct i2c_driver gyro_lsm330_driver = {
 	.probe = gyro_lsm330_probe,
-	.remove = gyro_lsm330_remove,
+	.remove = (void *)gyro_lsm330_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = gyro_lsm330_id,
 	.driver = {

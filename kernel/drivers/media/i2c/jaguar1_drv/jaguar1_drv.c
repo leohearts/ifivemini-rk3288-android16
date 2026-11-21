@@ -278,7 +278,6 @@ static int check_decoder_count(void)
 		  )
 		{
 			printk("Device ID Error... %x, Chip Count:[%d]\n", chip_id[chip], chip);
-			jaguar1_i2c_addr[chip] = 0xFF;
 			chip_id[chip] = 0xFF;
 		}
 		else
@@ -743,7 +742,7 @@ static int i2c_client_init(int i2c_bus)
 	if (!i2c_adap)
 		return -EINVAL;
 
-	jaguar1_client = i2c_new_device(i2c_adap, &hi_info);
+	jaguar1_client = i2c_new_client_device(i2c_adap, &hi_info);
 	i2c_put_adapter(i2c_adap);
 
 	return 0;

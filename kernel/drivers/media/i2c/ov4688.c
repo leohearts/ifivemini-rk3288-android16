@@ -103,14 +103,6 @@ static const char * const ov4688_supply_names[] = {
 
 #define OV4688_NUM_SUPPLIES ARRAY_SIZE(ov4688_supply_names)
 
-enum ov4688_max_pad {
-	PAD0, /* link to isp */
-	PAD1, /* link to csi wr0 | hdr x2:L x3:M */
-	PAD2, /* link to csi wr1 | hdr      x3:L */
-	PAD3, /* link to csi wr2 | hdr x2:M x3:S */
-	PAD_MAX,
-};
-
 struct regval {
 	u16 addr;
 	u8 val;
@@ -726,7 +718,7 @@ static const struct ov4688_mode supported_modes[] = {
 		.bus_fmt = MEDIA_BUS_FMT_SBGGR10_1X10,
 		.reg_list = ov4688_linear_2688x1520_30fps_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	}, {
 		.width = 1920,
 		.height = 1080,
@@ -740,7 +732,7 @@ static const struct ov4688_mode supported_modes[] = {
 		.bus_fmt = MEDIA_BUS_FMT_SBGGR10_1X10,
 		.reg_list = ov4688_linear_1920x1080_60fps_regs,
 		.hdr_mode = NO_HDR,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 };
 
@@ -866,7 +858,7 @@ ov4688_find_best_fit(struct v4l2_subdev_format *fmt)
 }
 
 static int ov4688_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov4688 *ov4688 = to_ov4688(sd);
@@ -882,7 +874,7 @@ static int ov4688_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&ov4688->mutex);
 		return -ENOTTY;
@@ -904,7 +896,7 @@ static int ov4688_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov4688_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov4688 *ov4688 = to_ov4688(sd);
@@ -913,7 +905,7 @@ static int ov4688_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&ov4688->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&ov4688->mutex);
 		return -ENOTTY;
@@ -935,7 +927,7 @@ static int ov4688_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov4688_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct ov4688 *ov4688 = to_ov4688(sd);
@@ -948,7 +940,7 @@ static int ov4688_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov4688_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	if (fse->index >= ARRAY_SIZE(supported_modes))
@@ -984,29 +976,17 @@ static int ov4688_g_frame_interval(struct v4l2_subdev *sd,
 	struct ov4688 *ov4688 = to_ov4688(sd);
 	const struct ov4688_mode *mode = ov4688->cur_mode;
 
-	mutex_lock(&ov4688->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&ov4688->mutex);
 
 	return 0;
 }
 
-static int ov4688_g_mbus_config(struct v4l2_subdev *sd,
+static int ov4688_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
-	struct ov4688 *ov4688 = to_ov4688(sd);
-	const struct ov4688_mode *mode = ov4688->cur_mode;
-	u32 val = 1 << (OV4688_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
 
-	if (mode->hdr_mode != NO_HDR)
-		val |= V4L2_MBUS_CSI2_CHANNEL_1;
-	if (mode->hdr_mode == HDR_X3)
-		val |= V4L2_MBUS_CSI2_CHANNEL_2;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = OV4688_LANES;
 
 	return 0;
 }
@@ -1015,10 +995,10 @@ static void ov4688_get_module_inf(struct ov4688 *ov4688,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, OV4688_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, ov4688->module_name,
+	strscpy(inf->base.sensor, OV4688_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, ov4688->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, ov4688->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, ov4688->len_name, sizeof(inf->base.lens));
 }
 
 static long ov4688_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -1391,7 +1371,7 @@ static int ov4688_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ov4688 *ov4688 = to_ov4688(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct ov4688_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&ov4688->mutex);
@@ -1409,7 +1389,7 @@ static int ov4688_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int ov4688_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	if (fie->index >= ARRAY_SIZE(supported_modes))
@@ -1436,7 +1416,7 @@ static int ov4688_enum_frame_interval(struct v4l2_subdev *sd,
  */
 
 static int ov4688_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
 	struct ov4688 *ov4688 = to_ov4688(sd);
@@ -1480,7 +1460,6 @@ static const struct v4l2_subdev_core_ops ov4688_core_ops = {
 static const struct v4l2_subdev_video_ops ov4688_video_ops = {
 	.s_stream = ov4688_s_stream,
 	.g_frame_interval = ov4688_g_frame_interval,
-	.g_mbus_config = ov4688_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops ov4688_pad_ops = {
@@ -1490,6 +1469,7 @@ static const struct v4l2_subdev_pad_ops ov4688_pad_ops = {
 	.get_fmt = ov4688_get_fmt,
 	.set_fmt = ov4688_set_fmt,
 	.get_selection = ov4688_get_selection,
+	.get_mbus_config = ov4688_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops ov4688_subdev_ops = {
@@ -1832,7 +1812,7 @@ static int ov4688_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 ov4688->module_index, facing,
 		 OV4688_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1858,7 +1838,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int ov4688_remove(struct i2c_client *client)
+static void ov4688_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov4688 *ov4688 = to_ov4688(sd);
@@ -1874,8 +1854,6 @@ static int ov4688_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__ov4688_power_off(ov4688);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

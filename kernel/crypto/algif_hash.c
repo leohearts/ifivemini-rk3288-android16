@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * algif_hash: User-space interface for hash algorithms
  *
  * This file provides the user-space API for hash algorithms.
  *
  * Copyright (c) 2010 Herbert Xu <herbert@gondor.apana.org.au>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
  */
 
 #include <crypto/hash.h>
@@ -88,7 +83,7 @@ static int hash_sendmsg(struct socket *sock, struct msghdr *msg,
 			goto unlock;
 	}
 
-	ctx->more = 0;
+	ctx->more = false;
 
 	while (msg_data_left(msg)) {
 		int len = msg_data_left(msg);
@@ -107,11 +102,12 @@ static int hash_sendmsg(struct socket *sock, struct msghdr *msg,
 		err = crypto_wait_req(crypto_ahash_update(&ctx->req),
 				      &ctx->wait);
 		af_alg_free_sg(&ctx->sgl);
-		if (err)
+		if (err) {
+			iov_iter_revert(&msg->msg_iter, len);
 			goto unlock;
+		}
 
 		copied += len;
-		iov_iter_advance(&msg->msg_iter, len);
 	}
 
 	err = 0;
@@ -216,7 +212,7 @@ static int hash_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	}
 
 	if (!result || ctx->more) {
-		ctx->more = 0;
+		ctx->more = false;
 		err = crypto_wait_req(crypto_ahash_final(&ctx->req),
 				      &ctx->wait);
 		if (err)
@@ -239,7 +235,7 @@ static int hash_accept(struct socket *sock, struct socket *newsock, int flags,
 	struct alg_sock *ask = alg_sk(sk);
 	struct hash_ctx *ctx = ask->private;
 	struct ahash_request *req = &ctx->req;
-	char state[crypto_ahash_statesize(crypto_ahash_reqtfm(req)) ? : 1];
+	char state[HASH_MAX_STATESIZE];
 	struct sock *sk2;
 	struct alg_sock *ask2;
 	struct hash_ctx *ctx2;
@@ -267,10 +263,6 @@ static int hash_accept(struct socket *sock, struct socket *newsock, int flags,
 		return err;
 
 	err = crypto_ahash_import(&ctx2->req, state);
-	if (err) {
-		sock_orphan(sk2);
-		sock_put(sk2);
-	}
 
 	return err;
 }
@@ -284,10 +276,8 @@ static struct proto_ops algif_hash_ops = {
 	.ioctl		=	sock_no_ioctl,
 	.listen		=	sock_no_listen,
 	.shutdown	=	sock_no_shutdown,
-	.getsockopt	=	sock_no_getsockopt,
 	.mmap		=	sock_no_mmap,
 	.bind		=	sock_no_bind,
-	.setsockopt	=	sock_no_setsockopt,
 
 	.release	=	af_alg_release,
 	.sendmsg	=	hash_sendmsg,
@@ -388,10 +378,8 @@ static struct proto_ops algif_hash_ops_nokey = {
 	.ioctl		=	sock_no_ioctl,
 	.listen		=	sock_no_listen,
 	.shutdown	=	sock_no_shutdown,
-	.getsockopt	=	sock_no_getsockopt,
 	.mmap		=	sock_no_mmap,
 	.bind		=	sock_no_bind,
-	.setsockopt	=	sock_no_setsockopt,
 
 	.release	=	af_alg_release,
 	.sendmsg	=	hash_sendmsg_nokey,
@@ -436,9 +424,8 @@ static int hash_accept_parent_nokey(void *private, struct sock *sk)
 	if (!ctx)
 		return -ENOMEM;
 
-	ctx->result = NULL;
+	memset(ctx, 0, len);
 	ctx->len = len;
-	ctx->more = 0;
 	crypto_init_wait(&ctx->wait);
 
 	ask->private = ctx;

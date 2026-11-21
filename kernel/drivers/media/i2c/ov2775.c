@@ -94,14 +94,6 @@
 
 #define OV2775_NAME			"ov2775"
 
-enum ov2775_max_pad {
-	PAD0, /* link to isp */
-	PAD1, /* link to csi wr0 | hdr x2:L x3:M */
-	PAD2, /* link to csi wr1 | hdr      x3:L */
-	PAD3, /* link to csi wr2 | hdr x2:M x3:S */
-	PAD_MAX,
-};
-
 struct ov2775_gpio {
 	int pltfrm_gpio;
 	const char *label;
@@ -3825,7 +3817,7 @@ static const struct ov2775_mode supported_modes[] = {
 		.bpp = 12,
 		.lane = 4,
 		.reg_list = ov2775_linear12bit_init_tab_1920_1080,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 	{
 		.bus_fmt = MEDIA_BUS_FMT_SBGGR12_1X12,
@@ -3842,10 +3834,10 @@ static const struct ov2775_mode supported_modes[] = {
 		.bpp = 12,
 		.lane = 4,
 		.reg_list = ov2775_hdr12bit_init_tab_1920_1080,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD1] = V4L2_MBUS_CSI2_CHANNEL_0,
-		.vc[PAD2] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD3] = V4L2_MBUS_CSI2_CHANNEL_1,
+		.vc[PAD0] = 1,
+		.vc[PAD1] = 0,
+		.vc[PAD2] = 1,
+		.vc[PAD3] = 1,
 	},
 };
 
@@ -3992,7 +3984,7 @@ ov2775_find_best_fit(struct v4l2_subdev *sd,
 }
 
 static int ov2775_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov2775 *ov2775 = to_ov2775(sd);
@@ -4008,7 +4000,7 @@ static int ov2775_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&ov2775->mutex);
 		return -ENOTTY;
@@ -4030,7 +4022,7 @@ static int ov2775_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov2775_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct ov2775 *ov2775 = to_ov2775(sd);
@@ -4039,7 +4031,7 @@ static int ov2775_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&ov2775->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&ov2775->mutex);
 		return -ENOTTY;
@@ -4060,7 +4052,7 @@ static int ov2775_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov2775_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct ov2775 *ov2775 = to_ov2775(sd);
@@ -4073,7 +4065,7 @@ static int ov2775_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov2775_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct ov2775 *ov2775 = to_ov2775(sd);
@@ -4111,9 +4103,7 @@ static int ov2775_g_frame_interval(struct v4l2_subdev *sd,
 	struct ov2775 *ov2775 = to_ov2775(sd);
 	const struct ov2775_mode *mode = ov2775->cur_mode;
 
-	mutex_lock(&ov2775->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&ov2775->mutex);
 
 	return 0;
 }
@@ -4188,25 +4178,14 @@ static void ov2775_get_hcg_reg(u32 gain, u32 *again_reg, u32 *dgain_reg)
 	}
 }
 
-static int ov2775_g_mbus_config(struct v4l2_subdev *sd,
+static int ov2775_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
 				struct v4l2_mbus_config *config)
 {
 	struct ov2775 *ov2775 = to_ov2775(sd);
 	const struct ov2775_mode *mode = ov2775->cur_mode;
-	u32 val = 0;
 
-	if (mode->hdr_mode == NO_HDR)
-		val = 1 << (mode->lane - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	if (mode->hdr_mode == HDR_X2)
-		val = 1 << (mode->lane - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK |
-		V4L2_MBUS_CSI2_CHANNEL_1;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = mode->lane;
 
 	return 0;
 }
@@ -4215,10 +4194,10 @@ static void ov2775_get_module_inf(struct ov2775 *ov2775,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, OV2775_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, ov2775->module_name,
+	strscpy(inf->base.sensor, OV2775_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, ov2775->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, ov2775->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, ov2775->len_name, sizeof(inf->base.lens));
 }
 
 static long ov2775_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -4731,7 +4710,7 @@ static int ov2775_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ov2775 *ov2775 = to_ov2775(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-			v4l2_subdev_get_try_format(sd, fh->pad, 0);
+			v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct ov2775_mode *def_mode = &ov2775->support_modes[0];
 
 	mutex_lock(&ov2775->mutex);
@@ -4749,7 +4728,7 @@ static int ov2775_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int ov2775_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct ov2775 *ov2775 = to_ov2775(sd);
@@ -4780,7 +4759,6 @@ static const struct v4l2_subdev_internal_ops ov2775_internal_ops = {
 static const struct v4l2_subdev_video_ops ov2775_video_ops = {
 	.s_stream = ov2775_s_stream,
 	.g_frame_interval = ov2775_g_frame_interval,
-	.g_mbus_config = ov2775_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops ov2775_pad_ops = {
@@ -4789,6 +4767,7 @@ static const struct v4l2_subdev_pad_ops ov2775_pad_ops = {
 	.enum_frame_interval = ov2775_enum_frame_interval,
 	.get_fmt = ov2775_get_fmt,
 	.set_fmt = ov2775_set_fmt,
+	.get_mbus_config = ov2775_g_mbus_config,
 };
 
 static const struct v4l2_subdev_core_ops ov2775_core_ops = {
@@ -4873,7 +4852,7 @@ static int ov2775_set_ctrl(struct v4l2_ctrl *ctrl)
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
 		if (ov2775->cur_mode->hdr_mode != NO_HDR)
-			return 0;
+			goto ctrl_end;
 		ret = ov2775_write_reg(ov2775->client,
 				       OV2775_REG_EXPOSURE_H,
 				       OV2775_REG_VALUE_08BIT,
@@ -4888,7 +4867,7 @@ static int ov2775_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	case V4L2_CID_ANALOGUE_GAIN:
 		if (ov2775->cur_mode->hdr_mode != NO_HDR)
-			return 0;
+			goto ctrl_end;
 		ov2775_get_linear_reg(ctrl->val, &gain_a, &gain_d);
 		ret = ov2775_write_reg(ov2775->client,
 				       OV2775_REG_GAIN,
@@ -4945,6 +4924,7 @@ static int ov2775_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
+ctrl_end:
 	pm_runtime_put(&client->dev);
 
 	return ret;
@@ -5205,7 +5185,7 @@ static int ov2775_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 ov2775->module_index, facing,
 		 OV2775_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -5231,7 +5211,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int ov2775_remove(struct i2c_client *client)
+static void ov2775_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov2775 *ov2775 = to_ov2775(sd);
@@ -5247,8 +5227,6 @@ static int ov2775_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__ov2775_power_off(ov2775);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

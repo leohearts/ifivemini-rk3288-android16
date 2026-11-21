@@ -1,6 +1,6 @@
 /*
  *
- * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
+ * Copyright (C) Rockchip Electronics Co., Ltd.
  *
  * Authors: Bin Yang <yangbin@rock-chips.com>
  *
@@ -322,7 +322,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return result;
 }
 
-struct sensor_operate psensor_stk3410_ops = {
+static struct sensor_operate psensor_stk3410_ops = {
 	.name			= "ps_stk3410",
 	.type			= SENSOR_TYPE_PROXIMITY,
 	.id_i2c			= PROXIMITY_ID_STK3410,
@@ -347,9 +347,9 @@ static int proximity_stk3410_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &psensor_stk3410_ops);
 }
 
-static int proximity_stk3410_remove(struct i2c_client *client)
+static void proximity_stk3410_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &psensor_stk3410_ops);
+	sensor_unregister_device(client, NULL, &psensor_stk3410_ops);
 }
 
 static const struct i2c_device_id proximity_stk3410_id[] = {
@@ -359,7 +359,7 @@ static const struct i2c_device_id proximity_stk3410_id[] = {
 
 static struct i2c_driver proximity_stk3410_driver = {
 	.probe = proximity_stk3410_probe,
-	.remove = proximity_stk3410_remove,
+	.remove = (void *)proximity_stk3410_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = proximity_stk3410_id,
 	.driver = {

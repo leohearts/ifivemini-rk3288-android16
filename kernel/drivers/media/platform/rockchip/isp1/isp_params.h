@@ -35,7 +35,7 @@
 #ifndef _RKISP1_ISP_H
 #define _RKISP1_ISP_H
 
-#include <linux/rkisp1-config.h>
+#include <linux/rk-isp1-config.h>
 #include <linux/rk-preisp.h>
 #include "common.h"
 
@@ -127,8 +127,6 @@ struct rkisp1_isp_params_vdev {
 	enum v4l2_quantization quantization;
 	enum rkisp1_fmt_raw_pat_type raw_type;
 	u32 in_mbus_code;
-	/* rockchip,bls-offset: added to every fixed BLS value (12-bit domain) */
-	u32 bls_offset;
 
 	struct preisp_hdrae_para_s hdrae_para;
 

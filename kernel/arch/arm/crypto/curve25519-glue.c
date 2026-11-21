@@ -11,6 +11,7 @@
 #include <asm/neon.h>
 #include <asm/simd.h>
 #include <crypto/internal/kpp.h>
+#include <crypto/internal/simd.h>
 #include <linux/types.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -28,7 +29,7 @@ void curve25519_arch(u8 out[CURVE25519_KEY_SIZE],
 		     const u8 scalar[CURVE25519_KEY_SIZE],
 		     const u8 point[CURVE25519_KEY_SIZE])
 {
-	if (static_branch_likely(&have_neon) && may_use_simd()) {
+	if (static_branch_likely(&have_neon) && crypto_simd_usable()) {
 		kernel_neon_begin();
 		curve25519_neon(out, scalar, point);
 		kernel_neon_end();
@@ -111,7 +112,7 @@ static struct kpp_alg curve25519_alg = {
 	.max_size		= curve25519_max_size,
 };
 
-static int __init mod_init(void)
+static int __init arm_curve25519_init(void)
 {
 	if (elf_hwcap & HWCAP_NEON) {
 		static_branch_enable(&have_neon);
@@ -121,14 +122,14 @@ static int __init mod_init(void)
 	return 0;
 }
 
-static void __exit mod_exit(void)
+static void __exit arm_curve25519_exit(void)
 {
 	if (IS_REACHABLE(CONFIG_CRYPTO_KPP) && elf_hwcap & HWCAP_NEON)
 		crypto_unregister_kpp(&curve25519_alg);
 }
 
-module_init(mod_init);
-module_exit(mod_exit);
+module_init(arm_curve25519_init);
+module_exit(arm_curve25519_exit);
 
 MODULE_ALIAS_CRYPTO("curve25519");
 MODULE_ALIAS_CRYPTO("curve25519-neon");

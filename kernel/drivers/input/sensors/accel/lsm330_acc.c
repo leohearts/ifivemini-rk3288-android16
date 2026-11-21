@@ -1,7 +1,7 @@
 /*
  * kernel/drivers/input/sensors/accel/lsm330_acc.c
  *
- * Copyright (C) 2012-2016 Rockchip Co.,Ltd.
+ * Copyright (C) 2012-2016 Rockchip Electronics Co., Ltd.
  * Author: Bin Yang <yangbin@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -90,14 +90,13 @@ static int sensor_active(struct i2c_client *client, int enable, int rate)
 	    (struct sensor_private_data *)i2c_get_clientdata(client);
 	int result = 0;
 
-	/*
-	 * CTRL_REG5_A[7:4] = ODR (0 = power-down). Program ODR=100 Hz on every
-	 * enable (as stock 3.10 does); never read-modify-write, a stale 0x00
-	 * would yield ODR 0 and freeze the output registers.
-	 */
-	sensor->ops->ctrl_data = enable ? 0x67 : 0x00;
-	result = sensor_write_reg(client, sensor->ops->ctrl_reg,
-				  sensor->ops->ctrl_data);
+	sensor->ops->ctrl_data = sensor_read_reg(client, sensor->ops->ctrl_reg);
+	if (enable)
+		result = sensor_write_reg(client,
+			sensor->ops->ctrl_reg,
+			sensor->ops->ctrl_data | 0x07);
+	else
+		result = sensor_write_reg(client, sensor->ops->ctrl_reg, 0x00);
 
 	if (result)
 		dev_err(&client->dev, "%s:fail to active sensor\n", __func__);
@@ -127,6 +126,13 @@ static int sensor_init(struct i2c_client *client)
 	result = sensor_write_reg(client, CTRL_REG4_A, 0xE8);
 	if (result) {
 		dev_err(&client->dev, "%s:fail to set CTRL_REG4_A.\n",
+			__func__);
+		return result;
+	}
+	/* Normal / Low power mode (1600 Hz) */
+	result = sensor_write_reg(client, CTRL_REG5_A, 0x90);
+	if (result) {
+		dev_err(&client->dev, "%s:fail to set CTRL_REG5_A.\n",
 			__func__);
 		return result;
 	}
@@ -218,7 +224,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return ret;
 }
 
-struct sensor_operate gsensor_lsm330_ops = {
+static struct sensor_operate gsensor_lsm330_ops = {
 	.name			= "lsm330_acc",
 	.type			= SENSOR_TYPE_ACCEL,
 	.id_i2c			= ACCEL_ID_LSM330,
@@ -242,9 +248,9 @@ static int gsensor_lsm330_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &gsensor_lsm330_ops);
 }
 
-static int gsensor_lsm330_remove(struct i2c_client *client)
+static void gsensor_lsm330_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &gsensor_lsm330_ops);
+	sensor_unregister_device(client, NULL, &gsensor_lsm330_ops);
 }
 
 static const struct i2c_device_id gsensor_lsm330_id[] = {
@@ -254,7 +260,7 @@ static const struct i2c_device_id gsensor_lsm330_id[] = {
 
 static struct i2c_driver gsensor_lsm330_driver = {
 	.probe = gsensor_lsm330_probe,
-	.remove = gsensor_lsm330_remove,
+	.remove = (void *)gsensor_lsm330_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = gsensor_lsm330_id,
 	.driver = {

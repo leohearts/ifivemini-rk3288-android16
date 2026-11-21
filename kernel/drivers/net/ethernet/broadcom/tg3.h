@@ -2847,7 +2847,7 @@ struct tg3_ocir {
 	u32				port1_flags;
 	u32				port2_flags;
 	u32				port3_flags;
-	u32				reserved2[1];
+	u32				reserved2;
 };
 
 
@@ -2873,7 +2873,7 @@ struct tg3_tx_ring_info {
 struct tg3_link_config {
 	/* Describes what we're trying to get. */
 	u32				advertising;
-	u16				speed;
+	u32				speed;
 	u8				duplex;
 	u8				autoneg;
 	u8				flowctrl;
@@ -2882,7 +2882,7 @@ struct tg3_link_config {
 	u8				active_flowctrl;
 
 	u8				active_duplex;
-	u16				active_speed;
+	u32				active_speed;
 	u32				rmt_adv;
 };
 
@@ -3018,6 +3018,7 @@ struct tg3_napi {
 	u16				*rx_rcb_prod_idx;
 	struct tg3_rx_prodring_set	prodring;
 	struct tg3_rx_buffer_desc	*rx_rcb;
+	unsigned long			rx_dropped;
 
 	u32				tx_prod	____cacheline_aligned;
 	u32				tx_cons;
@@ -3026,6 +3027,7 @@ struct tg3_napi {
 	u32				prodmbox;
 	struct tg3_tx_buffer_desc	*tx_ring;
 	struct tg3_tx_ring_info		*tx_buffers;
+	unsigned long			tx_dropped;
 
 	dma_addr_t			status_mapping;
 	dma_addr_t			rx_rcb_mapping;
@@ -3219,8 +3221,6 @@ struct tg3 {
 
 
 	/* begin "everything else" cacheline(s) section */
-	unsigned long			rx_dropped;
-	unsigned long			tx_dropped;
 	struct rtnl_link_stats64	net_stats_prev;
 	struct tg3_ethtool_stats	estats_prev;
 

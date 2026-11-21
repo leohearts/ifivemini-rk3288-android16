@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2021 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2021 Rockchip Electronics Co., Ltd.
  *
  * Author: Dingxian Wen <shawn.wen@rock-chips.com>
  */
@@ -64,5 +64,10 @@
 #define AUDIO_IN_STATUS		0xb081
 #define AUDIO_SAMPLE_RATAE_H	0xb0aa
 #define AUDIO_SAMPLE_RATAE_L	0xb0ab
+
+#define COLOR_FMT_STATUS	0xb092
+#define STREAM_CTRL		0x811d
+#define STREAM_ENABLE		0xFB
+#define STREAM_DISABLE		0xBB
 
 #endif

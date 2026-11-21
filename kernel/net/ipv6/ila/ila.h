@@ -1,11 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright (c) 2015 Tom Herbert <tom@herbertland.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of
- * the License, or (at your option) any later version.
- *
  */
 
 #ifndef __ILA_H
@@ -73,11 +68,6 @@ static inline struct ila_addr *ila_a2i(struct in6_addr *addr)
 	return (struct ila_addr *)addr;
 }
 
-static inline bool ila_addr_is_ila(struct ila_addr *iaddr)
-{
-	return (iaddr->ident.type != ILA_ATYPE_IID);
-}
-
 struct ila_params {
 	struct ila_locator locator;
 	struct ila_locator locator_match;
@@ -118,6 +108,7 @@ int ila_lwt_init(void);
 void ila_lwt_fini(void);
 
 int ila_xlat_init_net(struct net *net);
+void ila_xlat_pre_exit_net(struct net *net);
 void ila_xlat_exit_net(struct net *net);
 
 int ila_xlat_nl_cmd_add_mapping(struct sk_buff *skb, struct genl_info *info);

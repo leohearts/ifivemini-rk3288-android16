@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Linux I2C core slave support code
  *
  * Copyright (C) 2014 by Wolfram Sang <wsa@sang-engineering.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
  */
 
 #include <dt-bindings/i2c/i2c.h>
@@ -17,6 +13,9 @@
 #include <linux/of.h>
 
 #include "i2c-core.h"
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/i2c_slave.h>
 
 int i2c_slave_register(struct i2c_client *client, i2c_slave_cb_t slave_cb)
 {
@@ -82,6 +81,18 @@ int i2c_slave_unregister(struct i2c_client *client)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(i2c_slave_unregister);
+
+int i2c_slave_event(struct i2c_client *client,
+		    enum i2c_slave_event event, u8 *val)
+{
+	int ret = client->slave_cb(client, event, val);
+
+	if (trace_i2c_slave_enabled())
+		trace_i2c_slave(client, event, val, ret);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(i2c_slave_event);
 
 /**
  * i2c_detect_slave_mode - detect operation mode

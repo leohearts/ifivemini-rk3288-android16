@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2019-2022 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2019-2024 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -21,6 +21,7 @@
 
 #include <tl/mali_kbase_tracepoints.h>
 
+#include "mali_kbase_reg_track.h"
 #include "mali_kbase_csf_tiler_heap.h"
 #include "mali_kbase_csf_tiler_heap_def.h"
 #include "mali_kbase_csf_heap_context_alloc.h"
@@ -64,16 +65,13 @@ static u64 encode_chunk_ptr(u32 const chunk_size, u64 const chunk_addr)
 	WARN_ON(chunk_size & ~CHUNK_SIZE_MASK);
 	WARN_ON(chunk_addr & ~CHUNK_ADDR_MASK);
 
-	encoded_size =
-		(u64)(chunk_size >> CHUNK_HDR_NEXT_SIZE_ENCODE_SHIFT) <<
-		CHUNK_HDR_NEXT_SIZE_POS;
+	encoded_size = (u64)(chunk_size >> CHUNK_HDR_NEXT_SIZE_ENCODE_SHIFT)
+		       << CHUNK_HDR_NEXT_SIZE_POS;
 
-	encoded_addr =
-		(chunk_addr >> CHUNK_HDR_NEXT_ADDR_ENCODE_SHIFT) <<
-		CHUNK_HDR_NEXT_ADDR_POS;
+	encoded_addr = (chunk_addr >> CHUNK_HDR_NEXT_ADDR_ENCODE_SHIFT) << CHUNK_HDR_NEXT_ADDR_POS;
 
 	return (encoded_size & CHUNK_HDR_NEXT_SIZE_MASK) |
-		(encoded_addr & CHUNK_HDR_NEXT_ADDR_MASK);
+	       (encoded_addr & CHUNK_HDR_NEXT_ADDR_MASK);
 }
 
 /**
@@ -83,14 +81,12 @@ static u64 encode_chunk_ptr(u32 const chunk_size, u64 const chunk_addr)
  *
  * Return: The address of the most recently-linked chunk, or NULL if none.
  */
-static struct kbase_csf_tiler_heap_chunk *get_last_chunk(
-	struct kbase_csf_tiler_heap *const heap)
+static struct kbase_csf_tiler_heap_chunk *get_last_chunk(struct kbase_csf_tiler_heap *const heap)
 {
 	if (list_empty(&heap->chunks_list))
 		return NULL;
 
-	return list_last_entry(&heap->chunks_list,
-		struct kbase_csf_tiler_heap_chunk, link);
+	return list_last_entry(&heap->chunks_list, struct kbase_csf_tiler_heap_chunk, link);
 }
 
 /**
@@ -101,7 +97,7 @@ static struct kbase_csf_tiler_heap_chunk *get_last_chunk(
  * @kctx:  kbase context the chunk belongs to.
  * @chunk: The chunk whose external mappings are going to be removed.
  *
- * This function marks the region as DONT NEED. Along with KBASE_REG_NO_USER_FREE, this indicates
+ * This function marks the region as DONT NEED. Along with NO_USER_FREE, this indicates
  * that the VA region is owned by the tiler heap and could potentially be shrunk at any time. Other
  * parts of kbase outside of tiler heap management should not take references on its physical
  * pages, and should not modify them.
@@ -136,7 +132,7 @@ static void remove_external_chunk_mappings(struct kbase_context *const kctx,
  * Return: 0 if successful or a negative error code on failure.
  */
 static int link_chunk(struct kbase_csf_tiler_heap *const heap,
-	struct kbase_csf_tiler_heap_chunk *const chunk)
+		      struct kbase_csf_tiler_heap_chunk *const chunk)
 {
 	struct kbase_csf_tiler_heap_chunk *const prev = get_last_chunk(heap);
 
@@ -149,8 +145,7 @@ static int link_chunk(struct kbase_csf_tiler_heap *const heap,
 
 		*prev_hdr = encode_chunk_ptr(heap->chunk_size, chunk->gpu_va);
 
-		dev_dbg(kctx->kbdev->dev,
-			"Linked tiler heap chunks, 0x%llX -> 0x%llX\n",
+		dev_dbg(kctx->kbdev->dev, "Linked tiler heap chunks, 0x%llX -> 0x%llX\n",
 			prev->gpu_va, chunk->gpu_va);
 	}
 
@@ -172,7 +167,7 @@ static int link_chunk(struct kbase_csf_tiler_heap *const heap,
  * Return: 0 if successful or a negative error code on failure.
  */
 static int init_chunk(struct kbase_csf_tiler_heap *const heap,
-	struct kbase_csf_tiler_heap_chunk *const chunk, bool link_with_prev)
+		      struct kbase_csf_tiler_heap_chunk *const chunk, bool link_with_prev)
 {
 	int err = 0;
 	u64 *chunk_hdr;
@@ -181,8 +176,7 @@ static int init_chunk(struct kbase_csf_tiler_heap *const heap,
 	lockdep_assert_held(&kctx->csf.tiler_heaps.lock);
 
 	if (unlikely(chunk->gpu_va & ~CHUNK_ADDR_MASK)) {
-		dev_err(kctx->kbdev->dev,
-			"Tiler heap chunk address is unusable\n");
+		dev_err(kctx->kbdev->dev, "Tiler heap chunk address is unusable\n");
 		return -EINVAL;
 	}
 
@@ -224,18 +218,20 @@ static void remove_unlinked_chunk(struct kbase_context *kctx,
 	if (WARN_ON(!list_empty(&chunk->link)))
 		return;
 
-	kbase_gpu_vm_lock(kctx);
+	kbase_gpu_vm_lock_with_pmode_sync(kctx);
 	kbase_vunmap(kctx, &chunk->map);
 	/* KBASE_REG_DONT_NEED regions will be confused with ephemeral regions (inc freed JIT
-	 * regions), and so we must clear that flag too before freeing
+	 * regions), and so we must clear that flag too before freeing.
+	 * For "no user free count", we check that the count is 1 as it is a shrinkable region;
+	 * no other code part within kbase can take a reference to it.
 	 */
+	WARN_ON(atomic64_read(&chunk->region->no_user_free_count) > 1);
+	kbase_va_region_no_user_free_dec(chunk->region);
 #if !defined(CONFIG_MALI_VECTOR_DUMP)
-	chunk->region->flags &= ~(KBASE_REG_NO_USER_FREE | KBASE_REG_DONT_NEED);
-#else
-	chunk->region->flags &= ~KBASE_REG_NO_USER_FREE;
+	chunk->region->flags &= ~KBASE_REG_DONT_NEED;
 #endif
 	kbase_mem_free_region(kctx, chunk->region);
-	kbase_gpu_vm_unlock(kctx);
+	kbase_gpu_vm_unlock_with_pmode_sync(kctx);
 
 	kfree(chunk);
 }
@@ -281,8 +277,7 @@ static struct kbase_csf_tiler_heap_chunk *alloc_new_chunk(struct kbase_context *
 
 	chunk = kzalloc(sizeof(*chunk), GFP_KERNEL);
 	if (unlikely(!chunk)) {
-		dev_err(kctx->kbdev->dev,
-			"No kernel memory for a new tiler heap chunk\n");
+		dev_err(kctx->kbdev->dev, "No kernel memory for a new tiler heap chunk\n");
 		return NULL;
 	}
 
@@ -297,11 +292,24 @@ static struct kbase_csf_tiler_heap_chunk *alloc_new_chunk(struct kbase_context *
 
 	kbase_gpu_vm_lock(kctx);
 
-	/* Some checks done here as KBASE_REG_NO_USER_FREE still allows such things to be made
+	/* Some checks done here as NO_USER_FREE still allows such things to be made
 	 * whilst we had dropped the region lock
 	 */
 	if (unlikely(atomic_read(&chunk->region->gpu_alloc->kernel_mappings) > 0)) {
 		dev_err(kctx->kbdev->dev, "Chunk region has active kernel mappings!\n");
+		goto unroll_region;
+	}
+
+	/* There is a race condition with regard to KBASE_REG_DONT_NEED, where another
+	 * thread can have the "no user free" refcount increased between kbase_mem_alloc
+	 * and kbase_gpu_vm_lock (above) and before KBASE_REG_DONT_NEED is set by
+	 * remove_external_chunk_mappings (below).
+	 *
+	 * It should be fine and not a security risk if we let the region leak till
+	 * region tracker termination in such a case.
+	 */
+	if (unlikely(atomic64_read(&chunk->region->no_user_free_count) > 1)) {
+		dev_err(kctx->kbdev->dev, "Chunk region has no_user_free_count > 1!\n");
 		goto unroll_region;
 	}
 
@@ -310,27 +318,27 @@ static struct kbase_csf_tiler_heap_chunk *alloc_new_chunk(struct kbase_context *
 	 * they remain in place in future.
 	 */
 	if (WARN(!chunk->region->gpu_alloc,
-		 "KBASE_REG_NO_USER_FREE chunks should not have had their alloc freed")) {
+		 "NO_USER_FREE chunks should not have had their alloc freed")) {
 		goto unroll_region;
 	}
 
 	if (WARN(chunk->region->gpu_alloc->type != KBASE_MEM_TYPE_NATIVE,
-		 "KBASE_REG_NO_USER_FREE chunks should not have been freed and then reallocated as imported/non-native regions")) {
+		 "NO_USER_FREE chunks should not have been freed and then reallocated as imported/non-native regions")) {
 		goto unroll_region;
 	}
 
 	if (WARN((chunk->region->flags & KBASE_REG_ACTIVE_JIT_ALLOC),
-		 "KBASE_REG_NO_USER_FREE chunks should not have been freed and then reallocated as JIT regions")) {
+		 "NO_USER_FREE chunks should not have been freed and then reallocated as JIT regions")) {
 		goto unroll_region;
 	}
 
 	if (WARN((chunk->region->flags & KBASE_REG_DONT_NEED),
-		 "KBASE_REG_NO_USER_FREE chunks should not have been made ephemeral")) {
+		 "NO_USER_FREE chunks should not have been made ephemeral")) {
 		goto unroll_region;
 	}
 
-	if (WARN(atomic_read(&chunk->region->cpu_alloc->gpu_mappings) > 1,
-		 "KBASE_REG_NO_USER_FREE chunks should not have been aliased")) {
+	if (WARN(atomic64_read(&chunk->region->cpu_alloc->gpu_mappings) > 1,
+		 "NO_USER_FREE chunks should not have been aliased")) {
 		goto unroll_region;
 	}
 
@@ -342,6 +350,13 @@ static struct kbase_csf_tiler_heap_chunk *alloc_new_chunk(struct kbase_context *
 	}
 
 	remove_external_chunk_mappings(kctx, chunk);
+
+	/* If page migration is enabled, we don't want to migrate tiler heap pages.
+	 * This does not change if the constituent pages are already marked as isolated.
+	 */
+	if (kbase_is_page_migration_enabled())
+		kbase_set_phy_alloc_page_status(kctx, chunk->region->gpu_alloc, NOT_MOVABLE);
+
 	kbase_gpu_vm_unlock(kctx);
 
 	return chunk;
@@ -350,10 +365,9 @@ unroll_region:
 	/* KBASE_REG_DONT_NEED regions will be confused with ephemeral regions (inc freed JIT
 	 * regions), and so we must clear that flag too before freeing.
 	 */
+	kbase_va_region_no_user_free_dec(chunk->region);
 #if !defined(CONFIG_MALI_VECTOR_DUMP)
-	chunk->region->flags &= ~(KBASE_REG_NO_USER_FREE | KBASE_REG_DONT_NEED);
-#else
-	chunk->region->flags &= ~KBASE_REG_NO_USER_FREE;
+	chunk->region->flags &= ~KBASE_REG_DONT_NEED;
 #endif
 	kbase_mem_free_region(kctx, chunk->region);
 	kbase_gpu_vm_unlock(kctx);
@@ -425,8 +439,8 @@ static void delete_all_chunks(struct kbase_csf_tiler_heap *heap)
 	     "Deleting a heap's chunks when that heap is still linked requires the tiler_heaps lock, which cannot be held by the caller");
 
 	list_for_each_safe(entry, tmp, &heap->chunks_list) {
-		struct kbase_csf_tiler_heap_chunk *chunk = list_entry(
-			entry, struct kbase_csf_tiler_heap_chunk, link);
+		struct kbase_csf_tiler_heap_chunk *chunk =
+			list_entry(entry, struct kbase_csf_tiler_heap_chunk, link);
 
 		list_del_init(&chunk->link);
 		heap->chunk_count--;
@@ -446,8 +460,7 @@ static void delete_all_chunks(struct kbase_csf_tiler_heap *heap)
  *
  * Return: 0 if successful or a negative error code on failure.
  */
-static int create_initial_chunks(struct kbase_csf_tiler_heap *const heap,
-	u32 const nchunks)
+static int create_initial_chunks(struct kbase_csf_tiler_heap *const heap, u32 const nchunks)
 {
 	int err = 0;
 	u32 i;
@@ -500,18 +513,17 @@ static void delete_heap(struct kbase_csf_tiler_heap *heap)
 	 * may be overwritten with new data, meaning heap->gpu_va should not
 	 * be used past this point.
 	 */
-	kbase_csf_heap_context_allocator_free(&kctx->csf.tiler_heaps.ctx_alloc,
-		heap->gpu_va);
+	kbase_csf_heap_context_allocator_free(&kctx->csf.tiler_heaps.ctx_alloc, heap->gpu_va);
 
 	WARN_ON(heap->chunk_count);
-	KBASE_TLSTREAM_AUX_TILER_HEAP_STATS(kctx->kbdev, kctx->id,
-		heap->heap_id, 0, 0, heap->max_chunks, heap->chunk_size, 0,
-		heap->target_in_flight, 0);
+	KBASE_TLSTREAM_AUX_TILER_HEAP_STATS(kctx->kbdev, kctx->id, heap->heap_id, 0, 0,
+					    heap->max_chunks, heap->chunk_size, 0,
+					    heap->target_in_flight, 0);
 
 	if (heap->buf_desc_reg) {
 		kbase_vunmap(kctx, &heap->buf_desc_map);
 		kbase_gpu_vm_lock(kctx);
-		heap->buf_desc_reg->flags &= ~KBASE_REG_NO_USER_FREE;
+		kbase_va_region_no_user_free_dec(heap->buf_desc_reg);
 		kbase_gpu_vm_unlock(kctx);
 	}
 
@@ -532,8 +544,8 @@ static void delete_heap(struct kbase_csf_tiler_heap *heap)
  *
  * Return: pointer to the tiler heap object, or NULL if not found.
  */
-static struct kbase_csf_tiler_heap *find_tiler_heap(
-	struct kbase_context *const kctx, u64 const heap_gpu_va)
+static struct kbase_csf_tiler_heap *find_tiler_heap(struct kbase_context *const kctx,
+						    u64 const heap_gpu_va)
 {
 	struct kbase_csf_tiler_heap *heap = NULL;
 
@@ -544,8 +556,7 @@ static struct kbase_csf_tiler_heap *find_tiler_heap(
 			return heap;
 	}
 
-	dev_dbg(kctx->kbdev->dev, "Tiler heap 0x%llX was not found\n",
-		heap_gpu_va);
+	dev_dbg(kctx->kbdev->dev, "Tiler heap 0x%llX was not found\n", heap_gpu_va);
 
 	return NULL;
 }
@@ -569,8 +580,7 @@ static struct kbase_csf_tiler_heap_chunk *find_chunk(struct kbase_csf_tiler_heap
 
 int kbase_csf_tiler_heap_context_init(struct kbase_context *const kctx)
 {
-	int err = kbase_csf_heap_context_allocator_init(
-		&kctx->csf.tiler_heaps.ctx_alloc, kctx);
+	int err = kbase_csf_heap_context_allocator_init(&kctx->csf.tiler_heaps.ctx_alloc, kctx);
 
 	if (unlikely(err))
 		return err;
@@ -595,8 +605,8 @@ void kbase_csf_tiler_heap_context_term(struct kbase_context *const kctx)
 	mutex_unlock(&kctx->csf.tiler_heaps.lock);
 
 	list_for_each_safe(entry, tmp, &local_heaps_list) {
-		struct kbase_csf_tiler_heap *heap = list_entry(
-			entry, struct kbase_csf_tiler_heap, link);
+		struct kbase_csf_tiler_heap *heap =
+			list_entry(entry, struct kbase_csf_tiler_heap, link);
 
 		list_del_init(&heap->link);
 		delete_heap(heap);
@@ -629,8 +639,8 @@ static bool kbasep_is_buffer_descriptor_region_suitable(struct kbase_context *co
 		return false;
 	}
 
-	if (!(reg->flags & KBASE_REG_CPU_RD) || (reg->flags & KBASE_REG_DONT_NEED) ||
-	    (reg->flags & KBASE_REG_PF_GROW) || (reg->flags & KBASE_REG_ACTIVE_JIT_ALLOC)) {
+	if (!(reg->flags & KBASE_REG_CPU_RD) || kbase_is_region_shrinkable(reg) ||
+	    (reg->flags & KBASE_REG_PF_GROW)) {
 		dev_err(kctx->kbdev->dev, "Region has invalid flags: 0x%lX!\n", reg->flags);
 		return false;
 	}
@@ -658,8 +668,7 @@ int kbase_csf_tiler_heap_init(struct kbase_context *const kctx, u32 const chunk_
 {
 	int err = 0;
 	struct kbase_csf_tiler_heap *heap = NULL;
-	struct kbase_csf_heap_context_allocator *const ctx_alloc =
-		&kctx->csf.tiler_heaps.ctx_alloc;
+	struct kbase_csf_heap_context_allocator *const ctx_alloc = &kctx->csf.tiler_heaps.ctx_alloc;
 	struct kbase_csf_tiler_heap_chunk *chunk = NULL;
 	struct kbase_va_region *gpu_va_reg = NULL;
 	void *vmap_ptr = NULL;
@@ -719,14 +728,18 @@ int kbase_csf_tiler_heap_init(struct kbase_context *const kctx, u32 const chunk_
 		/* If we don't prevent userspace from unmapping this, we may run into
 		 * use-after-free, as we don't check for the existence of the region throughout.
 		 */
-		buf_desc_reg->flags |= KBASE_REG_NO_USER_FREE;
 
 		heap->buf_desc_va = buf_desc_va;
 		heap->buf_desc_reg = buf_desc_reg;
+		kbase_va_region_no_user_free_inc(buf_desc_reg);
 
 		vmap_ptr = kbase_vmap_reg(kctx, buf_desc_reg, buf_desc_va, TILER_BUF_DESC_SIZE,
 					  KBASE_REG_CPU_RD, &heap->buf_desc_map,
 					  KBASE_VMAP_FLAG_PERMANENT_MAP_ACCOUNTING);
+
+		if (kbase_is_page_migration_enabled())
+			kbase_set_phy_alloc_page_status(kctx, buf_desc_reg->gpu_alloc, NOT_MOVABLE);
+
 		kbase_gpu_vm_unlock(kctx);
 
 		if (unlikely(!vmap_ptr)) {
@@ -811,7 +824,7 @@ heap_context_alloc_failed:
 buf_desc_vmap_failed:
 	if (heap->buf_desc_reg) {
 		kbase_gpu_vm_lock(kctx);
-		heap->buf_desc_reg->flags &= ~KBASE_REG_NO_USER_FREE;
+		kbase_va_region_no_user_free_dec(heap->buf_desc_reg);
 		kbase_gpu_vm_unlock(kctx);
 	}
 buf_desc_not_suitable:
@@ -819,8 +832,7 @@ buf_desc_not_suitable:
 	return err;
 }
 
-int kbase_csf_tiler_heap_term(struct kbase_context *const kctx,
-	u64 const heap_gpu_va)
+int kbase_csf_tiler_heap_term(struct kbase_context *const kctx, u64 const heap_gpu_va)
 {
 	int err = 0;
 	struct kbase_csf_tiler_heap *heap = NULL;
@@ -844,13 +856,11 @@ int kbase_csf_tiler_heap_term(struct kbase_context *const kctx,
 	if (likely(kctx->running_total_tiler_heap_memory >= heap_size))
 		kctx->running_total_tiler_heap_memory -= heap_size;
 	else
-		dev_warn(kctx->kbdev->dev,
-			 "Running total tiler heap memory lower than expected!");
+		dev_warn(kctx->kbdev->dev, "Running total tiler heap memory lower than expected!");
 	if (likely(kctx->running_total_tiler_heap_nr_chunks >= chunk_count))
 		kctx->running_total_tiler_heap_nr_chunks -= chunk_count;
 	else
-		dev_warn(kctx->kbdev->dev,
-			 "Running total tiler chunk count lower than expected!");
+		dev_warn(kctx->kbdev->dev, "Running total tiler chunk count lower than expected!");
 	if (!err)
 		dev_dbg(kctx->kbdev->dev,
 			"Terminated tiler heap 0x%llX, buffer descriptor 0x%llX, ctx_%d_%d\n",
@@ -866,6 +876,25 @@ int kbase_csf_tiler_heap_term(struct kbase_context *const kctx,
 	return err;
 }
 
+/**
+ * validate_allocation_request - Check whether the chunk allocation request
+ *                               received on tiler OOM should be handled at
+ *                               current time.
+ *
+ * @heap:               The tiler heap the OOM is associated with
+ * @nr_in_flight:       Number of fragment jobs in flight
+ * @pending_frag_count: Number of pending fragment jobs
+ *
+ * Context: must hold the tiler heap lock to guarantee its lifetime
+ *
+ * Return:
+ * * 0       - allowed to allocate an additional chunk
+ * * -EINVAL - invalid
+ * * -EBUSY  - there are fragment jobs still in flight, which may free chunks
+ *             after completing
+ * * -ENOMEM - the targeted number of in-flight chunks has been reached and
+ *             no new ones will be allocated
+ */
 static int validate_allocation_request(struct kbase_csf_tiler_heap *heap, u32 nr_in_flight,
 				       u32 pending_frag_count)
 {
@@ -894,8 +923,9 @@ static int validate_allocation_request(struct kbase_csf_tiler_heap *heap, u32 nr
 	return -ENOMEM;
 }
 
-int kbase_csf_tiler_heap_alloc_new_chunk(struct kbase_context *kctx,
-	u64 gpu_heap_va, u32 nr_in_flight, u32 pending_frag_count, u64 *new_chunk_ptr)
+int kbase_csf_tiler_heap_alloc_new_chunk(struct kbase_context *kctx, u64 gpu_heap_va,
+					 u32 nr_in_flight, u32 pending_frag_count,
+					 u64 *new_chunk_ptr)
 {
 	struct kbase_csf_tiler_heap *heap;
 	struct kbase_csf_tiler_heap_chunk *chunk;
@@ -925,7 +955,12 @@ int kbase_csf_tiler_heap_alloc_new_chunk(struct kbase_context *kctx,
 
 	err = validate_allocation_request(heap, nr_in_flight, pending_frag_count);
 	if (unlikely(err)) {
-		dev_err(kctx->kbdev->dev,
+		/* The allocation request can be legitimate, but be invoked on a heap
+		 * that has already reached the maximum pre-configured capacity. This
+		 * is useful debug information, but should not be treated as an error,
+		 * since the request will be re-sent at a later point.
+		 */
+		dev_dbg(kctx->kbdev->dev,
 			"Not allocating new chunk for heap 0x%llX due to current heap state (err %d)",
 			gpu_heap_va, err);
 		mutex_unlock(&kctx->csf.tiler_heaps.lock);
@@ -1024,6 +1059,7 @@ static bool delete_chunk_physical_pages(struct kbase_csf_tiler_heap *heap, u64 c
 	struct kbase_csf_tiler_heap_chunk *chunk = NULL;
 
 	lockdep_assert_held(&heap->kctx->csf.tiler_heaps.lock);
+	lockdep_assert_held(&kctx->kbdev->csf.scheduler.lock);
 
 	chunk = find_chunk(heap, chunk_gpu_va);
 	if (unlikely(!chunk)) {

@@ -1,19 +1,11 @@
-/*
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/clk.h>
 #include <linux/clkdev.h>
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/io.h>
 #include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
@@ -489,7 +481,7 @@ static const struct clk_ops ti_adpll_ops = {
 
 static int ti_adpll_init_dco(struct ti_adpll_data *d)
 {
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	struct clk *clock;
 	const char *postfix;
 	int width, err;
@@ -582,7 +574,7 @@ static int ti_adpll_init_clkout(struct ti_adpll_data *d,
 				struct clk *clk1)
 {
 	struct ti_adpll_clkout_data *co;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	struct clk_ops *ops;
 	const char *parent_names[2];
 	const char *child_name;
@@ -607,7 +599,7 @@ static int ti_adpll_init_clkout(struct ti_adpll_data *d,
 
 	init.name = child_name;
 	init.ops = ops;
-	init.flags = CLK_IS_BASIC;
+	init.flags = 0;
 	co->hw.init = &init;
 	parent_names[0] = __clk_get_name(clk0);
 	parent_names[1] = __clk_get_name(clk1);
@@ -806,7 +798,7 @@ static int ti_adpll_init_registers(struct ti_adpll_data *d)
 
 static int ti_adpll_init_inputs(struct ti_adpll_data *d)
 {
-	const char *error = "need at least %i inputs";
+	static const char error[] = "need at least %i inputs";
 	struct clk *clock;
 	int nr_inputs;
 
@@ -895,11 +887,8 @@ static int ti_adpll_probe(struct platform_device *pdev)
 	d->pa = res->start;
 
 	d->iobase = devm_ioremap_resource(dev, res);
-	if (IS_ERR(d->iobase)) {
-		dev_err(dev, "could not get IO base: %li\n",
-			PTR_ERR(d->iobase));
+	if (IS_ERR(d->iobase))
 		return PTR_ERR(d->iobase);
-	}
 
 	err = ti_adpll_init_registers(d);
 	if (err)

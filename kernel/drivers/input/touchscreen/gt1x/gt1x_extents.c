@@ -17,6 +17,7 @@
  * Release Date:  2015/07/10
  */
 
+#include <linux/compat.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
 #include <linux/sched.h>
@@ -667,7 +668,7 @@ static long gt1x_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	int cnt = 30;
 
 	/* Blocking when firmwaer updating */
-	while (cnt-- && update_info.status) {
+	while (cnt-- && gt1x_update_info.status) {
 		ssleep(1);
 	}
 	/*GTP_DEBUG("IOCTL CMD:%x", cmd);*/

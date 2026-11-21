@@ -27,8 +27,23 @@
 #define MPP_CLASS_NAME		"mpp_class"
 #define MPP_SERVICE_NAME	"mpp_service"
 
-#define MPP_REGISTER_DRIVER(srv, X, x) {\
-	if (IS_ENABLED(CONFIG_ROCKCHIP_MPP_##X))\
+#define HAS_RKVDEC	IS_ENABLED(CONFIG_ROCKCHIP_MPP_RKVDEC)
+#define HAS_RKVENC	IS_ENABLED(CONFIG_ROCKCHIP_MPP_RKVENC)
+#define HAS_VDPU1	IS_ENABLED(CONFIG_ROCKCHIP_MPP_VDPU1)
+#define HAS_VEPU1	IS_ENABLED(CONFIG_ROCKCHIP_MPP_VEPU1)
+#define HAS_VDPU2	IS_ENABLED(CONFIG_ROCKCHIP_MPP_VDPU2)
+#define HAS_VEPU2	IS_ENABLED(CONFIG_ROCKCHIP_MPP_VEPU2)
+#define HAS_VEPU22	IS_ENABLED(CONFIG_ROCKCHIP_MPP_VEPU22)
+#define HAS_IEP2	IS_ENABLED(CONFIG_ROCKCHIP_MPP_IEP2)
+#define HAS_JPGDEC	IS_ENABLED(CONFIG_ROCKCHIP_MPP_JPGDEC)
+#define HAS_JPGENC	IS_ENABLED(CONFIG_ROCKCHIP_MPP_JPGENC)
+#define HAS_RKVDEC2	IS_ENABLED(CONFIG_ROCKCHIP_MPP_RKVDEC2)
+#define HAS_RKVENC2	IS_ENABLED(CONFIG_ROCKCHIP_MPP_RKVENC2)
+#define HAS_AV1DEC	IS_ENABLED(CONFIG_ROCKCHIP_MPP_AV1DEC)
+#define HAS_VDPP	IS_ENABLED(CONFIG_ROCKCHIP_MPP_VDPP)
+
+#define MPP_REGISTER_DRIVER(srv, flag, X, x) {\
+	if (flag)\
 		mpp_add_driver(srv, MPP_DRIVER_##X, &rockchip_##x##_driver, "grf_"#x);\
 	}
 
@@ -84,6 +99,9 @@ static int mpp_add_driver(struct mpp_service *srv,
 	mpp_init_grf(srv->dev->of_node,
 		     &srv->grf_infos[type],
 		     grf_name);
+
+	if (IS_ENABLED(CONFIG_ARM_DMA_USE_IOMMU))
+		driver->driver_managed_dma = (srv->iommu_shared_mask & BIT(type)) ? true : false;
 
 	ret = platform_driver_register(driver);
 	if (ret)
@@ -162,6 +180,55 @@ static int mpp_show_version(struct seq_file *seq, void *offset)
 	return 0;
 }
 
+static int mpp_dump_session(struct mpp_session *session, struct seq_file *s)
+{
+	struct mpp_dma_session *dma = session->dma;
+	struct mpp_dma_buffer *n;
+	struct mpp_dma_buffer *buffer;
+	phys_addr_t end;
+	unsigned long z = 0, t = 0;
+	int i = 0;
+#define K(size) ((unsigned long)((size) >> 10))
+
+	if (!dma)
+		return 0;
+
+	seq_puts(s, "session iova range dump:\n");
+
+	mutex_lock(&dma->list_mutex);
+	list_for_each_entry_safe(buffer, n, &dma->used_list, link) {
+		end = buffer->iova + buffer->size - 1;
+		z = (unsigned long)buffer->size;
+		t += z;
+
+		seq_printf(s, "%4d: ", i++);
+		seq_printf(s, "%pa..%pa (%10lu %s)\n", &buffer->iova, &end,
+			   (z >= 1024) ? (K(z)) : z,
+			   (z >= 1024) ? "KiB" : "Bytes");
+	}
+	i = 0;
+	list_for_each_entry_safe(buffer, n, &dma->unused_list, link) {
+		if (!buffer->dmabuf)
+			continue;
+
+		end = buffer->iova + buffer->size - 1;
+		z = (unsigned long)buffer->size;
+		t += z;
+
+		seq_printf(s, "%4d: ", i++);
+		seq_printf(s, "%pa..%pa (%10lu %s)\n", &buffer->iova, &end,
+			   (z >= 1024) ? (K(z)) : z,
+			   (z >= 1024) ? "KiB" : "Bytes");
+	}
+
+	mutex_unlock(&dma->list_mutex);
+	seq_printf(s, "session: pid=%d index=%d\n", session->pid, session->index);
+	seq_printf(s, " device: %s\n", dev_name(session->mpp->dev));
+	seq_printf(s, " memory: %lu MiB\n", K(K(t)));
+
+	return 0;
+}
+
 static int mpp_show_session_summary(struct seq_file *seq, void *offset)
 {
 	struct mpp_session *session = NULL, *n;
@@ -179,6 +246,8 @@ static int mpp_show_session_summary(struct seq_file *seq, void *offset)
 		if (!session->mpp)
 			continue;
 		mpp = session->mpp;
+
+		mpp_dump_session(session, seq);
 
 		if (mpp->dev_ops->dump_session)
 			mpp->dev_ops->dump_session(session, seq);
@@ -243,6 +312,50 @@ static int mpp_show_support_device(struct seq_file *file, void *v)
 	return 0;
 }
 
+static int mpp_show_device_load(struct seq_file *file, void *v)
+{
+	u32 i, j;
+	struct mpp_service *srv = file->private;
+
+	if (!srv->load_interval) {
+		seq_puts(file, "please set load_interval first!!!\n");
+		seq_puts(file, "e.g. set 1000ms to load_interval:\n");
+		seq_puts(file, "echo 1000 > /proc/mpp_service/load_interval\n");
+		return 0;
+	}
+
+	for (i = 0; i < MPP_DEVICE_BUTT; i++) {
+		struct mpp_taskqueue *queue = srv->task_queues[i];
+
+		if (!queue)
+			continue;
+
+		for (j = 0; j < MPP_MAX_CORE_NUM; j++) {
+			struct mpp_dev *mpp = queue->cores[j];
+
+			if (!mpp)
+				continue;
+
+			if (mpp->load_info.load_time) {
+				s64 time_diff_us;
+
+				time_diff_us = ktime_us_delta(ktime_get(),
+							      mpp->load_info.load_time);
+				if ((time_diff_us > 2 * srv->load_interval * 1000) ||
+				    list_empty(&queue->session_attach))
+					mpp_dev_load_clear(mpp);
+			}
+
+			seq_printf(file, "%-25s load: %3d.%02d%% utilization: %3d.%02d%%\n",
+				   dev_name(mpp->dev),
+				   mpp->load_info.load, mpp->load_info.load_frac,
+				   mpp->load_info.utilization, mpp->load_info.utilization_frac);
+		}
+	}
+
+	return 0;
+}
+
 static int mpp_procfs_init(struct mpp_service *srv)
 {
 	srv->procfs = proc_mkdir(MPP_SERVICE_NAME, NULL);
@@ -261,6 +374,12 @@ static int mpp_procfs_init(struct mpp_service *srv)
 	/* show support devices */
 	proc_create_single_data("supports-device", 0444,
 				srv->procfs, mpp_show_support_device, srv);
+	srv->timing_en = 1;
+	mpp_procfs_create_u32("timing_en", 0644, srv->procfs, &srv->timing_en);
+	/* show per device load info */
+	proc_create_single_data("load", 0444, srv->procfs, mpp_show_device_load, srv);
+	srv->load_interval = 0;
+	mpp_procfs_create_u32("load_interval", 0644, srv->procfs, &srv->load_interval);
 
 	return 0;
 }
@@ -313,7 +432,7 @@ static int mpp_service_probe(struct platform_device *pdev)
 
 		kthread_init_worker(&queue->worker);
 		queue->kworker_task = kthread_run(kthread_worker_fn, &queue->worker,
-						  "queue_work%d", i);
+						  "mpp_worker_%d", i);
 		srv->task_queues[i] = queue;
 	}
 
@@ -339,6 +458,9 @@ static int mpp_service_probe(struct platform_device *pdev)
 		}
 	}
 
+	of_property_read_u32(np, "rockchip,iommu-shared-mask",
+			     &srv->iommu_shared_mask);
+
 	ret = mpp_register_service(srv, MPP_SERVICE_NAME);
 	if (ret) {
 		dev_err(dev, "register %s device\n", MPP_SERVICE_NAME);
@@ -349,18 +471,20 @@ static int mpp_service_probe(struct platform_device *pdev)
 	mpp_procfs_init(srv);
 
 	/* register sub drivers */
-	MPP_REGISTER_DRIVER(srv, RKVDEC, rkvdec);
-	MPP_REGISTER_DRIVER(srv, RKVENC, rkvenc);
-	MPP_REGISTER_DRIVER(srv, VDPU1, vdpu1);
-	MPP_REGISTER_DRIVER(srv, VEPU1, vepu1);
-	MPP_REGISTER_DRIVER(srv, VDPU2, vdpu2);
-	MPP_REGISTER_DRIVER(srv, VEPU2, vepu2);
-	MPP_REGISTER_DRIVER(srv, VEPU22, vepu22);
-	MPP_REGISTER_DRIVER(srv, IEP2, iep2);
-	MPP_REGISTER_DRIVER(srv, JPGDEC, jpgdec);
-	MPP_REGISTER_DRIVER(srv, RKVDEC2, rkvdec2);
-	MPP_REGISTER_DRIVER(srv, VDPP, vdpp);
-	MPP_REGISTER_DRIVER(srv, RKVENC2, rkvenc2);
+	MPP_REGISTER_DRIVER(srv, HAS_RKVDEC, RKVDEC, rkvdec);
+	MPP_REGISTER_DRIVER(srv, HAS_RKVENC, RKVENC, rkvenc);
+	MPP_REGISTER_DRIVER(srv, HAS_VDPU1, VDPU1, vdpu1);
+	MPP_REGISTER_DRIVER(srv, HAS_VEPU1, VEPU1, vepu1);
+	MPP_REGISTER_DRIVER(srv, HAS_VDPU2, VDPU2, vdpu2);
+	MPP_REGISTER_DRIVER(srv, HAS_VEPU2, VEPU2, vepu2);
+	MPP_REGISTER_DRIVER(srv, HAS_VEPU22, VEPU22, vepu22);
+	MPP_REGISTER_DRIVER(srv, HAS_IEP2, IEP2, iep2);
+	MPP_REGISTER_DRIVER(srv, HAS_JPGDEC, JPGDEC, jpgdec);
+	MPP_REGISTER_DRIVER(srv, HAS_JPGENC, JPGENC, jpgenc);
+	MPP_REGISTER_DRIVER(srv, HAS_RKVDEC2, RKVDEC2, rkvdec2);
+	MPP_REGISTER_DRIVER(srv, HAS_RKVENC2, RKVENC2, rkvenc2);
+	MPP_REGISTER_DRIVER(srv, HAS_AV1DEC, AV1DEC, av1dec);
+	MPP_REGISTER_DRIVER(srv, HAS_VDPP, VDPP, vdpp);
 
 	dev_info(dev, "probe success\n");
 
@@ -419,6 +543,7 @@ static struct platform_driver mpp_service_driver = {
 
 module_platform_driver(mpp_service_driver);
 
+MODULE_IMPORT_NS(DMA_BUF);
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_VERSION(MPP_VERSION);
 MODULE_AUTHOR("Ding Wei leo.ding@rock-chips.com");

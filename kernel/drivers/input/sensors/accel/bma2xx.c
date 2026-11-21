@@ -1,7 +1,7 @@
 /*
  * drivers/input/sensors/accel/bma2xx.c
  *
- * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
+ * Copyright (C) Rockchip Electronics Co., Ltd.
  *
  * Author: Bin Yang <yangbin@rock - chips.com>
  *
@@ -2210,7 +2210,7 @@ static int sensor_init(struct i2c_client *client)
 	return ret;
 }
 
-struct sensor_operate gsensor_bma2x2_ops = {
+static struct sensor_operate gsensor_bma2x2_ops = {
 	.name		= "bma2xx_acc",
 	/*sensor type and it should be correct*/
 	.type		= SENSOR_TYPE_ACCEL,
@@ -2238,9 +2238,9 @@ static int gsensor_bma2x2_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &gsensor_bma2x2_ops);
 }
 
-static int gsensor_bma2x2_remove(struct i2c_client *client)
+static void gsensor_bma2x2_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &gsensor_bma2x2_ops);
+	sensor_unregister_device(client, NULL, &gsensor_bma2x2_ops);
 }
 
 static const struct i2c_device_id gsensor_bma2x2_id[] = {
@@ -2250,7 +2250,7 @@ static const struct i2c_device_id gsensor_bma2x2_id[] = {
 
 static struct i2c_driver gsensor_bma2x2_driver = {
 	.probe = gsensor_bma2x2_probe,
-	.remove = gsensor_bma2x2_remove,
+	.remove = (void *)gsensor_bma2x2_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = gsensor_bma2x2_id,
 	.driver = {

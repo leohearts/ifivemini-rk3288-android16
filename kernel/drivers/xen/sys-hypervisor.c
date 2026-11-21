@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  copyright (c) 2006 IBM Corporation
  *  Authored by: Mike D. Day <ncmike@us.ibm.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 
 #include <linux/slab.h>
@@ -25,11 +22,10 @@
 #endif
 
 #define HYPERVISOR_ATTR_RO(_name) \
-static struct hyp_sysfs_attr  _name##_attr = __ATTR_RO(_name)
+static struct hyp_sysfs_attr _name##_attr = __ATTR_RO(_name)
 
 #define HYPERVISOR_ATTR_RW(_name) \
-static struct hyp_sysfs_attr _name##_attr = \
-	__ATTR(_name, 0644, _name##_show, _name##_store)
+static struct hyp_sysfs_attr _name##_attr = __ATTR_RW(_name)
 
 struct hyp_sysfs_attr {
 	struct attribute attr;
@@ -367,6 +363,8 @@ static ssize_t buildid_show(struct hyp_sysfs_attr *attr, char *buffer)
 			ret = sprintf(buffer, "<denied>");
 		return ret;
 	}
+	if (ret > PAGE_SIZE)
+		return -ENOSPC;
 
 	buildid = kmalloc(sizeof(*buildid) + ret, GFP_KERNEL);
 	if (!buildid)
@@ -374,8 +372,10 @@ static ssize_t buildid_show(struct hyp_sysfs_attr *attr, char *buffer)
 
 	buildid->len = ret;
 	ret = HYPERVISOR_xen_version(XENVER_build_id, buildid);
-	if (ret > 0)
-		ret = sprintf(buffer, "%s", buildid->buf);
+	if (ret > 0) {
+		/* Build id is binary, not a string. */
+		memcpy(buffer, buildid->buf, ret);
+	}
 	kfree(buildid);
 
 	return ret;

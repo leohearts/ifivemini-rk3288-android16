@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * drivers/clocksource/arm_global_timer.c
  *
  * Copyright (C) 2013 STMicroelectronics (R&D) Limited.
  * Author: Stuart Menefy <stuart.menefy@st.com>
  * Author: Srinivas Kandagatla <srinivas.kandagatla@st.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/init.h>
@@ -34,6 +31,10 @@
 #define GT_CONTROL_COMP_ENABLE		BIT(1)	/* banked */
 #define GT_CONTROL_IRQ_ENABLE		BIT(2)	/* banked */
 #define GT_CONTROL_AUTO_INC		BIT(3)	/* banked */
+#define GT_CONTROL_PRESCALER_SHIFT      8
+#define GT_CONTROL_PRESCALER_MAX        0xFF
+#define GT_CONTROL_PRESCALER_MASK       (GT_CONTROL_PRESCALER_MAX << \
+					 GT_CONTROL_PRESCALER_SHIFT)
 
 #define GT_INT_STATUS	0x0c
 #define GT_INT_STATUS_EVENT_FLAG	BIT(0)
@@ -42,6 +43,7 @@
 #define GT_COMP1	0x14
 #define GT_AUTO_INC	0x18
 
+#define MAX_F_ERR 50
 /*
  * We are expecting to be clocked by the ARM peripheral clock.
  *
@@ -49,8 +51,8 @@
  * the units for all operations.
  */
 static void __iomem *gt_base;
-static struct clk *gt_clk;
-static unsigned long gt_clk_rate;
+static struct notifier_block gt_clk_rate_change_nb;
+static u32 gt_psv_new, gt_psv_bck, gt_target_rate;
 static int gt_ppi;
 static struct clock_event_device __percpu *gt_evt;
 
@@ -100,7 +102,10 @@ static void gt_compare_set(unsigned long delta, int periodic)
 	unsigned long ctrl;
 
 	counter += delta;
-	ctrl = GT_CONTROL_TIMER_ENABLE;
+	ctrl = readl(gt_base + GT_CONTROL);
+	ctrl &= ~(GT_CONTROL_COMP_ENABLE | GT_CONTROL_IRQ_ENABLE |
+		  GT_CONTROL_AUTO_INC);
+	ctrl |= GT_CONTROL_TIMER_ENABLE;
 	writel_relaxed(ctrl, gt_base + GT_CONTROL);
 	writel_relaxed(lower_32_bits(counter), gt_base + GT_COMP0);
 	writel_relaxed(upper_32_bits(counter), gt_base + GT_COMP1);
@@ -127,7 +132,7 @@ static int gt_clockevent_shutdown(struct clock_event_device *evt)
 
 static int gt_clockevent_set_periodic(struct clock_event_device *evt)
 {
-	gt_compare_set(DIV_ROUND_CLOSEST(gt_clk_rate, HZ), 1);
+	gt_compare_set(DIV_ROUND_CLOSEST(gt_target_rate, HZ), 1);
 	return 0;
 }
 
@@ -137,97 +142,6 @@ static int gt_clockevent_set_next_event(unsigned long evt,
 	gt_compare_set(evt, 0);
 	return 0;
 }
-
-#ifdef CONFIG_COMMON_CLK
-
-/*
- * Updates clockevent frequency when the cpu frequency changes.
- * Called on the cpu that is changing frequency with interrupts disabled.
- */
-static void gt_update_frequency(void *new_rate)
-{
-	gt_clk_rate = *((unsigned long *) new_rate);
-
-	clockevents_update_freq(raw_cpu_ptr(gt_evt), gt_clk_rate);
-}
-
-static int gt_rate_change(struct notifier_block *nb,
-	unsigned long flags, void *data)
-{
-	struct clk_notifier_data *cnd = data;
-
-	/*
-	 * The gt clock events must be reprogrammed to account for the new
-	 * frequency.  The timer is local to a cpu, so cross-call to the
-	 * changing cpu.
-	 */
-	if (flags == POST_RATE_CHANGE)
-		on_each_cpu(gt_update_frequency,
-				  (void *)&cnd->new_rate, 1);
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block gt_clk_nb = {
-	.notifier_call = gt_rate_change,
-};
-
-static int gt_clk_init(void)
-{
-	if (gt_evt && raw_cpu_ptr(gt_evt) && !IS_ERR(gt_clk))
-		return clk_notifier_register(gt_clk, &gt_clk_nb);
-
-	return 0;
-}
-core_initcall(gt_clk_init);
-
-#elif defined (CONFIG_CPU_FREQ)
-
-#include <linux/cpufreq.h>
-
-/*
- * Updates clockevent frequency when the cpu frequency changes.
- * Called on the cpu that is changing frequency with interrupts disabled.
- */
-static void gt_update_frequency(void *data)
-{
-	gt_clk_rate = clk_get_rate(gt_clk);
-
-	clockevents_update_freq(raw_cpu_ptr(gt_evt), gt_clk_rate);
-}
-
-static int gt_cpufreq_transition(struct notifier_block *nb,
-	unsigned long state, void *data)
-{
-	struct cpufreq_freqs *freqs = data;
-
-	/*
-	 * The gt clock events must be reprogrammed to account for the new
-	 * frequency.  The timer is local to a cpu, so cross-call to the
-	 * changing cpu.
-	 */
-	if (state == CPUFREQ_POSTCHANGE)
-		smp_call_function_single(freqs->cpu, gt_update_frequency,
-			NULL, 1);
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block gt_cpufreq_nb = {
-	.notifier_call = gt_cpufreq_transition,
-};
-
-static int gt_cpufreq_init(void)
-{
-	if (gt_evt && raw_cpu_ptr(gt_evt) && !IS_ERR(gt_clk))
-		return cpufreq_register_notifier(&gt_cpufreq_nb,
-			CPUFREQ_TRANSITION_NOTIFIER);
-
-	return 0;
-}
-core_initcall(gt_cpufreq_init);
-
-#endif
 
 static irqreturn_t gt_clockevent_interrupt(int irq, void *dev_id)
 {
@@ -272,7 +186,7 @@ static int gt_starting_cpu(unsigned int cpu)
 	clk->cpumask = cpumask_of(cpu);
 	clk->rating = 300;
 	clk->irq = gt_ppi;
-	clockevents_config_and_register(clk, gt_clk_rate,
+	clockevents_config_and_register(clk, gt_target_rate,
 					1, 0xffffffff);
 	enable_percpu_irq(clk->irq, IRQ_TYPE_NONE);
 	return 0;
@@ -327,9 +241,28 @@ static struct delay_timer gt_delay_timer = {
 	.read_current_timer = gt_read_long,
 };
 
+static void gt_write_presc(u32 psv)
+{
+	u32 reg;
+
+	reg = readl(gt_base + GT_CONTROL);
+	reg &= ~GT_CONTROL_PRESCALER_MASK;
+	reg |= psv << GT_CONTROL_PRESCALER_SHIFT;
+	writel(reg, gt_base + GT_CONTROL);
+}
+
+static u32 gt_read_presc(void)
+{
+	u32 reg;
+
+	reg = readl(gt_base + GT_CONTROL);
+	reg &= GT_CONTROL_PRESCALER_MASK;
+	return reg >> GT_CONTROL_PRESCALER_SHIFT;
+}
+
 static void __init gt_delay_timer_init(void)
 {
-	gt_delay_timer.freq = gt_clk_rate;
+	gt_delay_timer.freq = gt_target_rate;
 	register_current_timer_delay(&gt_delay_timer);
 }
 
@@ -338,17 +271,80 @@ static int __init gt_clocksource_init(void)
 	writel(0, gt_base + GT_CONTROL);
 	writel(0, gt_base + GT_COUNTER0);
 	writel(0, gt_base + GT_COUNTER1);
-	/* enables timer on all the cores */
-	writel(GT_CONTROL_TIMER_ENABLE, gt_base + GT_CONTROL);
+	/* set prescaler and enable timer on all the cores */
+	writel(((CONFIG_ARM_GT_INITIAL_PRESCALER_VAL - 1) <<
+		GT_CONTROL_PRESCALER_SHIFT)
+	       | GT_CONTROL_TIMER_ENABLE, gt_base + GT_CONTROL);
 
 #ifdef CONFIG_CLKSRC_ARM_GLOBAL_TIMER_SCHED_CLOCK
-	sched_clock_register(gt_sched_clock_read, 64, gt_clk_rate);
+	sched_clock_register(gt_sched_clock_read, 64, gt_target_rate);
 #endif
-	return clocksource_register_hz(&gt_clocksource, gt_clk_rate);
+	return clocksource_register_hz(&gt_clocksource, gt_target_rate);
+}
+
+static int gt_clk_rate_change_cb(struct notifier_block *nb,
+				 unsigned long event, void *data)
+{
+	struct clk_notifier_data *ndata = data;
+
+	switch (event) {
+	case PRE_RATE_CHANGE:
+	{
+		unsigned long psv;
+
+		psv = DIV_ROUND_CLOSEST(ndata->new_rate, gt_target_rate);
+		if (!psv ||
+		    abs(gt_target_rate - (ndata->new_rate / psv)) > MAX_F_ERR)
+			return NOTIFY_BAD;
+
+		psv--;
+
+		/* prescaler within legal range? */
+		if (psv > GT_CONTROL_PRESCALER_MAX)
+			return NOTIFY_BAD;
+
+		/*
+		 * store timer clock ctrl register so we can restore it in case
+		 * of an abort.
+		 */
+		gt_psv_bck = gt_read_presc();
+		gt_psv_new = psv;
+		/* scale down: adjust divider in post-change notification */
+		if (ndata->new_rate < ndata->old_rate)
+			return NOTIFY_DONE;
+
+		/* scale up: adjust divider now - before frequency change */
+		gt_write_presc(psv);
+		break;
+	}
+	case POST_RATE_CHANGE:
+		/* scale up: pre-change notification did the adjustment */
+		if (ndata->new_rate > ndata->old_rate)
+			return NOTIFY_OK;
+
+		/* scale down: adjust divider now - after frequency change */
+		gt_write_presc(gt_psv_new);
+		break;
+
+	case ABORT_RATE_CHANGE:
+		/* we have to undo the adjustment in case we scale up */
+		if (ndata->new_rate < ndata->old_rate)
+			return NOTIFY_OK;
+
+		/* restore original register value */
+		gt_write_presc(gt_psv_bck);
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+
+	return NOTIFY_DONE;
 }
 
 static int __init global_timer_of_register(struct device_node *np)
 {
+	struct clk *gt_clk;
+	static unsigned long gt_clk_rate;
 	int err = 0;
 
 	/*
@@ -386,11 +382,20 @@ static int __init global_timer_of_register(struct device_node *np)
 	}
 
 	gt_clk_rate = clk_get_rate(gt_clk);
+	gt_target_rate = gt_clk_rate / CONFIG_ARM_GT_INITIAL_PRESCALER_VAL;
+	gt_clk_rate_change_nb.notifier_call =
+		gt_clk_rate_change_cb;
+	err = clk_notifier_register(gt_clk, &gt_clk_rate_change_nb);
+	if (err) {
+		pr_warn("Unable to register clock notifier\n");
+		goto out_clk;
+	}
+
 	gt_evt = alloc_percpu(struct clock_event_device);
 	if (!gt_evt) {
 		pr_warn("global-timer: can't allocate memory\n");
 		err = -ENOMEM;
-		goto out_clk;
+		goto out_clk_nb;
 	}
 
 	err = request_percpu_irq(gt_ppi, gt_clockevent_interrupt,
@@ -420,6 +425,8 @@ out_irq:
 	free_percpu_irq(gt_ppi, gt_evt);
 out_free:
 	free_percpu(gt_evt);
+out_clk_nb:
+	clk_notifier_unregister(gt_clk, &gt_clk_rate_change_nb);
 out_clk:
 	clk_disable_unprepare(gt_clk);
 out_unmap:

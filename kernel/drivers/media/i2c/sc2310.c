@@ -121,14 +121,6 @@ static const char * const sc2310_supply_names[] = {
 
 #define SC2310_NUM_SUPPLIES ARRAY_SIZE(sc2310_supply_names)
 
-enum sc2310_max_pad {
-	PAD0,
-	PAD1,
-	PAD2,
-	PAD3,
-	PAD_MAX,
-};
-
 struct regval {
 	u16 addr;
 	u8 val;
@@ -170,6 +162,7 @@ struct sc2310 {
 	struct v4l2_ctrl	*pixel_rate;
 	struct v4l2_ctrl	*link_freq;
 	struct mutex		mutex;
+	struct v4l2_fract	cur_fps;
 	bool			streaming;
 	bool			power_on;
 	const struct sc2310_mode *cur_mode;
@@ -590,7 +583,7 @@ static const struct sc2310_mode supported_modes[] = {
 		.hdr_mode = NO_HDR,
 		.mipi_freq_idx = 0,
 		.bpp = 10,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_0,
+		.vc[PAD0] = 0,
 	},
 	{
 		/* 2 to 1 hdr */
@@ -608,10 +601,10 @@ static const struct sc2310_mode supported_modes[] = {
 		.hdr_mode = HDR_X2,
 		.mipi_freq_idx = 1,
 		.bpp = 10,
-		.vc[PAD0] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD1] = V4L2_MBUS_CSI2_CHANNEL_0,//L->csi wr0
-		.vc[PAD2] = V4L2_MBUS_CSI2_CHANNEL_1,
-		.vc[PAD3] = V4L2_MBUS_CSI2_CHANNEL_1,//M->csi wr2
+		.vc[PAD0] = 1,
+		.vc[PAD1] = 0,//L->csi wr0
+		.vc[PAD2] = 1,
+		.vc[PAD3] = 1,//M->csi wr2
 	},
 };
 
@@ -741,7 +734,7 @@ static void sc2310_change_mode(struct sc2310 *sc2310, const struct sc2310_mode *
 }
 
 static int sc2310_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct sc2310 *sc2310 = to_sc2310(sd);
@@ -758,7 +751,7 @@ static int sc2310_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&sc2310->mutex);
 		return -ENOTTY;
@@ -776,6 +769,8 @@ static int sc2310_set_fmt(struct v4l2_subdev *sd,
 		pixel_rate = (u32)link_freq_items[mode->mipi_freq_idx] /
 			mode->bpp * 2 * SC2310_LANES;
 		__v4l2_ctrl_s_ctrl_int64(sc2310->pixel_rate, pixel_rate);
+		sc2310->cur_fps = mode->max_fps;
+		sc2310->cur_vts = mode->vts_def;
 	}
 
 	mutex_unlock(&sc2310->mutex);
@@ -784,7 +779,7 @@ static int sc2310_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int sc2310_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct sc2310 *sc2310 = to_sc2310(sd);
@@ -793,7 +788,7 @@ static int sc2310_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&sc2310->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&sc2310->mutex);
 		return -ENOTTY;
@@ -814,7 +809,7 @@ static int sc2310_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int sc2310_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct sc2310 *sc2310 = to_sc2310(sd);
@@ -827,7 +822,7 @@ static int sc2310_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int sc2310_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct sc2310 *sc2310 = to_sc2310(sd);
@@ -868,32 +863,19 @@ static int sc2310_g_frame_interval(struct v4l2_subdev *sd,
 	struct sc2310 *sc2310 = to_sc2310(sd);
 	const struct sc2310_mode *mode = sc2310->cur_mode;
 
-	mutex_lock(&sc2310->mutex);
-	fi->interval = mode->max_fps;
-	mutex_unlock(&sc2310->mutex);
+	if (sc2310->streaming)
+		fi->interval = sc2310->cur_fps;
+	else
+		fi->interval = mode->max_fps;
 
 	return 0;
 }
 
-static int sc2310_g_mbus_config(struct v4l2_subdev *sd,
+static int sc2310_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
-	struct sc2310 *sc2310 = to_sc2310(sd);
-	const struct sc2310_mode *mode = sc2310->cur_mode;
-	u32 val = 0;
-
-	if (mode->hdr_mode == NO_HDR)
-		val = 1 << (SC2310_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	if (mode->hdr_mode == HDR_X2)
-		val = 1 << (SC2310_LANES - 1) |
-		V4L2_MBUS_CSI2_CHANNEL_0 |
-		V4L2_MBUS_CSI2_CONTINUOUS_CLOCK |
-		V4L2_MBUS_CSI2_CHANNEL_1;
-
-	config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = V4L2_MBUS_CSI2_DPHY;
+	config->bus.mipi_csi2.num_data_lanes = SC2310_LANES;
 
 	return 0;
 }
@@ -902,10 +884,10 @@ static void sc2310_get_module_inf(struct sc2310 *sc2310,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, SC2310_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, sc2310->module_name,
+	strscpy(inf->base.sensor, SC2310_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, sc2310->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, sc2310->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, sc2310->len_name, sizeof(inf->base.lens));
 }
 
 static void sc2310_get_gain_reg(u32 val, u32 *again_reg, u32 *again_fine_reg,
@@ -1078,11 +1060,23 @@ static int sc2310_set_hdrae(struct sc2310 *sc2310,
 	return 0;
 }
 
+static int sc2310_get_channel_info(struct sc2310 *sc2310, struct rkmodule_channel_info *ch_info)
+{
+	if (ch_info->index < PAD0 || ch_info->index >= PAD_MAX)
+		return -EINVAL;
+	ch_info->vc = sc2310->cur_mode->vc[ch_info->index];
+	ch_info->width = sc2310->cur_mode->width;
+	ch_info->height = sc2310->cur_mode->height;
+	ch_info->bus_fmt = sc2310->cur_mode->bus_fmt;
+	return 0;
+}
+
 static long sc2310_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct sc2310 *sc2310 = to_sc2310(sd);
 	struct rkmodule_hdr_cfg *hdr_cfg;
 	const struct sc2310_mode *mode;
+	struct rkmodule_channel_info *ch_info;
 	long ret = 0;
 	u64 pixel_rate = 0;
 	u32 i, h, w, stream;
@@ -1127,6 +1121,8 @@ static long sc2310_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 				mode->bpp * 2 * SC2310_LANES;
 			__v4l2_ctrl_s_ctrl_int64(sc2310->pixel_rate,
 						 pixel_rate);
+			sc2310->cur_fps = mode->max_fps;
+			sc2310->cur_vts = mode->vts_def;
 			dev_info(&sc2310->client->dev,
 				"sensor mode: %d\n", mode->hdr_mode);
 		}
@@ -1150,6 +1146,10 @@ static long sc2310_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 			ret = sc2310_write_reg(sc2310->client, SC2310_REG_CTRL_MODE,
 				SC2310_REG_VALUE_08BIT, SC2310_MODE_SW_STANDBY);
 		break;
+	case RKMODULE_GET_CHANNEL_INFO:
+		ch_info = (struct rkmodule_channel_info *)arg;
+		ret = sc2310_get_channel_info(sc2310, ch_info);
+		break;
 	default:
 		ret = -ENOIOCTLCMD;
 		break;
@@ -1167,6 +1167,7 @@ static long sc2310_compat_ioctl32(struct v4l2_subdev *sd,
 	struct rkmodule_awb_cfg *cfg;
 	struct rkmodule_hdr_cfg *hdr;
 	struct preisp_hdrae_exp_s *hdrae;
+	struct rkmodule_channel_info *ch_info;
 	long ret = 0;
 	u32 cg = 0;
 	u32 stream = 0;
@@ -1255,6 +1256,21 @@ static long sc2310_compat_ioctl32(struct v4l2_subdev *sd,
 		if (copy_from_user(&stream, up, sizeof(u32)))
 			return -EFAULT;
 		ret = sc2310_ioctl(sd, cmd, &stream);
+		break;
+	case RKMODULE_GET_CHANNEL_INFO:
+		ch_info = kzalloc(sizeof(*ch_info), GFP_KERNEL);
+		if (!ch_info) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = sc2310_ioctl(sd, cmd, ch_info);
+		if (!ret) {
+			ret = copy_to_user(up, ch_info, sizeof(*ch_info));
+			if (ret)
+				ret = -EFAULT;
+		}
+		kfree(ch_info);
 		break;
 	default:
 		ret = -ENOIOCTLCMD;
@@ -1467,7 +1483,7 @@ static int sc2310_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct sc2310 *sc2310 = to_sc2310(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct sc2310_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&sc2310->mutex);
@@ -1485,7 +1501,7 @@ static int sc2310_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int sc2310_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct sc2310 *sc2310 = to_sc2310(sd);
@@ -1523,7 +1539,6 @@ static const struct v4l2_subdev_core_ops sc2310_core_ops = {
 static const struct v4l2_subdev_video_ops sc2310_video_ops = {
 	.s_stream = sc2310_s_stream,
 	.g_frame_interval = sc2310_g_frame_interval,
-	.g_mbus_config = sc2310_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops sc2310_pad_ops = {
@@ -1532,6 +1547,7 @@ static const struct v4l2_subdev_pad_ops sc2310_pad_ops = {
 	.enum_frame_interval = sc2310_enum_frame_interval,
 	.get_fmt = sc2310_get_fmt,
 	.set_fmt = sc2310_set_fmt,
+	.get_mbus_config = sc2310_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops sc2310_subdev_ops = {
@@ -1539,6 +1555,14 @@ static const struct v4l2_subdev_ops sc2310_subdev_ops = {
 	.video	= &sc2310_video_ops,  /* */
 	.pad	= &sc2310_pad_ops,    /* */
 };
+
+static void sc2310_modify_fps_info(struct sc2310 *sc2310)
+{
+	const struct sc2310_mode *mode = sc2310->cur_mode;
+
+	sc2310->cur_fps.denominator = mode->max_fps.denominator * mode->vts_def /
+				      sc2310->cur_vts;
+}
 
 static int sc2310_set_ctrl(struct v4l2_ctrl *ctrl)
 {
@@ -1613,6 +1637,9 @@ static int sc2310_set_ctrl(struct v4l2_ctrl *ctrl)
 		ret = sc2310_write_reg(sc2310->client, SC2310_REG_VTS,
 					SC2310_REG_VALUE_16BIT,
 					ctrl->val + sc2310->cur_mode->height);
+		if (!ret)
+			sc2310->cur_vts = ctrl->val + sc2310->cur_mode->height;
+		sc2310_modify_fps_info(sc2310);
 		dev_dbg(&client->dev, "set vblank 0x%x\n",
 			ctrl->val);
 		break;
@@ -1727,6 +1754,8 @@ static int sc2310_initialize_controls(struct sc2310 *sc2310)
 
 	sc2310->subdev.ctrl_handler = handler;
 	sc2310->has_init_exp = false;
+	sc2310->cur_fps = mode->max_fps;
+	sc2310->cur_vts = mode->vts_def;
 
 	return 0;
 
@@ -1891,7 +1920,7 @@ static int sc2310_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 sc2310->module_index, facing,
 		 SC2310_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1919,7 +1948,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int sc2310_remove(struct i2c_client *client)
+static void sc2310_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct sc2310 *sc2310 = to_sc2310(sd);
@@ -1935,8 +1964,6 @@ static int sc2310_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__sc2310_power_off(sc2310);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

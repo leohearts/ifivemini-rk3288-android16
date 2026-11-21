@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * jaguar1 driver
- *
- * V0.0X01.0X01 add workqueue to detect ahd state.
+ * V0.0X01.0X00 first version.
+ * V0.0X01.0X01 fix kernel5.10 compile error.
+ * V0.0X01.0X02 add workqueue to detect ahd state.
  *
  */
 
@@ -39,6 +40,7 @@
 #include "jaguar1_video_eq.h"
 #include "jaguar1_mipi.h"
 #include "jaguar1_drv.h"
+#include "jaguar1_v4l2.h"
 
 #define WORK_QUEUE
 
@@ -52,7 +54,7 @@ struct sensor_state_check_work {
 
 #endif
 
-#define DRIVER_VERSION				KERNEL_VERSION(0, 0x01, 0x1)
+#define DRIVER_VERSION				KERNEL_VERSION(0, 0x01, 0x2)
 
 #ifndef V4L2_CID_DIGITAL_GAIN
 #define V4L2_CID_DIGITAL_GAIN			V4L2_CID_GAIN
@@ -81,14 +83,6 @@ struct sensor_state_check_work {
 
 /* #define FORCE_720P */
 
-enum jaguar1_max_pad {
-	PAD0,
-	PAD1,
-	PAD2,
-	PAD3,
-	PAD_MAX,
-};
-
 struct jaguar1_gpio {
 	int pltfrm_gpio;
 	const char *label;
@@ -113,7 +107,9 @@ struct jaguar1_pixfmt {
 struct jaguar1_framesize {
 	u16 width;
 	u16 height;
+	struct v4l2_fract max_fps;
 	enum NC_VIVO_CH_FORMATDEF fmt_idx;
+	__u32 field;
 };
 
 struct jaguar1_default_rect {
@@ -176,23 +172,62 @@ static const struct jaguar1_framesize jaguar1_framesizes[] = {
 	{
 		.width		= 2560,
 		.height		= 1440,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 250000,
+		},
 		.fmt_idx	= AHD20_720P_25P,
 	}
 #else
 	{
+		.width		= 960,
+		.height		= 480,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 250000,
+		},
+		.fmt_idx	= AHD20_SD_H960_2EX_Btype_NT,
+		.field = V4L2_FIELD_INTERLACED,
+	},
+	{
+		.width		= 960,
+		.height		= 576,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 300000,
+		},
+		.fmt_idx	= AHD20_SD_H960_2EX_Btype_PAL,
+		.field = V4L2_FIELD_INTERLACED,
+	},
+	{
 		.width		= 1280,
 		.height		= 720,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 250000,
+		},
 		.fmt_idx	= AHD20_720P_25P_EX_Btype,
+		.field = V4L2_FIELD_NONE
 	},
 	{
 		.width		= 1920,
 		.height		= 1080,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 250000,
+		},
 		.fmt_idx	= AHD20_1080P_25P,
+		.field = V4L2_FIELD_NONE
 	},
 	{
 		.width		= 2560,
 		.height		= 1440,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 250000,
+		},
 		.fmt_idx	= AHD20_720P_25P,
+		.field = V4L2_FIELD_NONE
 	}
 #endif
 };
@@ -479,7 +514,7 @@ static void jaguar1_get_default_format(struct jaguar1 *jaguar1)
 	format->colorspace = V4L2_COLORSPACE_SRGB;
 	format->code = jaguar1_formats[0].code;
 	jaguar1->frame_size = match;
-	format->field = V4L2_FIELD_NONE;
+	format->field = match->field;
 }
 
 static inline bool jaguar1_no_signal(struct v4l2_subdev *sd, u8 *novid);
@@ -548,7 +583,7 @@ unlock:
 }
 
 static int jaguar1_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index >= ARRAY_SIZE(jaguar1_formats))
@@ -560,7 +595,7 @@ static int jaguar1_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int jaguar1_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -716,19 +751,33 @@ exit:
 	return 0;
 }
 
-static int jaguar1_g_mbus_config(struct v4l2_subdev *sd,
+static int jaguar1_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
 				 struct v4l2_mbus_config *cfg)
 {
-	cfg->type = V4L2_MBUS_CSI2;
-	cfg->flags = V4L2_MBUS_CSI2_4_LANE |
-		     V4L2_MBUS_CSI2_CHANNELS |
-		     V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
+	cfg->type = V4L2_MBUS_CSI2_DPHY;
+	cfg->bus.mipi_csi2.num_data_lanes = 4;
+
+	return 0;
+}
+
+static int jaguar1_enum_frame_interval(struct v4l2_subdev *sd,
+		struct v4l2_subdev_state *sd_state,
+		struct v4l2_subdev_frame_interval_enum *fie)
+{
+	if (fie->index >= ARRAY_SIZE(jaguar1_framesizes))
+		return -EINVAL;
+
+	fie->code = jaguar1_formats[0].code;
+
+	fie->width = jaguar1_framesizes[fie->index].width;
+	fie->height = jaguar1_framesizes[fie->index].height;
+	fie->interval = jaguar1_framesizes[fie->index].max_fps;
 
 	return 0;
 }
 
 static int jaguar1_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -738,7 +787,7 @@ static int jaguar1_get_fmt(struct v4l2_subdev *sd,
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 		struct v4l2_mbus_framefmt *mf;
 
-		mf = v4l2_subdev_get_try_format(sd, cfg, 0);
+		mf = v4l2_subdev_get_try_format(sd, sd_state, 0);
 		mutex_lock(&jaguar1->mutex);
 		fmt->format = *mf;
 		mutex_unlock(&jaguar1->mutex);
@@ -788,7 +837,7 @@ static void __jaguar1_try_frame_size(struct v4l2_mbus_framefmt *mf,
 }
 
 static int jaguar1_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	int index = ARRAY_SIZE(jaguar1_formats);
@@ -814,7 +863,7 @@ static int jaguar1_set_fmt(struct v4l2_subdev *sd,
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		mf = v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		mf = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 		*mf = fmt->format;
 #else
 		return -ENOTTY;
@@ -833,14 +882,27 @@ static int jaguar1_set_fmt(struct v4l2_subdev *sd,
 	return ret;
 }
 
+static int jaguar1_g_frame_interval(struct v4l2_subdev *sd,
+				    struct v4l2_subdev_frame_interval *fi)
+{
+	struct jaguar1 *jaguar1 = to_jaguar1(sd);
+	const struct jaguar1_framesize *size = jaguar1->frame_size;
+
+	mutex_lock(&jaguar1->mutex);
+	fi->interval = size->max_fps;
+	mutex_unlock(&jaguar1->mutex);
+
+	return 0;
+}
+
 static void jaguar1_get_module_inf(struct jaguar1 *jaguar1,
 				   struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, JAGUAR1_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, jaguar1->module_name,
+	strscpy(inf->base.sensor, JAGUAR1_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, jaguar1->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, jaguar1->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, jaguar1->len_name, sizeof(inf->base.lens));
 }
 
 static void jaguar1_get_vicap_rst_inf(struct jaguar1 *jaguar1,
@@ -1043,14 +1105,16 @@ static const struct dev_pm_ops jaguar1_pm_ops = {
 static const struct v4l2_subdev_video_ops jaguar1_video_ops = {
 	.g_input_status = jaguar1_g_input_status,
 	.s_stream = jaguar1_stream,
-	.g_mbus_config = jaguar1_g_mbus_config,
+	.g_frame_interval = jaguar1_g_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops jaguar1_subdev_pad_ops = {
 	.enum_mbus_code = jaguar1_enum_mbus_code,
 	.enum_frame_size = jaguar1_enum_frame_sizes,
+	.enum_frame_interval = jaguar1_enum_frame_interval,
 	.get_fmt = jaguar1_get_fmt,
 	.set_fmt = jaguar1_set_fmt,
+	.get_mbus_config = jaguar1_g_mbus_config,
 };
 
 static const struct v4l2_subdev_core_ops jaguar1_core_ops = {
@@ -1248,6 +1312,10 @@ static int jaguar1_probe(struct i2c_client *client,
 	sd = &jaguar1->subdev;
 	v4l2_i2c_subdev_init(sd, client, &jaguar1_subdev_ops);
 	ret = jaguar1_initialize_controls(jaguar1);
+	if (ret) {
+		dev_err(dev, "Failed to initialize controls jaguar1\n");
+		return ret;
+	}
 
 	__jaguar1_power_on(jaguar1);
 	ret |= jaguar1_init(i2c_adapter_id(client->adapter));
@@ -1289,7 +1357,7 @@ static int jaguar1_probe(struct i2c_client *client,
 		 jaguar1->module_index, facing,
 		 JAGUAR1_NAME, dev_name(sd->dev));
 
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1298,6 +1366,8 @@ static int jaguar1_probe(struct i2c_client *client,
 	pm_runtime_enable(dev);
 	pm_runtime_idle(dev);
 
+	v4l2_info(sd, "%s found @ 0x%x (%s)\n", client->name,
+			client->addr << 1, client->adapter->name);
 #ifdef WORK_QUEUE
 	/* init work_queue for state_check */
 	INIT_DELAYED_WORK(&jaguar1->plug_state_check.d_work, jaguar1_plug_state_check_work);
@@ -1327,7 +1397,7 @@ err_clean_entity:
 	return ret;
 }
 
-static int jaguar1_remove(struct i2c_client *client)
+static void jaguar1_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct jaguar1 *jaguar1 = to_jaguar1(sd);
@@ -1344,7 +1414,6 @@ static int jaguar1_remove(struct i2c_client *client)
 	if (jaguar1->plug_state_check.state_check_wq != NULL)
 		destroy_workqueue(jaguar1->plug_state_check.state_check_wq);
 #endif
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)
@@ -1371,17 +1440,20 @@ static struct i2c_driver jaguar1_i2c_driver = {
 	.id_table	= jaguar1_match_id,
 };
 
-static int __init sensor_mod_init(void)
+int nvp6324_sensor_mod_init(void)
 {
 	return i2c_add_driver(&jaguar1_i2c_driver);
 }
+
+#ifndef CONFIG_VIDEO_REVERSE_IMAGE
+device_initcall_sync(nvp6324_sensor_mod_init);
+#endif
 
 static void __exit sensor_mod_exit(void)
 {
 	i2c_del_driver(&jaguar1_i2c_driver);
 }
 
-device_initcall_sync(sensor_mod_init);
 module_exit(sensor_mod_exit);
 
 MODULE_DESCRIPTION("jaguar1 sensor driver");

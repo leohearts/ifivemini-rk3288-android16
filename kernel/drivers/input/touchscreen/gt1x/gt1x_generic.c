@@ -243,7 +243,7 @@ static ssize_t gt1x_debug_write_proc(struct file *file, const char *buffer, size
 		gt1x_update_firmware(arg1);
 		return count;
 	}
-
+#if 0 //close for GKI
 	if (strcmp(mode_str, "sendconfig") == 0) {
 		cfg_len = gt1x_parse_config(arg1, temp_config);
 		if (cfg_len < 0) {
@@ -252,7 +252,7 @@ static ssize_t gt1x_debug_write_proc(struct file *file, const char *buffer, size
 		gt1x_send_cfg(temp_config, gt1x_cfg_length);
 		return count;
 	}
-
+#endif
 	if (strcmp(mode_str, "debug_gesture") == 0) {
 #if GTP_GESTURE_WAKEUP
 		gt1x_gesture_debug(!!mode);
@@ -260,13 +260,13 @@ static ssize_t gt1x_debug_write_proc(struct file *file, const char *buffer, size
 	}
 
 	if (strcmp(mode_str, "force_update") == 0) {
-		update_info.force_update = !!mode;
+		gt1x_update_info.force_update = !!mode;
 	}
 	return gt1x_debug_proc(buf, count);
 }
 #endif
 
-static u8 ascii2hex(u8 a)
+static u8 __maybe_unused ascii2hex(u8 a)
 {
 	s8 value = 0;
 	if (a >= '0' && a <= '9') {
@@ -281,6 +281,7 @@ static u8 ascii2hex(u8 a)
 	return value;
 }
 
+#if 0 //close for GKI
 int gt1x_parse_config(char *filename, u8 *config)
 {
 	mm_segment_t old_fs;
@@ -357,8 +358,9 @@ parse_cfg_fail1:
 
 	return cur_len;
 }
+#endif
 
-s32 _do_i2c_read(struct i2c_msg *msgs, u16 addr, u8 *buffer, s32 len)
+s32 gt1x_do_i2c_read(struct i2c_msg *msgs, u16 addr, u8 *buffer, s32 len)
 {
 	s32 ret = -1;
 	s32 pos = 0;
@@ -398,7 +400,7 @@ s32 _do_i2c_read(struct i2c_msg *msgs, u16 addr, u8 *buffer, s32 len)
 	return 0;
 }
 
-s32 _do_i2c_write(struct i2c_msg *msg, u16 addr, u8 *buffer, s32 len)
+s32 gt1x_do_i2c_write(struct i2c_msg *msg, u16 addr, u8 *buffer, s32 len)
 {
 	s32 ret = -1;
 	s32 pos = 0;
@@ -517,7 +519,7 @@ s32 gt1x_send_cfg(u8 *config, int cfg_len)
 	s32 retry = 0;
 	u16 checksum = 0;
 
-	if (update_info.status) {
+	if (gt1x_update_info.status) {
 		GTP_DEBUG("Ignore cfg during fw update.");
 		return -1;
 	}
@@ -661,10 +663,12 @@ s32 gt1x_init_panel(void)
 
 void gt1x_select_addr(void)
 {
-	GTP_GPIO_OUTPUT(GTP_RST_PORT, 0);
+	if (!IS_ERR_OR_NULL(gt1x_rst_gpio))
+		GTP_GPIO_OUTPUT(GTP_RST_PORT, 0);
 	GTP_GPIO_OUTPUT(GTP_INT_PORT, gt1x_i2c_client->addr == 0x14);
 	usleep_range(2000, 3000);
-	GTP_GPIO_OUTPUT(GTP_RST_PORT, 1);
+	if (!IS_ERR_OR_NULL(gt1x_rst_gpio))
+		GTP_GPIO_OUTPUT(GTP_RST_PORT, 1);
 	usleep_range(2000, 3000);
 }
 
@@ -918,6 +922,7 @@ static s32 gt1x_enter_sleep(void)
 
 #if GTP_POWER_CTRL_SLEEP
 	if (!gt1x_power_switch(SWITCH_OFF)) {
+		GTP_GPIO_OUTPUT(GTP_RST_PORT, 0);
 		GTP_INFO("Enter sleep mode by poweroff");
 		return 0;
 	}
@@ -1041,7 +1046,7 @@ void gt1x_power_reset(void)
 	static int rst_flag;
 	s32 i = 0;
 
-	if (rst_flag || update_info.status) {
+	if (rst_flag || gt1x_update_info.status) {
 		return;
 	}
 	GTP_INFO("force_reset_guitar");
@@ -2164,7 +2169,7 @@ int gt1x_suspend(void)
 	u8 buf[1] = { 0 };
 #endif
 
-	if (update_info.status) {
+	if (gt1x_update_info.status) {
 		return 0;
 	}
 #if GTP_SMART_COVER
@@ -2233,7 +2238,7 @@ int gt1x_resume(void)
 {
 	s32 ret = -1;
 
-	if (update_info.status) {
+	if (gt1x_update_info.status) {
 		return 0;
 	}
 
@@ -2349,18 +2354,21 @@ s32 gt1x_init(void)
 	ret = gt1x_get_chip_type();
 	if (ret != 0) {
 		GTP_ERROR("Get chip type failed!");
+		goto init_err;
 	}
 
 	/* read version information */
 	ret = gt1x_read_version(&gt1x_version);
 	if (ret != 0) {
 		GTP_ERROR("Get verision failed!");
+		goto init_err;
 	}
 
 	/* init and send configs */
 	ret = gt1x_init_panel();
 	if (ret != 0) {
 		GTP_ERROR("Init panel failed.");
+		goto init_err;
 	}
 
 	gt1x_workqueue = create_singlethread_workqueue("gt1x_workthread");
@@ -2398,6 +2406,10 @@ s32 gt1x_init(void)
 #if GTP_WITH_STYLUS
 	gt1x_pen_init();
 #endif
+
+init_err:
+	if (ret != 0)
+		gt1x_power_switch(SWITCH_OFF);
 
 	return ret;
 }

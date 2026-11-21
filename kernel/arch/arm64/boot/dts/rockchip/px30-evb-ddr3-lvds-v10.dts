@@ -179,7 +179,7 @@
 		uart_rts_gpios = <&gpio1 RK_PC3 GPIO_ACTIVE_LOW>;
 		pinctrl-names = "default","rts_gpio";
 		pinctrl-0 = <&uart1_rts>;
-		pinctrl-1 = <&uart1_rts_gpio>;
+		pinctrl-1 = <&uart1_gpios>;
 		BT,reset_gpio = <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
 		BT,wake_gpio = <&gpio0 RK_PA1 GPIO_ACTIVE_HIGH>;
 		BT,wake_host_irq = <&gpio0 RK_PB3 GPIO_ACTIVE_HIGH>;
@@ -208,7 +208,8 @@
 	bus-width = <8>;
 	cap-mmc-highspeed;
 	mmc-hs200-1_8v;
-	supports-emmc;
+	no-sdio;
+	no-sd;
 	disable-wp;
 	non-removable;
 	num-slots = <1>;
@@ -536,6 +537,12 @@
 			rockchip,pins = <0 RK_PA2 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
+
+	wireless-bluetooth {
+		uart1_gpios: uart1-gpios {
+			rockchip,pins = <1 RK_PC3 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
 };
 
 &pmu_io_domains {
@@ -562,7 +569,8 @@
 	bus-width = <4>;
 	cap-mmc-highspeed;
 	cap-sd-highspeed;
-	supports-sd;
+	no-sdio;
+	no-mmc;
 	card-detect-delay = <800>;
 	ignore-pm-notify;
 	/*cd-gpios = <&gpio2 4 GPIO_ACTIVE_HIGH>; [> CD GPIO <]*/
@@ -578,7 +586,8 @@
 &sdio {
 	bus-width = <4>;
 	cap-sd-highspeed;
-	supports-sdio;
+	no-sd;
+	no-mmc;
 	ignore-pm-notify;
 	keep-power-in-suspend;
 	non-removable;

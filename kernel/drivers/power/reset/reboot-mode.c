@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2016, Fuzhou Rockchip Electronics Co., Ltd
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/device.h>
@@ -13,6 +9,7 @@
 #include <linux/kobject.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/panic_notifier.h>
 #include <linux/reboot.h>
 #include <linux/reboot-mode.h>
 #include <linux/sysfs.h>
@@ -55,6 +52,8 @@ static int get_reboot_mode_magic(struct reboot_mode_driver *reboot,
 	return magic;
 }
 
+static int last_magic;
+
 static void reboot_mode_write(struct reboot_mode_driver *reboot,
 			      const void *cmd)
 {
@@ -63,8 +62,10 @@ static void reboot_mode_write(struct reboot_mode_driver *reboot,
 	magic = get_reboot_mode_magic(reboot, cmd);
 	if (!magic)
 		magic = get_reboot_mode_magic(reboot, NULL);
-	if (magic)
+	if (magic) {
 		reboot->write(reboot, magic);
+		last_magic = magic;
+	}
 }
 
 static int reboot_mode_notify(struct notifier_block *this,
@@ -74,6 +75,18 @@ static int reboot_mode_notify(struct notifier_block *this,
 
 	reboot = container_of(this, struct reboot_mode_driver, reboot_notifier);
 	reboot_mode_write(reboot, cmd);
+
+	return NOTIFY_DONE;
+}
+
+static int reboot_mode_pre_restart_notify(struct notifier_block *this,
+			      unsigned long mode, void *cmd)
+{
+	struct reboot_mode_driver *reboot;
+
+	reboot = container_of(this, struct reboot_mode_driver, pre_restart_notifier);
+	if (cmd || !last_magic)
+		reboot_mode_write(reboot, cmd);
 
 	return NOTIFY_DONE;
 }
@@ -155,9 +168,11 @@ int reboot_mode_register(struct reboot_mode_driver *reboot)
 
 	boot_mode_parse(reboot);
 	reboot->reboot_notifier.notifier_call = reboot_mode_notify;
+	reboot->pre_restart_notifier.notifier_call = reboot_mode_pre_restart_notify;
+	reboot->pre_restart_notifier.priority = 254;
 	reboot->panic_notifier.notifier_call = reboot_mode_panic_notify;
 	register_reboot_notifier(&reboot->reboot_notifier);
-	register_pre_restart_handler(&reboot->reboot_notifier);
+	register_restart_handler(&reboot->pre_restart_notifier);
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &reboot->panic_notifier);
 	ret = sysfs_create_file(kernel_kobj, &kobj_boot_mode.attr);
@@ -248,6 +263,6 @@ void devm_reboot_mode_unregister(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(devm_reboot_mode_unregister);
 
-MODULE_AUTHOR("Andy Yan <andy.yan@rock-chips.com");
+MODULE_AUTHOR("Andy Yan <andy.yan@rock-chips.com>");
 MODULE_DESCRIPTION("System reboot mode core library");
 MODULE_LICENSE("GPL v2");

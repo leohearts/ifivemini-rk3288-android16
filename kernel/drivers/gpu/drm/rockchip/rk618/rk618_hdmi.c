@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2018 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2018 Rockchip Electronics Co., Ltd.
  *
  * Author: Chen Shunqing <csq@rock-chips.com>
  */
@@ -21,10 +21,11 @@
 #endif
 
 #include <drm/drm_of.h>
-#include <drm/drmP.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_probe_helper.h>
 
 #include <sound/hdmi-codec.h>
 
@@ -745,7 +746,7 @@ static int rk618_hdmi_config_video_avi(struct rk618_hdmi *hdmi,
 	union hdmi_infoframe frame;
 	int rc;
 
-	rc = drm_hdmi_avi_infoframe_from_display_mode(&frame.avi, mode, false);
+	rc = drm_hdmi_avi_infoframe_from_display_mode(&frame.avi, &hdmi->connector, mode);
 
 	if (hdmi->hdmi_data.enc_out_format == HDMI_COLORSPACE_YUV444)
 		frame.avi.colorspace = HDMI_COLORSPACE_YUV444;
@@ -1010,7 +1011,8 @@ static int rk618_hdmi_connector_get_modes(struct drm_connector *connector)
 		hdmi->hdmi_data.sink_is_hdmi = true;
 		hdmi->hdmi_data.sink_has_audio = true;
 		ret = rockchip_drm_add_modes_noedid(connector);
-		info->edid_hdmi_dc_modes = 0;
+		info->edid_hdmi_rgb444_dc_modes = 0;
+		info->edid_hdmi_ycbcr444_dc_modes = 0;
 		info->hdmi.y420_dc_modes = 0;
 		info->color_formats = 0;
 
@@ -1063,13 +1065,13 @@ rk618_hdmi_connector_helper_funcs = {
 };
 
 static void rk618_hdmi_bridge_mode_set(struct drm_bridge *bridge,
-				       struct drm_display_mode *mode,
-				       struct drm_display_mode *adj_mode)
+				       const struct drm_display_mode *mode,
+				       const struct drm_display_mode *adj_mode)
 {
 	struct rk618_hdmi *hdmi = bridge_to_hdmi(bridge);
 
 	/* Store the display mode for plugin/DPMS poweron events */
-	memcpy(&hdmi->previous_mode, adj_mode, sizeof(hdmi->previous_mode));
+	drm_mode_copy(&hdmi->previous_mode, adj_mode);
 }
 
 static void rk618_hdmi_bridge_enable(struct drm_bridge *bridge)
@@ -1097,7 +1099,8 @@ static void rk618_hdmi_bridge_disable(struct drm_bridge *bridge)
 	clk_disable_unprepare(hdmi->clock);
 }
 
-static int rk618_hdmi_bridge_attach(struct drm_bridge *bridge)
+static int rk618_hdmi_bridge_attach(struct drm_bridge *bridge,
+				    enum drm_bridge_attach_flags flags)
 {
 	struct rk618_hdmi *hdmi = bridge_to_hdmi(bridge);
 	struct device *dev = hdmi->dev;
@@ -1137,7 +1140,7 @@ static int rk618_hdmi_bridge_attach(struct drm_bridge *bridge)
 		if (!hdmi->bridge)
 			return -EPROBE_DEFER;
 
-		ret = drm_bridge_attach(bridge->encoder, hdmi->bridge, bridge);
+		ret = drm_bridge_attach(bridge->encoder, hdmi->bridge, bridge, 0);
 		if (ret) {
 			dev_err(dev, "failed to attach bridge\n");
 			return ret;
@@ -1274,7 +1277,7 @@ static void rk618_hdmi_audio_shutdown(struct device *dev, void *d)
 	/* do nothing */
 }
 
-static int rk618_hdmi_audio_digital_mute(struct device *dev, void *d, bool mute)
+static int rk618_hdmi_audio_mute_stream(struct device *dev, void *d, bool mute, int direction)
 {
 	struct rk618_hdmi *hdmi = dev_get_drvdata(dev);
 
@@ -1328,7 +1331,7 @@ static int rk618_hdmi_hook_plugged_cb(struct device *dev, void *data,
 static const struct hdmi_codec_ops audio_codec_ops = {
 	.hw_params = rk618_hdmi_audio_hw_params,
 	.audio_shutdown = rk618_hdmi_audio_shutdown,
-	.digital_mute = rk618_hdmi_audio_digital_mute,
+	.mute_stream = rk618_hdmi_audio_mute_stream,
 	.get_eld = rk618_hdmi_audio_get_eld,
 	.hook_plugged_cb = rk618_hdmi_hook_plugged_cb,
 };
@@ -1497,7 +1500,7 @@ static struct i2c_adapter *rk618_hdmi_i2c_adapter(struct rk618_hdmi *hdmi)
 	adap->dev.parent = hdmi->dev;
 	adap->dev.of_node = hdmi->dev->of_node;
 	adap->algo = &rk618_hdmi_algorithm;
-	strlcpy(adap->name, "RK618 HDMI", sizeof(adap->name));
+	strscpy(adap->name, "RK618 HDMI", sizeof(adap->name));
 	i2c_set_adapdata(adap, hdmi);
 
 	ret = i2c_add_adapter(adap);
@@ -1581,9 +1584,6 @@ static int rk618_hdmi_probe(struct platform_device *pdev)
 		dev_err(dev, "Unable to get HDMI clock\n");
 		return PTR_ERR(hdmi->clock);
 	}
-
-	/* hpd io pull down */
-	regmap_write(rk618->regmap, RK618_IO_CON0, HDMI_IO_PULL_UP_DISABLE);
 
 	rk618_hdmi_pol_init(hdmi, 0);
 	rk618_hdmi_reset(hdmi);

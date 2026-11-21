@@ -1,6 +1,6 @@
 /* drivers/input/sensors/gyro/Ewtsa.c
  *
- * Copyright (C) 2012-2015 ROCKCHIP.
+ * Copyright (C) 2012-2015 Rockchip Electronics Co., Ltd.
  * Author: zhangaihui <zah@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -278,7 +278,7 @@ static int ewtsa_enable(struct i2c_client *client)
 	return 0;
 }
 
-void gyro_dev_reset(struct i2c_client *client)
+static void gyro_dev_reset(struct i2c_client *client)
 {
 	struct sensor_private_data *sensor =
 	    (struct sensor_private_data *) i2c_get_clientdata(client);
@@ -406,7 +406,7 @@ static int sensor_report_value(struct i2c_client *client)
 }
 
 
-struct sensor_operate gyro_ewtsa_ops = {
+static struct sensor_operate gyro_ewtsa_ops = {
 	.name			= "ewtsa",
 	.type			= SENSOR_TYPE_GYROSCOPE,
 	.id_i2c			= GYRO_ID_EWTSA,
@@ -431,9 +431,9 @@ static int gyro_ewtsa_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &gyro_ewtsa_ops);
 }
 
-static int gyro_ewtsa_remove(struct i2c_client *client)
+static void gyro_ewtsa_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &gyro_ewtsa_ops);
+	sensor_unregister_device(client, NULL, &gyro_ewtsa_ops);
 }
 
 static const struct i2c_device_id gyro_ewtsa_id[] = {
@@ -443,7 +443,7 @@ static const struct i2c_device_id gyro_ewtsa_id[] = {
 
 static struct i2c_driver gyro_ewtsa_driver = {
 	.probe = gyro_ewtsa_probe,
-	.remove = gyro_ewtsa_remove,
+	.remove = (void *)gyro_ewtsa_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = gyro_ewtsa_id,
 	.driver = {

@@ -9,6 +9,7 @@
 #include <linux/if_ether.h>
 #include <linux/if.h>
 #include <linux/dma-mapping.h>
+#include <linux/of_device.h>
 #include <linux/slab.h>
 #include <linux/prefetch.h>
 #include <linux/regmap.h>
@@ -85,6 +86,7 @@ struct dwmac_rk_lb_priv {
 	int rx;
 	int final_tx;
 	int final_rx;
+	int max_delay;
 };
 
 #define DMA_CONTROL_OSP		BIT(4)
@@ -99,6 +101,7 @@ struct dwmac_rk_lb_priv {
 
 #define	STMMAC_ALIGN(x) __ALIGN_KERNEL(x, SMP_CACHE_BYTES)
 #define MAX_DELAYLINE 0x7f
+#define RK3588_MAX_DELAYLINE 0xc7
 #define SCAN_STEP 0x5
 #define SCAN_VALID_RANGE 0xA
 
@@ -119,7 +122,8 @@ static __maybe_unused struct dwmac_rk_packet_attrs dwmac_rk_tcp_attr = {
 	.size = 1024,
 };
 
-static int dwmac_rk_enable_mac_loopback(struct stmmac_priv *priv, int speed)
+static int dwmac_rk_enable_mac_loopback(struct stmmac_priv *priv, int speed,
+					int addr, bool phy)
 {
 	u32 ctrl;
 	int phy_val;
@@ -128,25 +132,30 @@ static int dwmac_rk_enable_mac_loopback(struct stmmac_priv *priv, int speed)
 	ctrl &= ~priv->hw->link.speed_mask;
 	ctrl |= GMAC_CONTROL_LM;
 
-	phy_val = mdiobus_read(priv->mii, priv->plat->phy_addr, MII_BMCR);
+	if (phy)
+		phy_val = mdiobus_read(priv->mii, addr, MII_BMCR);
 
 	switch (speed) {
 	case LOOPBACK_SPEED1000:
 		ctrl |= priv->hw->link.speed1000;
-		phy_val |= BMCR_ANENABLE;
-		phy_val |= BMCR_SPEED1000;
+		if (phy) {
+			phy_val &= ~BMCR_SPEED100;
+			phy_val |= BMCR_SPEED1000;
+		}
 		break;
 	case LOOPBACK_SPEED100:
 		ctrl |= priv->hw->link.speed100;
-		phy_val &= ~BMCR_ANENABLE;
-		phy_val &= ~BMCR_SPEED1000;
-		phy_val |= BMCR_SPEED100;
+		if (phy) {
+			phy_val &= ~BMCR_SPEED1000;
+			phy_val |= BMCR_SPEED100;
+		}
 		break;
 	case LOOPBACK_SPEED10:
 		ctrl |= priv->hw->link.speed10;
-		phy_val &= ~BMCR_ANENABLE;
-		phy_val &= ~BMCR_SPEED1000;
-		phy_val &= ~BMCR_SPEED100;
+		if (phy) {
+			phy_val &= ~BMCR_SPEED1000;
+			phy_val &= ~BMCR_SPEED100;
+		}
 		break;
 	default:
 		return -EPERM;
@@ -155,9 +164,14 @@ static int dwmac_rk_enable_mac_loopback(struct stmmac_priv *priv, int speed)
 	ctrl |= priv->hw->link.duplex;
 	writel(ctrl, priv->ioaddr + GMAC_CONTROL);
 
-	phy_val |= BMCR_FULLDPLX;
-	mdiobus_write(priv->mii, priv->plat->phy_addr, MII_BMCR, phy_val);
-	phy_val = mdiobus_read(priv->mii, priv->plat->phy_addr, MII_BMCR);
+	if (phy) {
+		phy_val &= ~BMCR_PDOWN;
+		phy_val &= ~BMCR_ANENABLE;
+		phy_val &= ~BMCR_PDOWN;
+		phy_val |= BMCR_FULLDPLX;
+		mdiobus_write(priv->mii, addr, MII_BMCR, phy_val);
+		phy_val = mdiobus_read(priv->mii, addr, MII_BMCR);
+	}
 
 	if (likely(priv->plat->fix_mac_speed))
 		priv->plat->fix_mac_speed(priv->plat->bsp_priv, speed);
@@ -165,7 +179,7 @@ static int dwmac_rk_enable_mac_loopback(struct stmmac_priv *priv, int speed)
 	return 0;
 }
 
-static int dwmac_rk_disable_mac_loopback(struct stmmac_priv *priv)
+static int dwmac_rk_disable_mac_loopback(struct stmmac_priv *priv, int addr)
 {
 	u32 ctrl;
 	int phy_val;
@@ -174,25 +188,27 @@ static int dwmac_rk_disable_mac_loopback(struct stmmac_priv *priv)
 	ctrl &= ~GMAC_CONTROL_LM;
 	writel(ctrl, priv->ioaddr + GMAC_CONTROL);
 
-	phy_val = mdiobus_read(priv->mii, priv->plat->phy_addr, MII_BMCR);
+	phy_val = mdiobus_read(priv->mii, addr, MII_BMCR);
 	phy_val |= BMCR_ANENABLE;
 
-	mdiobus_write(priv->mii, priv->plat->phy_addr, MII_BMCR, phy_val);
-	phy_val = mdiobus_read(priv->mii, priv->plat->phy_addr, MII_BMCR);
+	mdiobus_write(priv->mii, addr, MII_BMCR, phy_val);
+	phy_val = mdiobus_read(priv->mii, addr, MII_BMCR);
 
 	return 0;
 }
 
 static int dwmac_rk_set_mac_loopback(struct stmmac_priv *priv,
-				     int speed, bool enable)
+				     int speed, bool enable,
+				     int addr, bool phy)
 {
 	if (enable)
-		return dwmac_rk_enable_mac_loopback(priv, speed);
+		return dwmac_rk_enable_mac_loopback(priv, speed, addr, phy);
 	else
-		return dwmac_rk_disable_mac_loopback(priv);
+		return dwmac_rk_disable_mac_loopback(priv, addr);
 }
 
-static int dwmac_rk_enable_phy_loopback(struct stmmac_priv *priv, int speed)
+static int dwmac_rk_enable_phy_loopback(struct stmmac_priv *priv, int speed,
+					int addr, bool phy)
 {
 	u32 ctrl;
 	int val;
@@ -200,25 +216,30 @@ static int dwmac_rk_enable_phy_loopback(struct stmmac_priv *priv, int speed)
 	ctrl = readl(priv->ioaddr + MAC_CTRL_REG);
 	ctrl &= ~priv->hw->link.speed_mask;
 
-	val = mdiobus_read(priv->mii, 0, MII_BMCR);
-
-	val &= ~BMCR_ANENABLE;
-	val |= BMCR_LOOPBACK;
+	if (phy)
+		val = mdiobus_read(priv->mii, addr, MII_BMCR);
 
 	switch (speed) {
 	case LOOPBACK_SPEED1000:
 		ctrl |= priv->hw->link.speed1000;
-		val |= BMCR_SPEED1000;
+		if (phy) {
+			val &= ~BMCR_SPEED100;
+			val |= BMCR_SPEED1000;
+		}
 		break;
 	case LOOPBACK_SPEED100:
 		ctrl |= priv->hw->link.speed100;
-		val &= ~BMCR_SPEED1000;
-		val |= BMCR_SPEED100;
+		if (phy) {
+			val &= ~BMCR_SPEED1000;
+			val |= BMCR_SPEED100;
+		}
 		break;
 	case LOOPBACK_SPEED10:
 		ctrl |= priv->hw->link.speed10;
-		val &= ~BMCR_SPEED1000;
-		val &= ~BMCR_SPEED100;
+		if (phy) {
+			val &= ~BMCR_SPEED1000;
+			val &= ~BMCR_SPEED100;
+		}
 		break;
 	default:
 		return -EPERM;
@@ -227,9 +248,14 @@ static int dwmac_rk_enable_phy_loopback(struct stmmac_priv *priv, int speed)
 	ctrl |= priv->hw->link.duplex;
 	writel(ctrl, priv->ioaddr + MAC_CTRL_REG);
 
-	val |= BMCR_FULLDPLX;
-	mdiobus_write(priv->mii, 0, MII_BMCR, val);
-	val = mdiobus_read(priv->mii, 0, MII_BMCR);
+	if (phy) {
+		val |= BMCR_FULLDPLX;
+		val &= ~BMCR_PDOWN;
+		val &= ~BMCR_ANENABLE;
+		val |= BMCR_LOOPBACK;
+		mdiobus_write(priv->mii, addr, MII_BMCR, val);
+		val = mdiobus_read(priv->mii, addr, MII_BMCR);
+	}
 
 	if (likely(priv->plat->fix_mac_speed))
 		priv->plat->fix_mac_speed(priv->plat->bsp_priv, speed);
@@ -237,40 +263,43 @@ static int dwmac_rk_enable_phy_loopback(struct stmmac_priv *priv, int speed)
 	return 0;
 }
 
-static int dwmac_rk_disable_phy_loopback(struct stmmac_priv *priv)
+static int dwmac_rk_disable_phy_loopback(struct stmmac_priv *priv, int addr)
 {
 	int val;
 
-	val = mdiobus_read(priv->mii, 0, MII_BMCR);
+	val = mdiobus_read(priv->mii, addr, MII_BMCR);
 	val |= BMCR_ANENABLE;
 	val &= ~BMCR_LOOPBACK;
 
-	mdiobus_write(priv->mii, 0, MII_BMCR, val);
-	val = mdiobus_read(priv->mii, priv->plat->phy_addr, MII_BMCR);
+	mdiobus_write(priv->mii, addr, MII_BMCR, val);
+	val = mdiobus_read(priv->mii, addr, MII_BMCR);
 
 	return 0;
 }
 
 static int dwmac_rk_set_phy_loopback(struct stmmac_priv *priv,
-				     int speed, bool enable)
+				     int speed, bool enable,
+				     int addr, bool phy)
 {
 	if (enable)
-		return dwmac_rk_enable_phy_loopback(priv, speed);
+		return dwmac_rk_enable_phy_loopback(priv, speed,
+						     addr, phy);
 	else
-		return dwmac_rk_disable_phy_loopback(priv);
+		return dwmac_rk_disable_phy_loopback(priv, addr);
 }
 
 static int dwmac_rk_set_loopback(struct stmmac_priv *priv,
-				 int type, int speed, bool enable)
+				 int type, int speed, bool enable,
+				 int addr, bool phy)
 {
 	int ret;
 
 	switch (type) {
 	case LOOPBACK_TYPE_PHY:
-		ret = dwmac_rk_set_phy_loopback(priv, speed, enable);
+		ret = dwmac_rk_set_phy_loopback(priv, speed, enable, addr, phy);
 		break;
 	case LOOPBACK_TYPE_GMAC:
-		ret = dwmac_rk_set_mac_loopback(priv, speed, enable);
+		ret = dwmac_rk_set_mac_loopback(priv, speed, enable, addr, phy);
 		break;
 	default:
 		ret = -EOPNOTSUPP;
@@ -545,15 +574,15 @@ static inline int dwmac_rk_rx_fill(struct stmmac_priv *priv,
 static void dwmac_rk_rx_clean(struct stmmac_priv *priv,
 			      struct dwmac_rk_lb_priv *lb_priv)
 {
-	struct sk_buff *skb;
-
-	skb = lb_priv->rx_skbuff;
-
-	if (likely(lb_priv->rx_skbuff)) {
+	if (likely(lb_priv->rx_skbuff_dma)) {
 		dma_unmap_single(priv->device,
 				 lb_priv->rx_skbuff_dma,
 				 lb_priv->dma_buf_sz, DMA_FROM_DEVICE);
-		dev_kfree_skb(skb);
+		lb_priv->rx_skbuff_dma = 0;
+	}
+
+	if (likely(lb_priv->rx_skbuff)) {
+		dev_consume_skb_any(lb_priv->rx_skbuff);
 		lb_priv->rx_skbuff = NULL;
 	}
 }
@@ -599,17 +628,14 @@ static int dwmac_rk_get_desc_status(struct stmmac_priv *priv,
 	int tx_status, rx_status;
 
 	txp = lb_priv->dma_tx;
-	tx_status = priv->hw->desc->tx_status(&priv->dev->stats,
-					      &priv->xstats, txp,
-					      priv->ioaddr);
+	tx_status = stmmac_tx_status(priv, &priv->xstats, txp, priv->ioaddr);
 	/* Check if the descriptor is owned by the DMA */
 	if (unlikely(tx_status & tx_dma_own))
 		return -EBUSY;
 
 	rxp = lb_priv->dma_rx;
 	/* read the status of the incoming frame */
-	rx_status = priv->hw->desc->rx_status(&priv->dev->stats,
-					      &priv->xstats, rxp);
+	rx_status = stmmac_rx_status(priv, &priv->xstats, rxp);
 	if (unlikely(rx_status & dma_own))
 		return -EBUSY;
 
@@ -621,10 +647,9 @@ static int dwmac_rk_get_desc_status(struct stmmac_priv *priv,
 static void dwmac_rk_tx_clean(struct stmmac_priv *priv,
 			      struct dwmac_rk_lb_priv *lb_priv)
 {
-	struct sk_buff *skb;
+	struct sk_buff *skb = lb_priv->tx_skbuff;
 	struct dma_desc *p;
 
-	skb = lb_priv->tx_skbuff;
 	p = lb_priv->dma_tx;
 
 	if (likely(lb_priv->tx_skbuff_dma)) {
@@ -636,7 +661,7 @@ static void dwmac_rk_tx_clean(struct stmmac_priv *priv,
 	}
 
 	if (likely(skb)) {
-		dev_kfree_skb(skb);
+		dev_consume_skb_any(skb);
 		lb_priv->tx_skbuff = NULL;
 	}
 
@@ -650,7 +675,7 @@ static int dwmac_rk_xmit(struct sk_buff *skb, struct net_device *dev,
 	unsigned int nopaged_len = skb_headlen(skb);
 	int csum_insertion = 0;
 	struct dma_desc *desc;
-	unsigned int des;
+	dma_addr_t des;
 
 	priv->hw->mac->reset_eee_mode(priv->hw);
 
@@ -660,9 +685,10 @@ static int dwmac_rk_xmit(struct sk_buff *skb, struct net_device *dev,
 	lb_priv->tx_skbuff = skb;
 
 	des = dma_map_single(priv->device, skb->data,
-				    nopaged_len, DMA_TO_DEVICE);
+			     nopaged_len, DMA_TO_DEVICE);
 	if (dma_mapping_error(priv->device, des))
 		goto dma_map_err;
+	lb_priv->tx_skbuff_dma = des;
 
 	stmmac_set_desc_addr(priv, desc, des);
 	lb_priv->tx_skbuff_dma_len = nopaged_len;
@@ -776,9 +802,20 @@ static int dwmac_rk_loopback_with_identify(struct stmmac_priv *priv,
 	return __dwmac_rk_loopback_run(priv, lb_priv);
 }
 
-static inline bool dwmac_rk_delayline_is_valid(int tx, int rx)
+static inline bool dwmac_rk_delayline_is_txvalid(struct dwmac_rk_lb_priv *lb_priv,
+						 int tx)
 {
-	if ((tx > 0 && tx < MAX_DELAYLINE) && (rx > 0 && rx < MAX_DELAYLINE))
+	if (tx > 0 && tx < lb_priv->max_delay)
+		return true;
+	else
+		return false;
+}
+
+static inline bool dwmac_rk_delayline_is_valid(struct dwmac_rk_lb_priv *lb_priv,
+					       int tx, int rx)
+{
+	if ((tx > 0 && tx < lb_priv->max_delay) &&
+	    (rx > 0 && rx < lb_priv->max_delay))
 		return true;
 	else
 		return false;
@@ -789,7 +826,7 @@ static int dwmac_rk_delayline_scan_cross(struct stmmac_priv *priv,
 {
 	int tx_left, tx_right, rx_up, rx_down;
 	int i, j, tx_index, rx_index;
-	int tx_mid, rx_mid;
+	int tx_mid = 0, rx_mid = 0;
 
 	/* initiation */
 	tx_index = SCAN_STEP;
@@ -797,12 +834,12 @@ static int dwmac_rk_delayline_scan_cross(struct stmmac_priv *priv,
 
 re_scan:
 	/* start from rx based on the experience */
-	for (i = rx_index; i <= (MAX_DELAYLINE - SCAN_STEP); i += SCAN_STEP) {
+	for (i = rx_index; i <= (lb_priv->max_delay - SCAN_STEP); i += SCAN_STEP) {
 		tx_left = 0;
 		tx_right = 0;
 		tx_mid = 0;
 
-		for (j = tx_index; j <= (MAX_DELAYLINE - SCAN_STEP);
+		for (j = tx_index; j <= (lb_priv->max_delay - SCAN_STEP);
 		     j += SCAN_STEP) {
 			if (!dwmac_rk_loopback_with_identify(priv,
 			    lb_priv, j, i)) {
@@ -820,14 +857,14 @@ re_scan:
 	}
 
 	/* Worst case: reach the end */
-	if (i >= (MAX_DELAYLINE - SCAN_STEP))
+	if (i >= (lb_priv->max_delay - SCAN_STEP))
 		goto end;
 
 	rx_up = 0;
 	rx_down = 0;
 
 	/* look for rx_mid base on the tx_mid */
-	for (i = SCAN_STEP; i <= (MAX_DELAYLINE - SCAN_STEP);
+	for (i = SCAN_STEP; i <= (lb_priv->max_delay - SCAN_STEP);
 	     i += SCAN_STEP) {
 		if (!dwmac_rk_loopback_with_identify(priv, lb_priv,
 		    tx_mid, i)) {
@@ -846,23 +883,24 @@ re_scan:
 		goto re_scan;
 	}
 
-	if (dwmac_rk_delayline_is_valid(tx_mid, rx_mid)) {
+	if (dwmac_rk_delayline_is_valid(lb_priv, tx_mid, rx_mid)) {
 		lb_priv->final_tx = tx_mid;
 		lb_priv->final_rx = rx_mid;
 
-		pr_info("Find suitable tx_delay = 0x%02x, rx_delay = 0x%02x\n",
+		pr_info("Find available tx_delay = 0x%02x, rx_delay = 0x%02x\n",
 			lb_priv->final_tx, lb_priv->final_rx);
 
 		return 0;
 	}
 end:
-	pr_err("Can't find suitable delayline\n");
+	pr_err("Can't find available delayline\n");
 	return -ENXIO;
 }
 
 static int dwmac_rk_delayline_scan(struct stmmac_priv *priv,
 				   struct dwmac_rk_lb_priv *lb_priv)
 {
+	int phy_iface = dwmac_rk_get_phy_interface(priv);
 	int tx, rx, tx_sum, rx_sum, count;
 	int tx_mid, rx_mid;
 	int ret = -ENXIO;
@@ -871,9 +909,11 @@ static int dwmac_rk_delayline_scan(struct stmmac_priv *priv,
 	rx_sum = 0;
 	count = 0;
 
-	for (rx = 0x0; rx <= MAX_DELAYLINE; rx++) {
-		printk(KERN_CONT "RX(0x%02x):", rx);
-		for (tx = 0x0; tx <= MAX_DELAYLINE; tx++) {
+	for (rx = 0x0; rx <= lb_priv->max_delay; rx++) {
+		if (phy_iface == PHY_INTERFACE_MODE_RGMII_RXID)
+			rx = -1;
+		printk(KERN_CONT "RX(%03d):", rx);
+		for (tx = 0x0; tx <= lb_priv->max_delay; tx++) {
 			if (!dwmac_rk_loopback_with_identify(priv,
 			    lb_priv, tx, rx)) {
 				tx_sum += tx;
@@ -885,24 +925,40 @@ static int dwmac_rk_delayline_scan(struct stmmac_priv *priv,
 			}
 		}
 		printk(KERN_CONT "\n");
+
+		if (phy_iface == PHY_INTERFACE_MODE_RGMII_RXID)
+			break;
 	}
 
 	if (tx_sum && rx_sum && count) {
 		tx_mid = tx_sum / count;
 		rx_mid = rx_sum / count;
 
-		if (dwmac_rk_delayline_is_valid(tx_mid, rx_mid)) {
-			lb_priv->final_tx = tx_mid;
-			lb_priv->final_rx = rx_mid;
-			ret = 0;
+		if (phy_iface == PHY_INTERFACE_MODE_RGMII_RXID) {
+			if (dwmac_rk_delayline_is_txvalid(lb_priv, tx_mid)) {
+				lb_priv->final_tx = tx_mid;
+				lb_priv->final_rx = -1;
+				ret = 0;
+			}
+		} else {
+			if (dwmac_rk_delayline_is_valid(lb_priv, tx_mid, rx_mid)) {
+				lb_priv->final_tx = tx_mid;
+				lb_priv->final_rx = rx_mid;
+				ret = 0;
+			}
 		}
 	}
 
-	if (ret)
+	if (ret) {
 		pr_err("\nCan't find suitable delayline\n");
-	else
-		pr_info("\nFind suitable tx_delay = 0x%02x, rx_delay = 0x%02x\n",
-			lb_priv->final_tx, lb_priv->final_rx);
+	} else {
+		if (phy_iface == PHY_INTERFACE_MODE_RGMII_RXID)
+			pr_info("Find available tx_delay = 0x%02x, rx_delay = disable\n",
+				lb_priv->final_tx);
+		else
+			pr_info("\nFind suitable tx_delay = 0x%02x, rx_delay = 0x%02x\n",
+				lb_priv->final_tx, lb_priv->final_rx);
+	}
 
 	return ret;
 }
@@ -974,17 +1030,17 @@ static int dwmac_rk_alloc_dma_desc_resources(struct stmmac_priv *priv,
 	int ret = -ENOMEM;
 
 	/* desc dma map */
-	lb_priv->dma_rx = dma_zalloc_coherent(priv->device,
-					      sizeof(struct dma_desc),
-					      &lb_priv->dma_rx_phy,
-					      GFP_KERNEL);
+	lb_priv->dma_rx = dma_alloc_coherent(priv->device,
+					     sizeof(struct dma_desc),
+					     &lb_priv->dma_rx_phy,
+					     GFP_KERNEL);
 	if (!lb_priv->dma_rx)
 		return ret;
 
-	lb_priv->dma_tx = dma_zalloc_coherent(priv->device,
-					      sizeof(struct dma_desc),
-					      &lb_priv->dma_tx_phy,
-					      GFP_KERNEL);
+	lb_priv->dma_tx = dma_alloc_coherent(priv->device,
+					     sizeof(struct dma_desc),
+					     &lb_priv->dma_tx_phy,
+					     GFP_KERNEL);
 	if (!lb_priv->dma_tx) {
 		dma_free_coherent(priv->device,
 				  sizeof(struct dma_desc),
@@ -1095,6 +1151,54 @@ static void dwmac_rk_dma_operation_mode(struct stmmac_priv *priv,
 	}
 }
 
+static void dwmac_rk_rx_queue_dma_chan_map(struct stmmac_priv *priv)
+{
+	u32 rx_queues_count = min_t(u32, priv->plat->rx_queues_to_use, 1);
+	u32 queue;
+	u32 chan;
+
+	for (queue = 0; queue < rx_queues_count; queue++) {
+		chan = priv->plat->rx_queues_cfg[queue].chan;
+		stmmac_map_mtl_to_dma(priv, priv->hw, queue, chan);
+	}
+}
+
+static void dwmac_rk_mac_enable_rx_queues(struct stmmac_priv *priv)
+{
+	u32 rx_queues_count = min_t(u32, priv->plat->rx_queues_to_use, 1);
+	int queue;
+	u8 mode;
+
+	for (queue = 0; queue < rx_queues_count; queue++) {
+		mode = priv->plat->rx_queues_cfg[queue].mode_to_use;
+		stmmac_rx_queue_enable(priv, priv->hw, mode, queue);
+	}
+}
+
+static void dwmac_rk_mtl_configuration(struct stmmac_priv *priv)
+{
+	/* Map RX MTL to DMA channels */
+	dwmac_rk_rx_queue_dma_chan_map(priv);
+
+	/* Enable MAC RX Queues */
+	dwmac_rk_mac_enable_rx_queues(priv);
+}
+
+static void dwmac_rk_mmc_setup(struct stmmac_priv *priv)
+{
+	unsigned int mode = MMC_CNTRL_RESET_ON_READ | MMC_CNTRL_COUNTER_RESET |
+			    MMC_CNTRL_PRESET | MMC_CNTRL_FULL_HALF_PRESET;
+
+	stmmac_mmc_intr_all_mask(priv, priv->mmcaddr);
+
+	if (priv->dma_cap.rmon) {
+		stmmac_mmc_ctrl(priv, priv->mmcaddr, mode);
+		memset(&priv->mmc, 0, sizeof(struct stmmac_counters));
+	} else {
+		netdev_info(priv->dev, "No MAC Management Counters available\n");
+	}
+}
+
 static int dwmac_rk_init(struct net_device *dev,
 			 struct dwmac_rk_lb_priv *lb_priv)
 {
@@ -1134,6 +1238,10 @@ static int dwmac_rk_init(struct net_device *dev,
 	/* Initialize the MAC Core */
 	stmmac_core_init(priv, priv->hw, dev);
 
+	dwmac_rk_mtl_configuration(priv);
+
+	dwmac_rk_mmc_setup(priv);
+
 	ret = priv->hw->mac->rx_ipc(priv->hw);
 	if (!ret) {
 		pr_warn(" RX IPC Checksum Offload disabled\n");
@@ -1155,7 +1263,7 @@ static int dwmac_rk_init(struct net_device *dev,
 		writel((mode & ~DMA_CONTROL_OSF), priv->ioaddr + DMA_CONTROL);
 	}
 
-	stmmac_enable_dma_irq(priv, priv->ioaddr, 0);
+	stmmac_enable_dma_irq(priv, priv->ioaddr, 0, 1, 1);
 
 	if (priv->hw->pcs)
 		stmmac_pcs_ctrl_ane(priv, priv->hw, 1, priv->hw->ps, 0);
@@ -1172,10 +1280,41 @@ static void dwmac_rk_release(struct net_device *dev,
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
 
-	stmmac_disable_dma_irq(priv, priv->ioaddr, 0);
+	stmmac_disable_dma_irq(priv, priv->ioaddr, 0, 0, 0);
 
 	/* Release and free the Rx/Tx resources */
 	dwmac_rk_free_dma_desc_resources(priv, lb_priv);
+}
+
+static int dwmac_rk_get_max_delayline(struct stmmac_priv *priv)
+{
+	if (of_device_is_compatible(priv->device->of_node,
+				    "rockchip,rk3588-gmac"))
+		return RK3588_MAX_DELAYLINE;
+	else
+		return MAX_DELAYLINE;
+}
+
+static int dwmac_rk_phy_poll_reset(struct stmmac_priv *priv, int addr)
+{
+	/* Poll until the reset bit clears (50ms per retry == 0.6 sec) */
+	unsigned int val, retries = 12;
+	int ret;
+
+	val = mdiobus_read(priv->mii, addr, MII_BMCR);
+	mdiobus_write(priv->mii, addr, MII_BMCR, val | BMCR_RESET);
+
+	do {
+		msleep(50);
+		ret = mdiobus_read(priv->mii, addr, MII_BMCR);
+		if (ret < 0)
+			return ret;
+	} while (ret & BMCR_RESET && --retries);
+	if (ret & BMCR_RESET)
+		return -ETIMEDOUT;
+
+	msleep(1);
+	return 0;
 }
 
 static int dwmac_rk_loopback_run(struct stmmac_priv *priv,
@@ -1183,11 +1322,14 @@ static int dwmac_rk_loopback_run(struct stmmac_priv *priv,
 {
 	struct net_device *ndev = priv->dev;
 	int phy_iface = dwmac_rk_get_phy_interface(priv);
-	int ndev_up;
+	int ndev_up, phy_addr;
 	int ret = -EINVAL;
 
 	if (!ndev || !priv->mii)
 		return -EINVAL;
+
+	phy_addr = priv->dev->phydev->mdio.addr;
+	lb_priv->max_delay = dwmac_rk_get_max_delayline(priv);
 
 	rtnl_lock();
 	/* check the netdevice up or not */
@@ -1211,25 +1353,29 @@ static int dwmac_rk_loopback_run(struct stmmac_priv *priv,
 
 		if (priv->plat->stmmac_rst)
 			reset_control_assert(priv->plat->stmmac_rst);
-
-		if (priv->mii)
-			priv->mii->reset(priv->mii);
-
+		dwmac_rk_phy_poll_reset(priv, phy_addr);
 		if (priv->plat->stmmac_rst)
 			reset_control_deassert(priv->plat->stmmac_rst);
 	}
 	/* wait for phy and controller ready */
 	usleep_range(100000, 200000);
 
+	dwmac_rk_set_loopback(priv, lb_priv->type, lb_priv->speed,
+			      true, phy_addr, true);
+
 	ret = dwmac_rk_init(ndev, lb_priv);
 	if (ret)
 		goto exit_init;
-	dwmac_rk_set_loopback(priv, lb_priv->type, lb_priv->speed, true);
+
+	dwmac_rk_set_loopback(priv, lb_priv->type, lb_priv->speed,
+			      true, phy_addr, false);
 
 	if (lb_priv->scan) {
 		/* scan only support for rgmii mode */
 		if (phy_iface != PHY_INTERFACE_MODE_RGMII &&
-		    phy_iface != PHY_INTERFACE_MODE_RGMII_ID) {
+		    phy_iface != PHY_INTERFACE_MODE_RGMII_ID &&
+		    phy_iface != PHY_INTERFACE_MODE_RGMII_RXID &&
+		    phy_iface != PHY_INTERFACE_MODE_RGMII_TXID) {
 			ret = -EINVAL;
 			goto out;
 		}
@@ -1245,8 +1391,8 @@ static int dwmac_rk_loopback_run(struct stmmac_priv *priv,
 
 out:
 	dwmac_rk_release(ndev, lb_priv);
-	dwmac_rk_set_loopback(priv, lb_priv->type, lb_priv->speed, false);
-
+	dwmac_rk_set_loopback(priv, lb_priv->type, lb_priv->speed,
+			      false, phy_addr, false);
 exit_init:
 	if (ndev_up)
 		ndev->netdev_ops->ndo_open(ndev);
@@ -1291,10 +1437,10 @@ static ssize_t rgmii_delayline_store(struct device *dev,
 	*data = 0;
 	data++;
 
-	if (kstrtoint(tmp, 0, &tx) || tx > MAX_DELAYLINE)
+	if (kstrtoint(tmp, 0, &tx) || tx > dwmac_rk_get_max_delayline(priv))
 		goto out;
 
-	if (kstrtoint(data, 0, &rx) || rx > MAX_DELAYLINE)
+	if (kstrtoint(data, 0, &rx) || rx > dwmac_rk_get_max_delayline(priv))
 		goto out;
 
 	dwmac_rk_set_rgmii_delayline(priv, tx, rx);

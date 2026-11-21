@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015 Pablo Neira Ayuso <pablo@netfilter.org>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -15,6 +12,7 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <net/netfilter/nf_tables.h>
+#include <net/netfilter/nf_tables_offload.h>
 #include <net/netfilter/nf_dup_netdev.h>
 #include <net/neighbour.h>
 #include <net/ip.h>
@@ -29,6 +27,11 @@ static void nft_fwd_netdev_eval(const struct nft_expr *expr,
 {
 	struct nft_fwd_netdev *priv = nft_expr_priv(expr);
 	int oif = regs->data[priv->sreg_dev];
+	struct sk_buff *skb = pkt->skb;
+
+	/* This is used by ifb only. */
+	skb->skb_iif = skb->dev->ifindex;
+	skb_set_redirected(skb, nft_hook(pkt) == NF_NETDEV_INGRESS);
 
 	nf_fwd_netdev_egress(pkt, oif);
 	regs->verdict.code = NF_STOLEN;
@@ -53,8 +56,6 @@ static int nft_fwd_netdev_init(const struct nft_ctx *ctx,
 				       sizeof(int));
 }
 
-static const struct nft_expr_ops nft_fwd_netdev_ingress_ops;
-
 static int nft_fwd_netdev_dump(struct sk_buff *skb, const struct nft_expr *expr)
 {
 	struct nft_fwd_netdev *priv = nft_expr_priv(expr);
@@ -66,6 +67,21 @@ static int nft_fwd_netdev_dump(struct sk_buff *skb, const struct nft_expr *expr)
 
 nla_put_failure:
 	return -1;
+}
+
+static int nft_fwd_netdev_offload(struct nft_offload_ctx *ctx,
+				  struct nft_flow_rule *flow,
+				  const struct nft_expr *expr)
+{
+	const struct nft_fwd_netdev *priv = nft_expr_priv(expr);
+	int oif = ctx->regs[priv->sreg_dev].data.data[0];
+
+	return nft_fwd_dup_netdev_offload(ctx, flow, FLOW_ACTION_REDIRECT, oif);
+}
+
+static bool nft_fwd_netdev_offload_action(const struct nft_expr *expr)
+{
+	return true;
 }
 
 struct nft_fwd_neigh {
@@ -129,7 +145,7 @@ static void nft_fwd_neigh_eval(const struct nft_expr *expr,
 		return;
 
 	skb->dev = dev;
-	skb->tstamp = 0;
+	skb_clear_tstamp(skb);
 	neigh_xmit(neigh_table, dev, addr, skb);
 out:
 	regs->verdict.code = verdict;
@@ -170,8 +186,6 @@ static int nft_fwd_neigh_init(const struct nft_ctx *ctx,
 				       addr_len);
 }
 
-static const struct nft_expr_ops nft_fwd_netdev_ingress_ops;
-
 static int nft_fwd_neigh_dump(struct sk_buff *skb, const struct nft_expr *expr)
 {
 	struct nft_fwd_neigh *priv = nft_expr_priv(expr);
@@ -191,7 +205,8 @@ static int nft_fwd_validate(const struct nft_ctx *ctx,
 			    const struct nft_expr *expr,
 			    const struct nft_data **data)
 {
-	return nft_chain_validate_hooks(ctx->chain, (1 << NF_NETDEV_INGRESS));
+	return nft_chain_validate_hooks(ctx->chain, (1 << NF_NETDEV_INGRESS) |
+						    (1 << NF_NETDEV_EGRESS));
 }
 
 static struct nft_expr_type nft_fwd_netdev_type;
@@ -202,6 +217,7 @@ static const struct nft_expr_ops nft_fwd_neigh_netdev_ops = {
 	.init		= nft_fwd_neigh_init,
 	.dump		= nft_fwd_neigh_dump,
 	.validate	= nft_fwd_validate,
+	.reduce		= NFT_REDUCE_READONLY,
 };
 
 static const struct nft_expr_ops nft_fwd_netdev_ops = {
@@ -211,6 +227,9 @@ static const struct nft_expr_ops nft_fwd_netdev_ops = {
 	.init		= nft_fwd_netdev_init,
 	.dump		= nft_fwd_netdev_dump,
 	.validate	= nft_fwd_validate,
+	.reduce		= NFT_REDUCE_READONLY,
+	.offload	= nft_fwd_netdev_offload,
+	.offload_action	= nft_fwd_netdev_offload_action,
 };
 
 static const struct nft_expr_ops *

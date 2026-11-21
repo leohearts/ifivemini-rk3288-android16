@@ -1,10 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * EFI capsule loader driver.
  *
  * Copyright 2015 Intel Corporation
- *
- * This file is part of the Linux kernel, and is made available under
- * the terms of the GNU General Public License version 2.
  */
 
 #define pr_fmt(fmt) "efi: " fmt
@@ -13,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/miscdevice.h>
 #include <linux/highmem.h>
+#include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/efi.h>
@@ -169,7 +168,7 @@ static ssize_t efi_capsule_submit_update(struct capsule_info *cap_info)
 static ssize_t efi_capsule_write(struct file *file, const char __user *buff,
 				 size_t count, loff_t *offp)
 {
-	int ret = 0;
+	int ret;
 	struct capsule_info *cap_info = file->private_data;
 	struct page *page;
 	void *kbuff = NULL;
@@ -243,7 +242,6 @@ failed:
 	return ret;
 }
 
-
 /**
  * efi_capsule_release - called by file close
  * @inode: not used
@@ -294,7 +292,7 @@ static int efi_capsule_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 	}
 
-	cap_info->phys = kzalloc(sizeof(void *), GFP_KERNEL);
+	cap_info->phys = kzalloc(sizeof(phys_addr_t), GFP_KERNEL);
 	if (!cap_info->phys) {
 		kfree(cap_info->pages);
 		kfree(cap_info);

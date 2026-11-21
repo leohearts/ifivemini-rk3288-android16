@@ -140,7 +140,7 @@ static const struct sensor_register gc0312_vga_regs[] = {
 	{0x0f, 0x02},
 	{0x10, 0x88},
 	{0x16, 0x00},
-	{0x17, 0x10},
+	{0x17, 0x17},
 	{0x18, 0x1a},
 	{0x19, 0x14},
 	{0x1b, 0x48},
@@ -582,7 +582,7 @@ static void gc0312_set_streaming(struct gc0312 *gc0312, int on)
  */
 
 static int gc0312_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -598,7 +598,7 @@ static int gc0312_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int gc0312_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -624,7 +624,7 @@ static int gc0312_enum_frame_sizes(struct v4l2_subdev *sd,
 }
 
 static int gc0312_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -636,7 +636,7 @@ static int gc0312_get_fmt(struct v4l2_subdev *sd,
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 		struct v4l2_mbus_framefmt *mf;
 
-		mf = v4l2_subdev_get_try_format(sd, cfg, 0);
+		mf = v4l2_subdev_get_try_format(sd, sd_state, 0);
 		mutex_lock(&gc0312->lock);
 		fmt->format = *mf;
 		mutex_unlock(&gc0312->lock);
@@ -686,7 +686,7 @@ static void __gc0312_try_frame_size(struct v4l2_mbus_framefmt *mf,
 }
 
 static int gc0312_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -715,7 +715,7 @@ static int gc0312_set_fmt(struct v4l2_subdev *sd,
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		mf = v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		mf = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 		*mf = fmt->format;
 #else
 		return -ENOTTY;
@@ -738,10 +738,10 @@ static void gc0312_get_module_inf(struct gc0312 *gc0312,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, DRIVER_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, gc0312->module_name,
+	strscpy(inf->base.sensor, DRIVER_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, gc0312->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, gc0312->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, gc0312->len_name, sizeof(inf->base.lens));
 }
 
 static long gc0312_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
@@ -790,11 +790,8 @@ static long gc0312_compat_ioctl32(struct v4l2_subdev *sd,
 		}
 
 		ret = gc0312_ioctl(sd, cmd, inf);
-		if (!ret) {
+		if (!ret)
 			ret = copy_to_user(up, inf, sizeof(*inf));
-			if (ret)
-				ret = -EFAULT;
-		}
 		kfree(inf);
 		break;
 	case RKMODULE_AWB_CFG:
@@ -807,16 +804,12 @@ static long gc0312_compat_ioctl32(struct v4l2_subdev *sd,
 		ret = copy_from_user(cfg, up, sizeof(*cfg));
 		if (!ret)
 			ret = gc0312_ioctl(sd, cmd, cfg);
-		else
-			ret = -EFAULT;
 		kfree(cfg);
 		break;
 	case RKMODULE_SET_QUICK_STREAM:
 		ret = copy_from_user(&stream, up, sizeof(u32));
 		if (!ret)
 			ret = gc0312_ioctl(sd, cmd, &stream);
-		else
-			ret = -EFAULT;
 		break;
 	default:
 		ret = -ENOIOCTLCMD;
@@ -906,7 +899,7 @@ static int gc0312_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *format =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 
 	dev_dbg(&client->dev, "%s:\n", __func__);
 
@@ -916,11 +909,11 @@ static int gc0312_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 }
 #endif
 
-static int gc0312_g_mbus_config(struct v4l2_subdev *sd,
+static int gc0312_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
 				struct v4l2_mbus_config *config)
 {
 	config->type = V4L2_MBUS_PARALLEL;
-	config->flags = V4L2_MBUS_HSYNC_ACTIVE_HIGH |
+	config->bus.parallel.flags = V4L2_MBUS_HSYNC_ACTIVE_HIGH |
 			V4L2_MBUS_VSYNC_ACTIVE_LOW |
 			V4L2_MBUS_PCLK_SAMPLE_RISING;
 
@@ -928,15 +921,13 @@ static int gc0312_g_mbus_config(struct v4l2_subdev *sd,
 }
 
 static int gc0312_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	if (fie->index >= ARRAY_SIZE(gc0312_framesizes))
 		return -EINVAL;
 
-	if (fie->code != MEDIA_BUS_FMT_YUYV8_2X8)
-		return -EINVAL;
-
+	fie->code = MEDIA_BUS_FMT_YUYV8_2X8;
 	fie->width = gc0312_framesizes[fie->index].width;
 	fie->height = gc0312_framesizes[fie->index].height;
 	fie->interval = gc0312_framesizes[fie->index].max_fps;
@@ -955,7 +946,6 @@ static const struct v4l2_subdev_core_ops gc0312_subdev_core_ops = {
 
 static const struct v4l2_subdev_video_ops gc0312_subdev_video_ops = {
 	.s_stream = gc0312_s_stream,
-	.g_mbus_config = gc0312_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops gc0312_subdev_pad_ops = {
@@ -964,6 +954,7 @@ static const struct v4l2_subdev_pad_ops gc0312_subdev_pad_ops = {
 	.enum_frame_interval = gc0312_enum_frame_interval,
 	.get_fmt = gc0312_get_fmt,
 	.set_fmt = gc0312_set_fmt,
+	.get_mbus_config = gc0312_g_mbus_config,
 };
 
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
@@ -1192,7 +1183,7 @@ static int gc0312_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 gc0312->module_index, facing,
 		 DRIVER_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret)
 		goto error;
 
@@ -1210,7 +1201,7 @@ error:
 	return ret;
 }
 
-static int gc0312_remove(struct i2c_client *client)
+static void gc0312_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct gc0312 *gc0312 = to_gc0312(sd);
@@ -1223,8 +1214,6 @@ static int gc0312_remove(struct i2c_client *client)
 	mutex_destroy(&gc0312->lock);
 
 	__gc0312_power_off(gc0312);
-
-	return 0;
 }
 
 static const struct i2c_device_id gc0312_id[] = {

@@ -1,7 +1,7 @@
 /*
  * MIPI DSI Bus
  *
- * Copyright (c) Fuzhou Rockchip Electronics Co.Ltd
+ * Copyright (c) Rockchip Electronics Co., Ltd.
  * Authors:
  *       Mark Yao <yzq@rock-chips.com>
  *
@@ -28,15 +28,15 @@
 /* enable hsync-end packets in vsync-pulse and v-porch area */
 #define MIPI_DSI_MODE_VIDEO_HSE		(1 << 4)
 /* disable hfront-porch area */
-#define MIPI_DSI_MODE_VIDEO_HFP		(1 << 5)
+#define MIPI_DSI_MODE_VIDEO_NO_HFP	(1 << 5)
 /* disable hback-porch area */
-#define MIPI_DSI_MODE_VIDEO_HBP		(1 << 6)
+#define MIPI_DSI_MODE_VIDEO_NO_HBP	(1 << 6)
 /* disable hsync-active area */
-#define MIPI_DSI_MODE_VIDEO_HSA		(1 << 7)
+#define MIPI_DSI_MODE_VIDEO_NO_HSA	(1 << 7)
 /* flush display FIFO on vsync pulse */
 #define MIPI_DSI_MODE_VSYNC_FLUSH	(1 << 8)
 /* disable EoT packets in HS mode */
-#define MIPI_DSI_MODE_EOT_PACKET	(1 << 9)
+#define MIPI_DSI_MODE_NO_EOT_PACKET	(1 << 9)
 /* device supports non-continuous clock behavior (DSI spec 5.6.1) */
 #define MIPI_DSI_CLOCK_NON_CONTINUOUS	(1 << 10)
 /* transmit data in low power */
@@ -46,6 +46,7 @@
 #define MIPI_DSI_FMT_RGB666		1
 #define MIPI_DSI_FMT_RGB666_PACKED	2
 #define MIPI_DSI_FMT_RGB565		3
+#define MIPI_DSI_FMT_RGB101010		4
 
 #define MIPI_CSI_FMT_RAW8		0x10
 #define MIPI_CSI_FMT_RAW10		0x11

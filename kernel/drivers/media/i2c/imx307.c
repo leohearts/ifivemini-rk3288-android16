@@ -1039,7 +1039,7 @@ imx307_find_best_fit(struct imx307 *imx307, struct v4l2_subdev_format *fmt)
 }
 
 static int imx307_set_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct imx307 *imx307 = to_imx307(sd);
@@ -1057,7 +1057,7 @@ static int imx307_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 #else
 		mutex_unlock(&imx307->mutex);
 		return -ENOTTY;
@@ -1086,7 +1086,7 @@ static int imx307_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int imx307_get_fmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct imx307 *imx307 = to_imx307(sd);
@@ -1095,7 +1095,7 @@ static int imx307_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&imx307->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 #else
 		mutex_unlock(&imx307->mutex);
 		return -ENOTTY;
@@ -1111,7 +1111,7 @@ static int imx307_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int imx307_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct imx307 *imx307 = to_imx307(sd);
@@ -1125,7 +1125,7 @@ static int imx307_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int imx307_enum_frame_sizes(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_pad_config *cfg,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct imx307 *imx307 = to_imx307(sd);
@@ -1187,27 +1187,21 @@ static int imx307_g_frame_interval(struct v4l2_subdev *sd,
 	struct imx307 *imx307 = to_imx307(sd);
 	const struct imx307_mode *mode = imx307->cur_mode;
 
-	mutex_lock(&imx307->mutex);
 	fi->interval = mode->max_fps;
-	mutex_unlock(&imx307->mutex);
 
 	return 0;
 }
 
-static int imx307_g_mbus_config(struct v4l2_subdev *sd,
+static int imx307_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
 				struct v4l2_mbus_config *config)
 {
 	struct imx307 *imx307 = to_imx307(sd);
-	u32 val = 0;
 
-	val = 1 << (imx307->cur_mode->lanes - 1) |
-			V4L2_MBUS_CSI2_CHANNEL_0 |
-			V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
-	if (imx307->bus_cfg.bus_type == 3)
-		config->type = V4L2_MBUS_CCP2;
-	else
-		config->type = V4L2_MBUS_CSI2;
-	config->flags = val;
+	config->type = imx307->bus_cfg.bus_type;
+	if (imx307->bus_cfg.bus_type == V4L2_MBUS_CCP2)
+		config->bus.mipi_csi1 = imx307->bus_cfg.bus.mipi_csi1;
+	else if (imx307->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY)
+		config->bus.mipi_csi2 = imx307->bus_cfg.bus.mipi_csi2;
 
 	return 0;
 }
@@ -1259,7 +1253,7 @@ static int imx307_set_hdrae(struct imx307 *imx307,
 	}
 
 	//long exposure and short exposure
-	if (imx307->cur_mode->lanes == 2 && imx307->bus_cfg.bus_type == 3)
+	if (imx307->cur_mode->lanes == 2 && imx307->bus_cfg.bus_type == V4L2_MBUS_CCP2)
 		rhs1 = RHS1;
 	else
 		rhs1 = 0xe1;
@@ -1319,10 +1313,10 @@ static void imx307_get_module_inf(struct imx307 *imx307,
 				  struct rkmodule_inf *inf)
 {
 	memset(inf, 0, sizeof(*inf));
-	strlcpy(inf->base.sensor, IMX307_NAME, sizeof(inf->base.sensor));
-	strlcpy(inf->base.module, imx307->module_name,
+	strscpy(inf->base.sensor, IMX307_NAME, sizeof(inf->base.sensor));
+	strscpy(inf->base.module, imx307->module_name,
 		sizeof(inf->base.module));
-	strlcpy(inf->base.lens, imx307->len_name, sizeof(inf->base.lens));
+	strscpy(inf->base.lens, imx307->len_name, sizeof(inf->base.lens));
 }
 
 static int imx307_set_conversion_gain(struct imx307 *imx307, u32 *cg)
@@ -1467,7 +1461,7 @@ static long imx307_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		break;
 	case RKMODULE_GET_LVDS_CFG:
 		lvds_cfg = (struct rkmodule_lvds_cfg *)arg;
-		if (imx307->bus_cfg.bus_type == 3)
+		if (imx307->bus_cfg.bus_type == V4L2_MBUS_CCP2)
 			memcpy(lvds_cfg, &imx307->cur_mode->lvds_cfg,
 				sizeof(struct rkmodule_lvds_cfg));
 		else
@@ -1825,7 +1819,7 @@ static int imx307_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct imx307 *imx307 = to_imx307(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 	const struct imx307_mode *def_mode = &imx307->support_modes[0];
 
 	mutex_lock(&imx307->mutex);
@@ -1843,7 +1837,7 @@ static int imx307_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 #endif
 
 static int imx307_enum_frame_interval(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct imx307 *imx307 = to_imx307(sd);
@@ -1874,7 +1868,7 @@ static int imx307_enum_frame_interval(struct v4l2_subdev *sd,
  */
 
 static int imx307_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
 	struct imx307 *imx307 = to_imx307(sd);
@@ -1882,7 +1876,7 @@ static int imx307_get_selection(struct v4l2_subdev *sd,
 	if (sel->target == V4L2_SEL_TGT_CROP_BOUNDS) {
 		sel->r.left = CROP_START(imx307->cur_mode->width, DST_WIDTH);
 		sel->r.width = DST_WIDTH;
-		if (imx307->bus_cfg.bus_type == 3) {
+		if (imx307->bus_cfg.bus_type == V4L2_MBUS_CCP2) {
 			if (imx307->cur_mode->hdr_mode == NO_HDR)
 				sel->r.top = 21;
 			else
@@ -1918,7 +1912,6 @@ static const struct v4l2_subdev_core_ops imx307_core_ops = {
 static const struct v4l2_subdev_video_ops imx307_video_ops = {
 	.s_stream = imx307_s_stream,
 	.g_frame_interval = imx307_g_frame_interval,
-	.g_mbus_config = imx307_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops imx307_pad_ops = {
@@ -1928,6 +1921,7 @@ static const struct v4l2_subdev_pad_ops imx307_pad_ops = {
 	.get_fmt = imx307_get_fmt,
 	.set_fmt = imx307_set_fmt,
 	.get_selection = imx307_get_selection,
+	.get_mbus_config = imx307_g_mbus_config,
 };
 
 static const struct v4l2_subdev_ops imx307_subdev_ops = {
@@ -1964,29 +1958,33 @@ static int imx307_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
-		shs1 = imx307->cur_vts - (ctrl->val + 1);
-		ret = imx307_write_reg(imx307->client,
-			IMX307_REG_SHS1_H,
-			IMX307_REG_VALUE_08BIT,
-			IMX307_FETCH_HIGH_BYTE_EXP(shs1));
-		ret |= imx307_write_reg(imx307->client,
-			IMX307_REG_SHS1_M,
-			IMX307_REG_VALUE_08BIT,
-			IMX307_FETCH_MID_BYTE_EXP(shs1));
-		ret |= imx307_write_reg(imx307->client,
-			IMX307_REG_SHS1_L,
-			IMX307_REG_VALUE_08BIT,
-			IMX307_FETCH_LOW_BYTE_EXP(shs1));
-		dev_dbg(&client->dev, "set exposure 0x%x, cur_vts 0x%x,shs1 0x%x\n",
-			ctrl->val, imx307->cur_vts, shs1);
+		if (imx307->cur_mode->hdr_mode == NO_HDR) {
+			shs1 = imx307->cur_vts - (ctrl->val + 1);
+			ret = imx307_write_reg(imx307->client,
+				IMX307_REG_SHS1_H,
+				IMX307_REG_VALUE_08BIT,
+				IMX307_FETCH_HIGH_BYTE_EXP(shs1));
+			ret |= imx307_write_reg(imx307->client,
+				IMX307_REG_SHS1_M,
+				IMX307_REG_VALUE_08BIT,
+				IMX307_FETCH_MID_BYTE_EXP(shs1));
+			ret |= imx307_write_reg(imx307->client,
+				IMX307_REG_SHS1_L,
+				IMX307_REG_VALUE_08BIT,
+				IMX307_FETCH_LOW_BYTE_EXP(shs1));
+			dev_dbg(&client->dev, "set exposure 0x%x, cur_vts 0x%x,shs1 0x%x\n",
+				ctrl->val, imx307->cur_vts, shs1);
+		}
 		break;
 	case V4L2_CID_ANALOGUE_GAIN:
-		ret = imx307_write_reg(imx307->client,
-			IMX307_REG_LF_GAIN,
-			IMX307_REG_VALUE_08BIT,
-			ctrl->val);
-		dev_dbg(&client->dev, "set analog gain 0x%x\n",
-			ctrl->val);
+		if (imx307->cur_mode->hdr_mode == NO_HDR) {
+			ret = imx307_write_reg(imx307->client,
+				IMX307_REG_LF_GAIN,
+				IMX307_REG_VALUE_08BIT,
+				ctrl->val);
+			dev_dbg(&client->dev, "set analog gain 0x%x\n",
+				ctrl->val);
+		}
 		break;
 	case V4L2_CID_VBLANK:
 		vts = ctrl->val + imx307->cur_mode->height;
@@ -2214,7 +2212,7 @@ static int imx307_probe(struct i2c_client *client,
 		&imx307->bus_cfg);
 	if (ret)
 		dev_warn(dev, "could not get bus config!\n");
-	if (imx307->bus_cfg.bus_type == 3) {
+	if (imx307->bus_cfg.bus_type == V4L2_MBUS_CCP2) {
 		if (imx307->bus_cfg.bus.mipi_csi1.data_lane == 2) {
 			imx307->support_modes = lvds_2lane_supported_modes;
 			imx307->support_modes_num = ARRAY_SIZE(lvds_2lane_supported_modes);
@@ -2306,7 +2304,7 @@ static int imx307_probe(struct i2c_client *client,
 	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
 		 imx307->module_index, facing,
 		 IMX307_NAME, dev_name(sd->dev));
-	ret = v4l2_async_register_subdev_sensor_common(sd);
+	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -2336,7 +2334,7 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int imx307_remove(struct i2c_client *client)
+static void imx307_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx307 *imx307 = to_imx307(sd);
@@ -2352,8 +2350,6 @@ static int imx307_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__imx307_power_off(imx307);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)

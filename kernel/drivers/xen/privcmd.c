@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
  * privcmd.c
  *
@@ -9,6 +10,7 @@
 #define pr_fmt(fmt) "xen:" KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
+#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -23,10 +25,10 @@
 #include <linux/seq_file.h>
 #include <linux/miscdevice.h>
 #include <linux/moduleparam.h>
+#include <linux/notifier.h>
+#include <linux/security.h>
+#include <linux/wait.h>
 
-#include <asm/pgalloc.h>
-#include <asm/pgtable.h>
-#include <asm/tlb.h>
 #include <asm/xen/hypervisor.h>
 #include <asm/xen/hypercall.h>
 
@@ -39,6 +41,7 @@
 #include <xen/page.h>
 #include <xen/xen-ops.h>
 #include <xen/balloon.h>
+#include <xen/xenbus.h>
 
 #include "privcmd.h"
 
@@ -57,9 +60,19 @@ module_param_named(dm_op_buf_max_size, privcmd_dm_op_buf_max_size, uint,
 MODULE_PARM_DESC(dm_op_buf_max_size,
 		 "Maximum size of a dm_op hypercall buffer");
 
+static bool unrestricted;
+module_param(unrestricted, bool, 0);
+MODULE_PARM_DESC(unrestricted,
+	"Don't restrict hypercalls to target domain if running in a domU");
+
 struct privcmd_data {
 	domid_t domid;
 };
+
+/* DOMID_INVALID implies no restriction */
+static domid_t target_domain = DOMID_INVALID;
+static bool restrict_wait;
+static DECLARE_WAIT_QUEUE_HEAD(restrict_wait_wq);
 
 static int privcmd_vma_range_is_mapped(
                struct vm_area_struct *vma,
@@ -259,7 +272,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 	LIST_HEAD(pagelist);
 	struct mmap_gfn_state state;
 
-	/* We only support privcmd_ioctl_mmap_batch for auto translated. */
+	/* We only support privcmd_ioctl_mmap_batch for non-auto-translated. */
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return -ENOSYS;
 
@@ -277,14 +290,14 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 	if (rc || list_empty(&pagelist))
 		goto out;
 
-	down_write(&mm->mmap_sem);
+	mmap_write_lock(mm);
 
 	{
 		struct page *page = list_first_entry(&pagelist,
 						     struct page, lru);
 		struct privcmd_mmap_entry *msg = page_address(page);
 
-		vma = find_vma(mm, msg->va);
+		vma = vma_lookup(mm, msg->va);
 		rc = -EINVAL;
 
 		if (!vma || (msg->va != vma->vm_start) || vma->vm_private_data)
@@ -302,7 +315,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 
 
 out_up:
-	up_write(&mm->mmap_sem);
+	mmap_write_unlock(mm);
 
 out:
 	free_page_list(&pagelist);
@@ -422,15 +435,15 @@ static int alloc_empty_pages(struct vm_area_struct *vma, int numpgs)
 	int rc;
 	struct page **pages;
 
-	pages = kcalloc(numpgs, sizeof(pages[0]), GFP_KERNEL);
+	pages = kvcalloc(numpgs, sizeof(pages[0]), GFP_KERNEL);
 	if (pages == NULL)
 		return -ENOMEM;
 
-	rc = alloc_xenballooned_pages(numpgs, pages);
+	rc = xen_alloc_unpopulated_pages(numpgs, pages);
 	if (rc != 0) {
 		pr_warn("%s Could not alloc %d pfns rc:%d\n", __func__,
 			numpgs, rc);
-		kfree(pages);
+		kvfree(pages);
 		return -ENOMEM;
 	}
 	BUG_ON(vma->vm_private_data != NULL);
@@ -459,14 +472,14 @@ static long privcmd_ioctl_mmap_batch(
 			return -EFAULT;
 		/* Returns per-frame error in m.arr. */
 		m.err = NULL;
-		if (!access_ok(VERIFY_WRITE, m.arr, m.num * sizeof(*m.arr)))
+		if (!access_ok(m.arr, m.num * sizeof(*m.arr)))
 			return -EFAULT;
 		break;
 	case 2:
 		if (copy_from_user(&m, udata, sizeof(struct privcmd_mmapbatch_v2)))
 			return -EFAULT;
 		/* Returns per-frame error code in m.err. */
-		if (!access_ok(VERIFY_WRITE, m.err, m.num * (sizeof(*m.err))))
+		if (!access_ok(m.err, m.num * (sizeof(*m.err))))
 			return -EFAULT;
 		break;
 	default:
@@ -498,7 +511,7 @@ static long privcmd_ioctl_mmap_batch(
 		}
 	}
 
-	down_write(&mm->mmap_sem);
+	mmap_write_lock(mm);
 
 	vma = find_vma(mm, m.addr);
 	if (!vma ||
@@ -554,7 +567,7 @@ static long privcmd_ioctl_mmap_batch(
 	BUG_ON(traverse_pages_block(m.num, sizeof(xen_pfn_t),
 				    &pagelist, mmap_batch_fn, &state));
 
-	up_write(&mm->mmap_sem);
+	mmap_write_unlock(mm);
 
 	if (state.global_error) {
 		/* Write back errors in second pass. */
@@ -575,34 +588,38 @@ out:
 	return ret;
 
 out_unlock:
-	up_write(&mm->mmap_sem);
+	mmap_write_unlock(mm);
 	goto out;
 }
 
 static int lock_pages(
 	struct privcmd_dm_op_buf kbufs[], unsigned int num,
-	struct page *pages[], unsigned int nr_pages)
+	struct page *pages[], unsigned int nr_pages, unsigned int *pinned)
 {
-	unsigned int i;
+	unsigned int i, off = 0;
 
-	for (i = 0; i < num; i++) {
+	for (i = 0; i < num; ) {
 		unsigned int requested;
-		int pinned;
+		int page_count;
 
 		requested = DIV_ROUND_UP(
 			offset_in_page(kbufs[i].uptr) + kbufs[i].size,
-			PAGE_SIZE);
+			PAGE_SIZE) - off;
 		if (requested > nr_pages)
 			return -ENOSPC;
 
-		pinned = get_user_pages_fast(
-			(unsigned long) kbufs[i].uptr,
+		page_count = pin_user_pages_fast(
+			(unsigned long)kbufs[i].uptr + off * PAGE_SIZE,
 			requested, FOLL_WRITE, pages);
-		if (pinned < 0)
-			return pinned;
+		if (page_count <= 0)
+			return page_count ? : -EFAULT;
 
-		nr_pages -= pinned;
-		pages += pinned;
+		*pinned += page_count;
+		nr_pages -= page_count;
+		pages += page_count;
+
+		off = (requested == page_count) ? 0 : off + page_count;
+		i += !off;
 	}
 
 	return 0;
@@ -610,15 +627,7 @@ static int lock_pages(
 
 static void unlock_pages(struct page *pages[], unsigned int nr_pages)
 {
-	unsigned int i;
-
-	if (!pages)
-		return;
-
-	for (i = 0; i < nr_pages; i++) {
-		if (pages[i])
-			put_page(pages[i]);
-	}
+	unpin_user_pages_dirty_lock(pages, nr_pages, true);
 }
 
 static long privcmd_ioctl_dm_op(struct file *file, void __user *udata)
@@ -631,6 +640,7 @@ static long privcmd_ioctl_dm_op(struct file *file, void __user *udata)
 	struct xen_dm_op_buf *xbufs = NULL;
 	unsigned int i;
 	long rc;
+	unsigned int pinned = 0;
 
 	if (copy_from_user(&kdata, udata, sizeof(kdata)))
 		return -EFAULT;
@@ -661,7 +671,7 @@ static long privcmd_ioctl_dm_op(struct file *file, void __user *udata)
 			goto out;
 		}
 
-		if (!access_ok(VERIFY_WRITE, kbufs[i].uptr,
+		if (!access_ok(kbufs[i].uptr,
 			       kbufs[i].size)) {
 			rc = -EFAULT;
 			goto out;
@@ -684,8 +694,8 @@ static long privcmd_ioctl_dm_op(struct file *file, void __user *udata)
 		goto out;
 	}
 
-	rc = lock_pages(kbufs, kdata.num, pages, nr_pages);
-	if (rc)
+	rc = lock_pages(kbufs, kdata.num, pages, nr_pages, &pinned);
+	if (rc < 0)
 		goto out;
 
 	for (i = 0; i < kdata.num; i++) {
@@ -698,7 +708,7 @@ static long privcmd_ioctl_dm_op(struct file *file, void __user *udata)
 	xen_preemptible_hcall_end();
 
 out:
-	unlock_pages(pages, nr_pages);
+	unlock_pages(pages, pinned);
 	kfree(xbufs);
 	kfree(pages);
 	kfree(kbufs);
@@ -719,26 +729,6 @@ static long privcmd_ioctl_restrict(struct file *file, void __user *udata)
 		data->domid = dom;
 	else if (data->domid != dom)
 		return -EINVAL;
-
-	return 0;
-}
-
-struct remap_pfn {
-	struct mm_struct *mm;
-	struct page **pages;
-	pgprot_t prot;
-	unsigned long i;
-};
-
-static int remap_pfn_fn(pte_t *ptep, pgtable_t token, unsigned long addr,
-			void *data)
-{
-	struct remap_pfn *r = data;
-	struct page *page = r->pages[r->i];
-	pte_t pte = pte_mkspecial(pfn_pte(page_to_pfn(page), r->prot));
-
-	set_pte_at(r->mm, addr, ptep, pte);
-	r->i++;
 
 	return 0;
 }
@@ -777,7 +767,7 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 		return __put_user(xdata.nr_frames, &udata->num);
 	}
 
-	down_write(&mm->mmap_sem);
+	mmap_write_lock(mm);
 
 	vma = find_vma(mm, kdata.addr);
 	if (!vma || vma->vm_ops != &privcmd_vm_ops) {
@@ -785,13 +775,14 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 		goto out;
 	}
 
-	pfns = kcalloc(kdata.num, sizeof(*pfns), GFP_KERNEL);
+	pfns = kcalloc(kdata.num, sizeof(*pfns), GFP_KERNEL | __GFP_NOWARN);
 	if (!pfns) {
 		rc = -ENOMEM;
 		goto out;
 	}
 
-	if (xen_feature(XENFEAT_auto_translated_physmap)) {
+	if (IS_ENABLED(CONFIG_XEN_AUTO_XLATE) &&
+	    xen_feature(XENFEAT_auto_translated_physmap)) {
 		unsigned int nr = DIV_ROUND_UP(kdata.num, XEN_PFN_PER_PAGE);
 		struct page **pages;
 		unsigned int i;
@@ -821,16 +812,9 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 	if (rc)
 		goto out;
 
-	if (xen_feature(XENFEAT_auto_translated_physmap)) {
-		struct remap_pfn r = {
-			.mm = vma->vm_mm,
-			.pages = vma->vm_private_data,
-			.prot = vma->vm_page_prot,
-		};
-
-		rc = apply_to_page_range(r.mm, kdata.addr,
-					 kdata.num << PAGE_SHIFT,
-					 remap_pfn_fn, &r);
+	if (IS_ENABLED(CONFIG_XEN_AUTO_XLATE) &&
+	    xen_feature(XENFEAT_auto_translated_physmap)) {
+		rc = xen_remap_vma_range(vma, kdata.addr, kdata.num << PAGE_SHIFT);
 	} else {
 		unsigned int domid =
 			(xdata.flags & XENMEM_rsrc_acq_caller_owned) ?
@@ -842,8 +826,7 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 						 kdata.addr & PAGE_MASK,
 						 pfns, kdata.num, errs,
 						 vma->vm_page_prot,
-						 domid,
-						 vma->vm_private_data);
+						 domid);
 		if (num < 0)
 			rc = num;
 		else if (num != kdata.num) {
@@ -859,7 +842,7 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 	}
 
 out:
-	up_write(&mm->mmap_sem);
+	mmap_write_unlock(mm);
 	kfree(pfns);
 
 	return rc;
@@ -909,13 +892,16 @@ static long privcmd_ioctl(struct file *file,
 
 static int privcmd_open(struct inode *ino, struct file *file)
 {
-	struct privcmd_data *data = kzalloc(sizeof(*data), GFP_KERNEL);
+	struct privcmd_data *data;
 
+	if (wait_event_interruptible(restrict_wait_wq, !restrict_wait) < 0)
+		return -EINTR;
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	/* DOMID_INVALID implies no restriction */
-	data->domid = DOMID_INVALID;
+	data->domid = target_domain;
 
 	file->private_data = data;
 	return 0;
@@ -941,11 +927,17 @@ static void privcmd_close(struct vm_area_struct *vma)
 
 	rc = xen_unmap_domain_gfn_range(vma, numgfns, pages);
 	if (rc == 0)
-		free_xenballooned_pages(numpgs, pages);
+		xen_free_unpopulated_pages(numpgs, pages);
 	else
 		pr_crit("unable to unmap MFN range: leaking %d pages. rc=%d\n",
 			numpgs, rc);
-	kfree(pages);
+	kvfree(pages);
+}
+
+static int privcmd_may_split(struct vm_area_struct *area, unsigned long addr)
+{
+	/* Forbid splitting, avoids double free via privcmd_close(). */
+	return -EINVAL;
 }
 
 static vm_fault_t privcmd_fault(struct vm_fault *vmf)
@@ -959,6 +951,7 @@ static vm_fault_t privcmd_fault(struct vm_fault *vmf)
 
 static const struct vm_operations_struct privcmd_vm_ops = {
 	.close = privcmd_close,
+	.may_split = privcmd_may_split,
 	.fault = privcmd_fault
 };
 
@@ -979,8 +972,7 @@ static int privcmd_mmap(struct file *file, struct vm_area_struct *vma)
  * on a per pfn/pte basis. Mapping calls that fail with ENOENT
  * can be then retried until success.
  */
-static int is_mapped_fn(pte_t *pte, struct page *pmd_page,
-	                unsigned long addr, void *data)
+static int is_mapped_fn(pte_t *pte, unsigned long addr, void *data)
 {
 	return pte_none(*pte) ? 0 : -EBUSY;
 }
@@ -1009,12 +1001,61 @@ static struct miscdevice privcmd_dev = {
 	.fops = &xen_privcmd_fops,
 };
 
+static int init_restrict(struct notifier_block *notifier,
+			 unsigned long event,
+			 void *data)
+{
+	char *target;
+	unsigned int domid;
+
+	/* Default to an guaranteed unused domain-id. */
+	target_domain = DOMID_IDLE;
+
+	target = xenbus_read(XBT_NIL, "target", "", NULL);
+	if (IS_ERR(target) || kstrtouint(target, 10, &domid)) {
+		pr_err("No target domain found, blocking all hypercalls\n");
+		goto out;
+	}
+
+	target_domain = domid;
+
+ out:
+	if (!IS_ERR(target))
+		kfree(target);
+
+	restrict_wait = false;
+	wake_up_all(&restrict_wait_wq);
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block xenstore_notifier = {
+	.notifier_call = init_restrict,
+};
+
+static void __init restrict_driver(void)
+{
+	if (unrestricted) {
+		if (security_locked_down(LOCKDOWN_XEN_USER_ACTIONS))
+			pr_warn("Kernel is locked down, parameter \"unrestricted\" ignored\n");
+		else
+			return;
+	}
+
+	restrict_wait = true;
+
+	register_xenstore_notifier(&xenstore_notifier);
+}
+
 static int __init privcmd_init(void)
 {
 	int err;
 
 	if (!xen_domain())
 		return -ENODEV;
+
+	if (!xen_initial_domain())
+		restrict_driver();
 
 	err = misc_register(&privcmd_dev);
 	if (err != 0) {

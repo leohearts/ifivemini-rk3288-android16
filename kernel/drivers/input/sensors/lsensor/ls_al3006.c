@@ -1,6 +1,6 @@
 /* drivers/input/sensors/access/kxtik.c
  *
- * Copyright (C) 2012-2015 ROCKCHIP.
+ * Copyright (C) 2012-2015 Rockchip Electronics Co., Ltd.
  * Author: luowei <lw@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -244,7 +244,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return result;
 }
 
-struct sensor_operate light_al3006_ops = {
+static struct sensor_operate light_al3006_ops = {
 	.name				= "ls_al3006",
 	.type				= SENSOR_TYPE_LIGHT,	//sensor type and it should be correct
 	.id_i2c				= LIGHT_ID_AL3006,	//i2c id number
@@ -270,9 +270,9 @@ static int light_al3006_probe(struct i2c_client *client,
 	return sensor_register_device(client, NULL, devid, &light_al3006_ops);
 }
 
-static int light_al3006_remove(struct i2c_client *client)
+static void light_al3006_remove(struct i2c_client *client)
 {
-	return sensor_unregister_device(client, NULL, &light_al3006_ops);
+	sensor_unregister_device(client, NULL, &light_al3006_ops);
 }
 
 static const struct i2c_device_id light_al3006_id[] = {
@@ -282,7 +282,7 @@ static const struct i2c_device_id light_al3006_id[] = {
 
 static struct i2c_driver light_al3006_driver = {
 	.probe = light_al3006_probe,
-	.remove = light_al3006_remove,
+	.remove = (void *)light_al3006_remove,
 	.shutdown = sensor_shutdown,
 	.id_table = light_al3006_id,
 	.driver = {

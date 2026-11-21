@@ -1,17 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for 93xx46 EEPROMs
  *
  * (C) 2011 DENX Software Engineering, Anatolij Gustschin <agust@denx.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
+#include <linux/log2.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -25,20 +23,36 @@
 #define OP_START	0x4
 #define OP_WRITE	(OP_START | 0x1)
 #define OP_READ		(OP_START | 0x2)
+/* The following addresses are offset for the 1K EEPROM variant in 16-bit mode */
 #define ADDR_EWDS	0x00
 #define ADDR_ERAL	0x20
 #define ADDR_EWEN	0x30
 
 struct eeprom_93xx46_devtype_data {
 	unsigned int quirks;
+	unsigned char flags;
+};
+
+static const struct eeprom_93xx46_devtype_data at93c46_data = {
+	.flags = EE_SIZE1K,
+};
+
+static const struct eeprom_93xx46_devtype_data at93c56_data = {
+	.flags = EE_SIZE2K,
+};
+
+static const struct eeprom_93xx46_devtype_data at93c66_data = {
+	.flags = EE_SIZE4K,
 };
 
 static const struct eeprom_93xx46_devtype_data atmel_at93c46d_data = {
+	.flags = EE_SIZE1K,
 	.quirks = EEPROM_93XX46_QUIRK_SINGLE_WORD_READ |
 		  EEPROM_93XX46_QUIRK_INSTRUCTION_LENGTH,
 };
 
 static const struct eeprom_93xx46_devtype_data microchip_93lc46b_data = {
+	.flags = EE_SIZE1K,
 	.quirks = EEPROM_93XX46_QUIRK_EXTRA_READ_CYCLE,
 };
 
@@ -73,6 +87,7 @@ static int eeprom_93xx46_read(void *priv, unsigned int off,
 	struct eeprom_93xx46_dev *edev = priv;
 	char *buf = val;
 	int err = 0;
+	int bits;
 
 	if (unlikely(off >= edev->size))
 		return 0;
@@ -86,21 +101,21 @@ static int eeprom_93xx46_read(void *priv, unsigned int off,
 	if (edev->pdata->prepare)
 		edev->pdata->prepare(edev);
 
+	/* The opcode in front of the address is three bits. */
+	bits = edev->addrlen + 3;
+
 	while (count) {
 		struct spi_message m;
 		struct spi_transfer t[2] = { { 0 } };
 		u16 cmd_addr = OP_READ << edev->addrlen;
 		size_t nbytes = count;
-		int bits;
 
-		if (edev->addrlen == 7) {
-			cmd_addr |= off & 0x7f;
-			bits = 10;
+		if (edev->pdata->flags & EE_ADDR8) {
+			cmd_addr |= off;
 			if (has_quirk_single_word_read(edev))
 				nbytes = 1;
 		} else {
-			cmd_addr |= (off >> 1) & 0x3f;
-			bits = 9;
+			cmd_addr |= (off >> 1);
 			if (has_quirk_single_word_read(edev))
 				nbytes = 2;
 		}
@@ -155,14 +170,11 @@ static int eeprom_93xx46_ew(struct eeprom_93xx46_dev *edev, int is_on)
 	int bits, ret;
 	u16 cmd_addr;
 
+	/* The opcode in front of the address is three bits. */
+	bits = edev->addrlen + 3;
+
 	cmd_addr = OP_START << edev->addrlen;
-	if (edev->addrlen == 7) {
-		cmd_addr |= (is_on ? ADDR_EWEN : ADDR_EWDS) << 1;
-		bits = 10;
-	} else {
-		cmd_addr |= (is_on ? ADDR_EWEN : ADDR_EWDS);
-		bits = 9;
-	}
+	cmd_addr |= (is_on ? ADDR_EWEN : ADDR_EWDS) << (edev->addrlen - 6);
 
 	if (has_quirk_instruction_length(edev)) {
 		cmd_addr <<= 2;
@@ -208,15 +220,19 @@ eeprom_93xx46_write_word(struct eeprom_93xx46_dev *edev,
 	int bits, data_len, ret;
 	u16 cmd_addr;
 
+	if (unlikely(off >= edev->size))
+		return -EINVAL;
+
+	/* The opcode in front of the address is three bits. */
+	bits = edev->addrlen + 3;
+
 	cmd_addr = OP_WRITE << edev->addrlen;
 
-	if (edev->addrlen == 7) {
-		cmd_addr |= off & 0x7f;
-		bits = 10;
+	if (edev->pdata->flags & EE_ADDR8) {
+		cmd_addr |= off;
 		data_len = 1;
 	} else {
-		cmd_addr |= (off >> 1) & 0x3f;
-		bits = 9;
+		cmd_addr |= (off >> 1);
 		data_len = 2;
 	}
 
@@ -256,7 +272,7 @@ static int eeprom_93xx46_write(void *priv, unsigned int off,
 		return count;
 
 	/* only write even number of bytes on 16-bit devices */
-	if (edev->addrlen == 6) {
+	if (edev->pdata->flags & EE_ADDR16) {
 		step = 2;
 		count &= ~1;
 	}
@@ -298,14 +314,11 @@ static int eeprom_93xx46_eral(struct eeprom_93xx46_dev *edev)
 	int bits, ret;
 	u16 cmd_addr;
 
+	/* The opcode in front of the address is three bits. */
+	bits = edev->addrlen + 3;
+
 	cmd_addr = OP_START << edev->addrlen;
-	if (edev->addrlen == 7) {
-		cmd_addr |= ADDR_ERAL << 1;
-		bits = 10;
-	} else {
-		cmd_addr |= ADDR_ERAL;
-		bits = 9;
-	}
+	cmd_addr |= ADDR_ERAL << (edev->addrlen - 6);
 
 	if (has_quirk_instruction_length(edev)) {
 		cmd_addr <<= 2;
@@ -378,12 +391,32 @@ static void select_deassert(void *context)
 }
 
 static const struct of_device_id eeprom_93xx46_of_table[] = {
-	{ .compatible = "eeprom-93xx46", },
+	{ .compatible = "eeprom-93xx46", .data = &at93c46_data, },
+	{ .compatible = "atmel,at93c46", .data = &at93c46_data, },
 	{ .compatible = "atmel,at93c46d", .data = &atmel_at93c46d_data, },
+	{ .compatible = "atmel,at93c56", .data = &at93c56_data, },
+	{ .compatible = "atmel,at93c66", .data = &at93c66_data, },
 	{ .compatible = "microchip,93lc46b", .data = &microchip_93lc46b_data, },
 	{}
 };
 MODULE_DEVICE_TABLE(of, eeprom_93xx46_of_table);
+
+static const struct spi_device_id eeprom_93xx46_spi_ids[] = {
+	{ .name = "eeprom-93xx46",
+	  .driver_data = (kernel_ulong_t)&at93c46_data, },
+	{ .name = "at93c46",
+	  .driver_data = (kernel_ulong_t)&at93c46_data, },
+	{ .name = "at93c46d",
+	  .driver_data = (kernel_ulong_t)&atmel_at93c46d_data, },
+	{ .name = "at93c56",
+	  .driver_data = (kernel_ulong_t)&at93c56_data, },
+	{ .name = "at93c66",
+	  .driver_data = (kernel_ulong_t)&at93c66_data, },
+	{ .name = "93lc46b",
+	  .driver_data = (kernel_ulong_t)&microchip_93lc46b_data, },
+	{}
+};
+MODULE_DEVICE_TABLE(spi, eeprom_93xx46_spi_ids);
 
 static int eeprom_93xx46_probe_dt(struct spi_device *spi)
 {
@@ -429,6 +462,7 @@ static int eeprom_93xx46_probe_dt(struct spi_device *spi)
 		const struct eeprom_93xx46_devtype_data *data = of_id->data;
 
 		pd->quirks = data->quirks;
+		pd->flags |= data->flags;
 	}
 
 	spi->dev.platform_data = pd;
@@ -454,18 +488,28 @@ static int eeprom_93xx46_probe(struct spi_device *spi)
 		return -ENODEV;
 	}
 
-	edev = kzalloc(sizeof(*edev), GFP_KERNEL);
+	edev = devm_kzalloc(&spi->dev, sizeof(*edev), GFP_KERNEL);
 	if (!edev)
 		return -ENOMEM;
 
+	if (pd->flags & EE_SIZE1K)
+		edev->size = 128;
+	else if (pd->flags & EE_SIZE2K)
+		edev->size = 256;
+	else if (pd->flags & EE_SIZE4K)
+		edev->size = 512;
+	else {
+		dev_err(&spi->dev, "unspecified size\n");
+		return -EINVAL;
+	}
+
 	if (pd->flags & EE_ADDR8)
-		edev->addrlen = 7;
+		edev->addrlen = ilog2(edev->size);
 	else if (pd->flags & EE_ADDR16)
-		edev->addrlen = 6;
+		edev->addrlen = ilog2(edev->size) - 1;
 	else {
 		dev_err(&spi->dev, "unspecified address type\n");
-		err = -EINVAL;
-		goto fail;
+		return -EINVAL;
 	}
 
 	mutex_init(&edev->lock);
@@ -473,7 +517,7 @@ static int eeprom_93xx46_probe(struct spi_device *spi)
 	edev->spi = spi;
 	edev->pdata = pd;
 
-	edev->size = 128;
+	edev->nvmem_config.type = NVMEM_TYPE_EEPROM;
 	edev->nvmem_config.name = dev_name(&spi->dev);
 	edev->nvmem_config.dev = &spi->dev;
 	edev->nvmem_config.read_only = pd->flags & EE_READONLY;
@@ -488,14 +532,13 @@ static int eeprom_93xx46_probe(struct spi_device *spi)
 	edev->nvmem_config.word_size = 1;
 	edev->nvmem_config.size = edev->size;
 
-	edev->nvmem = nvmem_register(&edev->nvmem_config);
-	if (IS_ERR(edev->nvmem)) {
-		err = PTR_ERR(edev->nvmem);
-		goto fail;
-	}
+	edev->nvmem = devm_nvmem_register(&spi->dev, &edev->nvmem_config);
+	if (IS_ERR(edev->nvmem))
+		return PTR_ERR(edev->nvmem);
 
-	dev_info(&spi->dev, "%d-bit eeprom %s\n",
+	dev_info(&spi->dev, "%d-bit eeprom containing %d bytes %s\n",
 		(pd->flags & EE_ADDR8) ? 8 : 16,
+		edev->size,
 		(pd->flags & EE_READONLY) ? "(readonly)" : "");
 
 	if (!(pd->flags & EE_READONLY)) {
@@ -505,22 +548,14 @@ static int eeprom_93xx46_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, edev);
 	return 0;
-fail:
-	kfree(edev);
-	return err;
 }
 
-static int eeprom_93xx46_remove(struct spi_device *spi)
+static void eeprom_93xx46_remove(struct spi_device *spi)
 {
 	struct eeprom_93xx46_dev *edev = spi_get_drvdata(spi);
 
-	nvmem_unregister(edev->nvmem);
-
 	if (!(edev->pdata->flags & EE_READONLY))
 		device_remove_file(&spi->dev, &dev_attr_erase);
-
-	kfree(edev);
-	return 0;
 }
 
 static struct spi_driver eeprom_93xx46_driver = {
@@ -530,6 +565,7 @@ static struct spi_driver eeprom_93xx46_driver = {
 	},
 	.probe		= eeprom_93xx46_probe,
 	.remove		= eeprom_93xx46_remove,
+	.id_table	= eeprom_93xx46_spi_ids,
 };
 
 module_spi_driver(eeprom_93xx46_driver);
@@ -539,3 +575,4 @@ MODULE_DESCRIPTION("Driver for 93xx46 EEPROMs");
 MODULE_AUTHOR("Anatolij Gustschin <agust@denx.de>");
 MODULE_ALIAS("spi:93xx46");
 MODULE_ALIAS("spi:eeprom-93xx46");
+MODULE_ALIAS("spi:93lc46b");

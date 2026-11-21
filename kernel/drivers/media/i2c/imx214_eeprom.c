@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Copyright (c) 2022 Fuzhou Rockchip Electronics Co., Ltd.
+// Copyright (c) 2022 Rockchip Electronics Co., Ltd.
 
 #include <linux/delay.h>
 #include <linux/i2c.h>
@@ -321,7 +321,7 @@ static int imx214_eeprom_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int imx214_eeprom_remove(struct i2c_client *client)
+static void imx214_eeprom_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx214_eeprom_device *imx214_eeprom_dev =
@@ -329,8 +329,6 @@ static int imx214_eeprom_remove(struct i2c_client *client)
 	kfree(imx214_eeprom_dev->otp);
 	pm_runtime_disable(&client->dev);
 	imx214_eeprom_subdev_cleanup(imx214_eeprom_dev);
-
-	return 0;
 }
 
 static int __maybe_unused imx214_eeprom_suspend(struct device *dev)
@@ -374,4 +372,4 @@ static struct i2c_driver imx214_eeprom_i2c_driver = {
 module_i2c_driver(imx214_eeprom_i2c_driver);
 
 MODULE_DESCRIPTION("IMX214 OTP driver");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

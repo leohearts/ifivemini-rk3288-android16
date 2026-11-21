@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
+ * Copyright (C) Rockchip Electronics Co., Ltd.
  * Author Huicong Xu <xhc@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -15,6 +15,8 @@
 #ifndef DW_HDMI_HDCP_H
 #define DW_HDMI_HDCP_H
 
+#include <linux/miscdevice.h>
+
 #define DW_HDCP_DRIVER_NAME "dw-hdmi-hdcp"
 #define HDCP_PRIVATE_KEY_SIZE   280
 #define HDCP_KEY_SHA_SIZE       20
@@ -26,13 +28,11 @@ struct hdcp_keys {
 };
 
 struct dw_hdcp {
-	bool enable;
 	int retry_times;
 	int remaining_times;
 	char *seeds;
 	int invalidkey;
 	char *invalidkeys;
-	int hdcp2_enable;
 	int status;
 	u32 reg_io_width;
 

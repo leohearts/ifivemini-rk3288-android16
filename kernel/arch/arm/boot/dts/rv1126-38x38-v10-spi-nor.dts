@@ -264,7 +264,7 @@
 
 &i2s0_8ch {
 	status = "okay";
-	rockchip,clk-trcm = <1>;
+	rockchip,trcm-sync-tx-only;
 	#sound-dai-cells = <0>;
 	pinctrl-0 = <&i2s0m0_sclk_tx
 		     &i2s0m0_lrck_tx
@@ -447,11 +447,20 @@
 	cap-sd-highspeed;
 	card-detect-delay = <200>;
 	rockchip,default-sample-phase = <90>;
-	supports-sd;
+	no-sdio;
+	no-mmc;
 	status = "okay";
 	vmmc-supply = <&vcc_sd>;
 };
 
 &sfc {
 	status = "okay";
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <100000000>;
+		spi-rx-bus-width = <2>;
+		spi-tx-bus-width = <2>;
+	};
 };
