@@ -31,6 +31,9 @@ lib/hw/hwcomposer.rk30board.so    0100644  0:0     u:object_r:vendor_hal_file:s0
 lib/hw/android.hardware.graphics.allocator@4.0-impl-midgard.so 0100644 0:0 u:object_r:same_process_hal_file:s0
 lib/hw/android.hardware.graphics.mapper@4.0-impl-midgard.so 0100644 0:0 u:object_r:same_process_hal_file:s0
 lib/modules/bcmdhd.ko            0100644  0:0     u:object_r:vendor_file:s0
+lib/modules/modules.load         0100644  0:0     u:object_r:vendor_file:s0
+lib/modules/modules.dep          0100644  0:0     u:object_r:vendor_file:s0
+lib/modules/modules.alias        0100644  0:0     u:object_r:vendor_file:s0
 etc/init/hw/init.rk3288.rc        0100644  0:0     u:object_r:vendor_configs_file:s0
 etc/init/hw/init.connectivity.rc 0100644  0:0     u:object_r:vendor_configs_file:s0
 etc/init/hw/init.rk30board.rc    0100644  0:0     u:object_r:vendor_configs_file:s0
@@ -59,6 +62,9 @@ priv-app/IfiveSettings            040755   0:2000  u:object_r:vendor_app_file:s0
 "
 
 cp "$IN" "$OUT"
+# Any exit before the final "OK" leaves no image behind, so a failed patch
+# cannot be flashed by mistake.
+trap 'rm -f "$OUT"' EXIT
 
 while read -r path mode owner label; do
     [ -n "$path" ] || continue
@@ -75,7 +81,9 @@ done <<< "$DIRS"
 # files earlier packages added that no longer exist in vendor-changes/; the Tinker
 # Board service for /vendor/bin/install-recovery.sh, which this vendor lacks; and
 # the OP-TEE services (gatekeeper, weaver, tee-supplicant): this board has no TEE
+# 8723cs/8723ds: Realtek Wi-Fi modules for other Tinker Board variants, built for 4.19.
 REMOVE="bin/chgpolicy.sh etc/init/vendor_flash_recovery.rc
+lib/modules/8723cs.ko lib/modules/8723ds.ko
 etc/init/android.hardware.gatekeeper@1.0-service.optee.rc
 etc/vintf/manifest/android.hardware.gatekeeper@1.0-service.optee.xml
 etc/init/android.hardware.weaver@1.0-service.rc
@@ -142,4 +150,5 @@ rm -f "$OUT.chk"
 echo "== filesystem check"
 e2fsck -fy "$OUT" >/dev/null 2>&1 || true
 e2fsck -fn "$OUT" >/dev/null
+trap - EXIT
 echo "OK: patched vendor image: $OUT"
