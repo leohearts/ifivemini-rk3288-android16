@@ -97,6 +97,7 @@ struct rkld_seg {
 static int rklogdump_test;
 /* rklogdump_period=<sec>: rewrite kpanic every N s, 0 = off. */
 static unsigned int rklogdump_period = CONFIG_RK_LOGDUMP_PERIOD_DEFAULT;
+static unsigned int rklogdump_max;
 /* rklogdump_restart=1: test only. After a dump with no previous console
  * data (first boot of a QEMU session), reboot once so the next boot has a
  * previous console to dump. */
@@ -534,6 +535,9 @@ static int rkld_period_thread(void *unused)
 			wait_ms = rklogdump_period * 1000;
 		}
 		mutex_unlock(&rkld_lock);
+		/* rklogdump_max=N keeps the first N dumps (early boot) */
+		if (rklogdump_max && seq >= rklogdump_max)
+			break;
 		msleep(wait_ms);
 	}
 	return 0;
@@ -607,6 +611,15 @@ static int __init rklogdump_period_setup(char *str)
 }
 __setup("rklogdump_period=", rklogdump_period_setup);
 
+/* rklogdump_max=<n>: stop the periodic dump after n writes, 0 = never. */
+static int __init rklogdump_max_setup(char *str)
+{
+	if (kstrtouint(str, 0, &rklogdump_max))
+		rklogdump_max = 0;
+	return 1;
+}
+__setup("rklogdump_max=", rklogdump_max_setup);
+
 /*
  * Reboot notifiers run in process context from kernel_restart_prepare() /
  * kernel_power_off(), before device_shutdown(), so eMMC is still usable and
@@ -617,7 +630,8 @@ static int rkld_reboot_notify(struct notifier_block *nb, unsigned long event,
 {
 	static atomic_t done = ATOMIC_INIT(0);
 
-	if (atomic_xchg(&done, 1))
+	/* rklogdump_max keeps the early-boot dump; do not overwrite it */
+	if (rklogdump_max || atomic_xchg(&done, 1))
 		return NOTIFY_DONE;
 	rk_logdump_to_kpanic(event == SYS_RESTART ? "restart" : "poweroff");
 	return NOTIFY_DONE;

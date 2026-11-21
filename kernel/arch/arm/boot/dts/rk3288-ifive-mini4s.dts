@@ -34,7 +34,7 @@
 	};
 
 	chosen {
-		bootargs = "console=ttyFIQ0 console=tty0 fbcon=font:SUN12x22 androidboot.hardware=rk30board androidboot.boot_devices=ff0f0000.mmc androidboot.super_partition=system androidboot.selinux=permissive blkdevparts=mmcblk0:4M@8M(uboot),4M@12M(misc),16M@16M(resource),16M@32M(kernel),32M@48M(boot),32M@80M(recovery),52M@112M(backup),128M@164M(cache),4M@292M(kpanic),3072M@296M(system),16M@3368M(metadata),64M@3384M(radical_update),-@3448M(userdata) loglevel=7 printk.time=1 androidboot.storagemedia=emmc androidboot.fstab_suffix=rk30board.emmc log_buf_len=1M androidboot.serialno=RK3288IFIVE01 rkwdt=1 rkwdt_loader=1 rkwdt_sgrf=0x00420000 rkdeadline=600 rkdeadline_hold=30 softlockup_panic=1 clk_ignore_unused";
+		bootargs = "console=ttyFIQ0 console=tty0 fbcon=font:SUN12x22 androidboot.hardware=rk30board androidboot.boot_devices=ff0f0000.mmc androidboot.super_partition=system androidboot.selinux=permissive blkdevparts=mmcblk0:4M@8M(uboot),4M@12M(misc),16M@16M(resource),16M@32M(kernel),32M@48M(boot),32M@80M(recovery),52M@112M(backup),128M@164M(cache),4M@292M(kpanic),3072M@296M(system),16M@3368M(metadata),64M@3384M(radical_update),-@3448M(userdata) loglevel=7 printk.time=1 androidboot.storagemedia=emmc androidboot.fstab_suffix=rk30board.emmc log_buf_len=1M androidboot.serialno=RK3288IFIVE01 rkwdt=1 rkwdt_loader=1 rkwdt_sgrf=0x00420000 rkdeadline=600 rkdeadline_hold=30 softlockup_panic=1 clk_ignore_unused rklogdump_max=5";
 	};
 
 	/* Framebuffer driver node used by the bootloader logo path. */
