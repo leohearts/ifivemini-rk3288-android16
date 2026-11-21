@@ -430,6 +430,14 @@ config TOUCHSCREEN_GSL3673_800X1280
 	help
 	  gsl3673 touchpad driver
 
+config TOUCHSCREEN_GSLX680_FIREFLY
+	tristate "gslX680 touchpad driver for iFive mini 4S"
+	depends on I2C && OF && GPIOLIB
+	help
+	  Silead gslX680 touch controller with the iFive mini 4S panel
+	  firmware.  Shares gsl_point_id.o with the other gsl drivers, so
+	  enable only one of them.
+
 config TOUCHSCREEN_GSLX680_PAD
 	tristate "gslX680 touchpad driver for pad"
 	help

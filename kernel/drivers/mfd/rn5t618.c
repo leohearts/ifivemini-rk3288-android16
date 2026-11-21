@@ -28,6 +28,7 @@ static const struct mfd_cell rc5t619_cells[] = {
 	{ .name = "rn5t618-power" },
 	{ .name = "rn5t618-regulator" },
 	{ .name = "rc5t619-rtc" },
+	{ .name = "rc5t619-pwrkey" },
 	{ .name = "rn5t618-wdt" },
 };
 
@@ -37,6 +38,8 @@ static bool rn5t618_volatile_reg(struct device *dev, unsigned int reg)
 	case RN5T618_WATCHDOGCNT:
 	case RN5T618_DCIRQ:
 	case RN5T618_ILIMDATAH ... RN5T618_AIN0DATAL:
+	case RN5T618_PWRIRQ:
+	case RN5T618_PWRMON:
 	case RN5T618_ADCCNT3:
 	case RN5T618_IR_ADC1 ... RN5T618_IR_ADC3:
 	case RN5T618_IR_GPR:
@@ -80,8 +83,7 @@ static const struct regmap_irq_chip rc5t619_irq_chip = {
 	.num_irqs = ARRAY_SIZE(rc5t619_irqs),
 	.num_regs = 1,
 	.status_base = RN5T618_INTMON,
-	.mask_base = RN5T618_INTEN,
-	.mask_invert = true,
+	.unmask_base = RN5T618_INTEN,
 };
 
 static struct i2c_client *rn5t618_pm_power_off;
@@ -182,6 +184,7 @@ static int rn5t618_i2c_probe(struct i2c_client *i2c)
 {
 	const struct of_device_id *of_id;
 	struct rn5t618 *priv;
+	u32 out32k;
 	int ret;
 
 	of_id = of_match_device(rn5t618_of_match, &i2c->dev);
@@ -205,6 +208,24 @@ static int rn5t618_i2c_probe(struct i2c_client *i2c)
 		dev_err(&i2c->dev, "regmap init failed: %d\n", ret);
 		return ret;
 	}
+
+	/*
+	 * 32 kHz clock outputs.  Boards that feed a Wi-Fi module LPO from a
+	 * second output need it switched on (the vendor RC5T619 driver
+	 * writes 0x07 here); leave the register alone when not described.
+	 */
+	if (!of_property_read_u32(i2c->dev.of_node, "ricoh,out32ken", &out32k)) {
+		ret = regmap_write(priv->regmap, RN5T618_OUT32KEN, out32k);
+		if (ret) {
+			dev_err(&i2c->dev, "OUT32KEN write failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	/* The sub-devices look up their interrupts in irq_data at probe. */
+	ret = rn5t618_irq_init(priv);
+	if (ret)
+		return ret;
 
 	if (priv->variant == RC5T619)
 		ret = devm_mfd_add_devices(&i2c->dev, PLATFORM_DEVID_NONE,
@@ -238,7 +259,7 @@ static int rn5t618_i2c_probe(struct i2c_client *i2c)
 		return ret;
 	}
 
-	return rn5t618_irq_init(priv);
+	return 0;
 }
 
 static void rn5t618_i2c_remove(struct i2c_client *i2c)
