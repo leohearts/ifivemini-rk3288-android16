@@ -618,7 +618,8 @@ static int rkwdt_deadline_fn(void *unused)
 
 static int __init rk_wdt_backstop_kick_init(void)
 {
-	struct sched_param param = { .sched_priority = 1 };
+	/* top RT priority: Android RT threads must not starve the kicks */
+	struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
 	struct sched_param dl_param = { .sched_priority = 2 };
 	struct task_struct *dl_task;
 
