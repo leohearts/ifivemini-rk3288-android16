@@ -107,12 +107,75 @@
 		status = "disabled";
 	};
 
-	bus_intmem@ff700000 {
+	sram@ff700000 {
+		status = "disabled";
+
+		/* DDR rate change code, copied there by the dmc-cros driver */
+		ddr_sram: ddr-sram@1000 {
+			compatible = "rockchip,rk3288-ddr-sram";
+			reg = <0x1000 0x4000>;
+		};
+	};
+
+	/* Resume blob for deep sleep (pm.c); no mmio-sram pool on it */
+	sram@ff720000 {
 		status = "disabled";
 	};
 
-	sram@ff720000 {
-		status = "disabled";
+	/* Memory scheduler registers, saved/restored by deep sleep and dmc-cros */
+	noc: syscon@ffac0000 {
+		compatible = "rockchip,rk3288-noc", "syscon";
+		reg = <0x0 0xffac0000 0x0 0x2000>;
+	};
+
+	/*
+	 * DDR DVFS without secure firmware (ChromeOS rk3288 dmc, driver
+	 * CONFIG_ARM_RK3288_DMC_DEVFREQ) and the register set deep sleep
+	 * restores the DDR controller from.  The Rockchip BSP dmc driver
+	 * ("rockchip,rk3288-dmc") needs SIP calls into trusted firmware that
+	 * this board does not have, so it is not described here.
+	 * The driver boots on the "userspace" devfreq governor and keeps the
+	 * bootloader's 396 MHz; vendor init.rk3288.rc sets 456 MHz (the stock
+	 * 3.10 firmware's NORMAL rate) once boot completes.
+	 * operating-points: kHz, vdd_logic uV from the stock 3.10 DTB
+	 * (dvfs/pd_ddr/clk_ddr).  528 MHz (stock PERFORMANCE) is left out: on
+	 * this board it ended in SurfaceFlinger SIGILL under load within
+	 * ~1.5 min.  The driver never sets vdd_logic below the voltage found
+	 * at boot and restores exactly that voltage at the boot rate.
+	 * auto-power-down-cnt 64 / auto-self-refresh-cnt 0 = stock PD_IDLE
+	 * 0x40 / SR_IDLE 0 (ddr_rk32.c); pd-enable-freq covers every OPP like
+	 * stock.  odt/dll-disable-freq, ddr-speed-bin, trcd and trp are
+	 * DDR3-only inputs (ChromeOS veyron values), unused on LPDDR2.
+	 */
+	dmc-cros@ff610000 {
+		compatible = "rockchip,rk3288-cros-dmc";
+		reg = <0x0 0xff610000 0x0 0x3fc>,
+		      <0x0 0xff620000 0x0 0x294>,
+		      <0x0 0xff630000 0x0 0x3fc>,
+		      <0x0 0xff640000 0x0 0x294>;
+		rockchip,cru = <&cru>;
+		rockchip,grf = <&grf>;
+		rockchip,pmu = <&pmu>;
+		rockchip,sgrf = <&sgrf>;
+		rockchip,service_bus = <&noc>;
+		rockchip,sram = <&ddr_sram>;
+		clocks = <&cru PCLK_DDRUPCTL0>, <&cru PCLK_PUBL0>,
+			 <&cru PCLK_DDRUPCTL1>, <&cru PCLK_PUBL1>,
+			 <&cru ACLK_DMAC1>;
+		clock-names = "pclk_ddrupctl0", "pclk_publ0",
+			      "pclk_ddrupctl1", "pclk_publ1",
+			      "aclk_dmac1";
+		logic-supply = <&vdd_logic>;
+		operating-points = <396000 1075000>, <456000 1150000>;
+		rockchip,odt-disable-freq = <333000000>;
+		rockchip,dll-disable-freq = <333000000>;
+		rockchip,sr-enable-freq = <333000000>;
+		rockchip,pd-enable-freq = <600000000>;
+		rockchip,auto-self-refresh-cnt = <0>;
+		rockchip,auto-power-down-cnt = <64>;
+		rockchip,ddr-speed-bin = <21>;
+		rockchip,trcd = <10>;
+		rockchip,trp = <10>;
 	};
 
 	display-subsystem {

@@ -43,6 +43,9 @@
 #include <drm/bridge/analogix_dp.h>
 #endif
 
+#if IS_ENABLED(CONFIG_ARM_RK3288_DMC_DEVFREQ)
+#include <soc/rockchip/dmc-sync.h>
+#endif
 #include <soc/rockchip/rockchip_dmc.h>
 #include <soc/rockchip/rockchip_system_monitor.h>
 #include <soc/rockchip/rockchip-system-status.h>
@@ -313,6 +316,15 @@ struct vop {
 	unsigned long pending;
 
 	struct completion line_flag_completion;
+#if IS_ENABLED(CONFIG_ARM_RK3288_DMC_DEVFREQ)
+	/* Time of the last LINE_FLAG (vact_end) interrupt */
+	ktime_t line_flag_timestamp;
+	/* Vertical blanking time of the current mode, in ns */
+	u64 vblank_time;
+	/* dmc-sync notifier, registered while the crtc is enabled */
+	struct notifier_block dmc_nb;
+	bool dmc_nb_registered;
+#endif
 
 	const struct vop_data *data;
 	int num_wins;
@@ -2184,6 +2196,13 @@ static void vop_crtc_atomic_disable(struct drm_crtc *crtc,
 		vop_crtc_atomic_disable_for_psr(crtc, old_state);
 		goto out;
 	}
+
+#if IS_ENABLED(CONFIG_ARM_RK3288_DMC_DEVFREQ)
+	if (vop->dmc_nb_registered) {
+		rockchip_dmc_put(&vop->dmc_nb);
+		vop->dmc_nb_registered = false;
+	}
+#endif
 
 	vop_lock(vop);
 	if (s->hold_mode) {
@@ -4360,6 +4379,14 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	if (vop->version == VOP_VERSION_RK3368 || vop->version == VOP_VERSION_RK3328)
 		for_ddr_freq = 1000;
 	VOP_INTR_SET(vop, line_flag_num[0], act_end);
+#if IS_ENABLED(CONFIG_ARM_RK3288_DMC_DEVFREQ)
+	/* LINE_FLAG fires at act_end; from there until the next active line */
+	vop->vblank_time = adjusted_mode->crtc_clock ?
+		div_u64((u64)(adjusted_mode->crtc_vtotal -
+			      adjusted_mode->crtc_vdisplay) *
+			adjusted_mode->crtc_htotal * NSEC_PER_SEC,
+			adjusted_mode->crtc_clock * 1000) : 0;
+#endif
 	VOP_INTR_SET(vop, line_flag_num[1],
 		     act_end - us_to_vertical_line(adjusted_mode, for_ddr_freq));
 
@@ -4377,6 +4404,11 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 
 	drm_crtc_vblank_on(crtc);
 	vop_unlock(vop);
+
+#if IS_ENABLED(CONFIG_ARM_RK3288_DMC_DEVFREQ)
+	if (!vop->dmc_nb_registered && !rockchip_dmc_get(&vop->dmc_nb))
+		vop->dmc_nb_registered = true;
+#endif
 }
 
 static int vop_zpos_cmp(const void *a, const void *b)
@@ -5410,6 +5442,9 @@ static irqreturn_t vop_isr(int irq, void *data)
 	}
 
 	if (active_irqs & LINE_FLAG_INTR) {
+#if IS_ENABLED(CONFIG_ARM_RK3288_DMC_DEVFREQ)
+		vop->line_flag_timestamp = ktime_get();
+#endif
 		complete(&vop->line_flag_completion);
 		active_irqs &= ~LINE_FLAG_INTR;
 		ret = IRQ_HANDLED;
@@ -5984,6 +6019,42 @@ static int vop_win_init(struct vop *vop)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_ARM_RK3288_DMC_DEVFREQ)
+/*
+ * dmc-sync callback, called right before a DDR rate change with the dmc-sync
+ * lock held. Waits for the LINE_FLAG interrupt at the end of the active area
+ * and returns, in @data, the deadline the rate change has to meet: the change
+ * must start inside this mode's vertical blanking and may then take up to
+ * DMC_SET_RATE_TIME_NS (the budget the DMC driver subtracts from the deadline
+ * before pausing the other CPUs).
+ *
+ * ChromeOS uses vblank_time alone as the window and refuses DDR DVFS for modes
+ * whose vblank is shorter than DMC_MIN_VBLANK_NS. The iFive Mini 4S panel has
+ * 24 blank lines (~194 us at 230 MHz), so with the ChromeOS window no change
+ * could ever start; a change that outlasts the blanking may disturb the top
+ * lines of one frame instead.
+ */
+static int dmc_notify(struct notifier_block *nb, unsigned long action,
+		      void *data)
+{
+	struct vop *vop = container_of(nb, struct vop, dmc_nb);
+	ktime_t *timeout = data;
+	int ret;
+
+	ret = rockchip_drm_wait_vact_end(&vop->rockchip_crtc.crtc, 100);
+	if (ret) {
+		dev_err(vop->dev, "%s: Line flag interrupt did not arrive: %d\n",
+			__func__, ret);
+		return NOTIFY_BAD;
+	}
+
+	*timeout = ktime_add_ns(vop->line_flag_timestamp,
+				vop->vblank_time + DMC_SET_RATE_TIME_NS);
+
+	return NOTIFY_STOP;
+}
+#endif
+
 static int vop_bind(struct device *dev, struct device *master, void *data)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -6094,6 +6165,9 @@ static int vop_bind(struct device *dev, struct device *master, void *data)
 	spin_lock_init(&vop->reg_lock);
 	spin_lock_init(&vop->irq_lock);
 	mutex_init(&vop->vop_lock);
+#if IS_ENABLED(CONFIG_ARM_RK3288_DMC_DEVFREQ)
+	vop->dmc_nb.notifier_call = dmc_notify;
+#endif
 
 	ret = vop_create_crtc(vop);
 	if (ret)
