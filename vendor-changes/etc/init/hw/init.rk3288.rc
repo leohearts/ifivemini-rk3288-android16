@@ -15,11 +15,6 @@ on init
     write /proc/sys/vm/swappiness 100
     write /sys/block/zram0/comp_algorithm lz4
 
-on property:sys.boot_completed=1
-    # recover cpu&ddr fre.
-    chmod  0644 /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
-    write /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor interactive
-
 # DDR: the kernel keeps the bootloader's 396 MHz (rk3288 cros DMC, userspace
 # devfreq governor). 456 MHz is the stock firmware's NORMAL rate; the memory bus
 # saturates at 396 MHz during UI animations. Set after boot; while no display
@@ -66,8 +61,6 @@ on boot
     chmod 0660 /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq
     chown system system /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq
     chmod 0660 /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq
-    chown system system  /sys/devices/system/cpu/cpufreq/interactive/boostpulse
-    chmod 0660 /sys/devices/system/cpu/cpufreq/interactive/boostpulse
   
 
 # Rockchip SPDIF toggle (persist.spdif_sounds=1) mutes the speaker: no SPDIF card on this board
