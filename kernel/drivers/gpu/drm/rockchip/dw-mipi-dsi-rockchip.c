@@ -1798,6 +1798,17 @@ static const struct rockchip_dw_dsi_chip_data rk3288_chip_data[] = {
 		.lcdsel_big = HIWORD_UPDATE(0, RK3288_DSI0_LCDC_SEL),
 		.lcdsel_lit = HIWORD_UPDATE(RK3288_DSI0_LCDC_SEL, RK3288_DSI0_LCDC_SEL),
 
+		/*
+		 * Clear TURNDISABLE/FORCERXMODE/FORCETXSTOPMODE (GRF_SOC_CON14)
+		 * and TURNREQUEST (GRF_SOC_CON15); the boot loader's logo
+		 * setup can leave them set, which keeps the clock lane out of
+		 * stop state. Same writes as the Rockchip 4.19 driver.
+		 */
+		.lanecfg1_grf_reg = 0x0264,
+		.lanecfg1 = HIWORD_UPDATE(0, 0xfff),
+		.lanecfg2_grf_reg = 0x03a4,
+		.lanecfg2 = HIWORD_UPDATE(0, 0x7 << 8),
+
 		.max_data_lanes = 4,
 		.max_bit_rate_per_lane = 1500000000UL,
 		.soc_type = RK3288,
@@ -1807,6 +1818,18 @@ static const struct rockchip_dw_dsi_chip_data rk3288_chip_data[] = {
 		.lcdsel_grf_reg = RK3288_GRF_SOC_CON6,
 		.lcdsel_big = HIWORD_UPDATE(0, RK3288_DSI1_LCDC_SEL),
 		.lcdsel_lit = HIWORD_UPDATE(RK3288_DSI1_LCDC_SEL, RK3288_DSI1_LCDC_SEL),
+
+		/*
+		 * TX1RX1 D-PHY: request inputs clear and 4 data lanes enabled
+		 * (GRF_SOC_CON15), master, TX direction, clock lane enabled
+		 * (GRF_SOC_CON23), TURNREQUEST clear. As the Rockchip 4.19 driver.
+		 */
+		.lanecfg1_grf_reg = 0x0268,
+		.lanecfg1 = HIWORD_UPDATE(0xf << 12, 0xffff),
+		.lanecfg2_grf_reg = 0x027c,
+		.lanecfg2 = HIWORD_UPDATE(BIT(14) | BIT(12), BIT(15) | BIT(14) | BIT(12)),
+		.enable_grf_reg = 0x03a4,
+		.enable = HIWORD_UPDATE(0, 0xf << 4),
 
 		.max_data_lanes = 4,
 		.max_bit_rate_per_lane = 1500000000UL,
