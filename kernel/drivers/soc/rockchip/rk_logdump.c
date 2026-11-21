@@ -40,7 +40,9 @@
 #include <linux/blkdev.h>
 #include <linux/io.h>
 #include <linux/kconfig.h>
+#include <linux/kmsg_dump.h>
 #include <linux/kthread.h>
+#include <linux/vmalloc.h>
 #include <linux/init.h>
 #include <linux/mutex.h>
 #include <linux/printk.h>
@@ -79,6 +81,7 @@ static const char *rkld_prev_console(size_t *len)
 /* Leaves room for the 512-byte alignment of sect_off. */
 #define RKLD_PAYLOAD_MAX	(RKLD_PART_BYTES - RKLD_PRE_SIZE - RKLD_SECTS_MAX - RKLD_HDR_SIZE)
 #define RKLD_CHUNK_PAGES	64
+#define RKLD_TEXT_MAX		(1024 * 1024)	/* formatted printk text per dump */
 #define RKLD_MAX_SEGS		6	/* pre, log, sect_ram, ram, sect_prev, prev */
 #define RKLD_FIND_WAIT_MS	15000	/* poll for kpanic this long before giving up */
 #define RKLD_RETRY_MS		500	/* kpanic poll interval of the periodic dump */
@@ -356,8 +359,25 @@ static int rkld_dump(dev_t devt, const char *reason, u32 seq, bool sections)
 	int nseg = 0;
 	int ret = 0;
 
-	log = log_buf_addr_get();
-	loglen = log_buf_len_get();
+	/*
+	 * 6.1 keeps timestamps in the ringbuffer descriptors, not in the text
+	 * area log_buf_addr_get() returns, so take the formatted lines
+	 * ("[    1.234567] ...") from kmsg_dump instead: the newest that fit.
+	 */
+	{
+		static char *text;
+		struct kmsg_dump_iter iter;
+		size_t n = 0;
+
+		if (!text)
+			text = vmalloc(RKLD_TEXT_MAX);
+		if (!text)
+			return -ENOMEM;
+		kmsg_dump_rewind(&iter);
+		kmsg_dump_get_buffer(&iter, false, text, RKLD_TEXT_MAX, &n);
+		log = text;
+		loglen = n;
+	}
 	payload_len = min_t(size_t, loglen, RKLD_PAYLOAD_MAX);
 	sect_off = roundup(RKLD_PRE_SIZE + payload_len, RKLD_SECT_HDR);
 	sect_end = sect_off;
