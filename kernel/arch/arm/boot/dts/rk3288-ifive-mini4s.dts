@@ -1252,3 +1252,13 @@
 &cpu1 { /delete-property/ enable-method; };
 &cpu2 { /delete-property/ enable-method; };
 &cpu3 { /delete-property/ enable-method; };
+
+/*
+ * As on 4.19: no reboot-mode driver. It writes BOOT_NORMAL (0x5242c300) into
+ * PMU_SYS_REG0 on every reboot and panic (there is no mode-panic here), which
+ * replaces the loader flag the decompressor and rk_wdt_backstop set, so a
+ * panicking test kernel reboots into itself instead of Loader mode.
+ */
+&pmu {
+	/delete-node/ reboot-mode;
+};
