@@ -1,7 +1,7 @@
 # iFive mini 4S — Android 16, {{DATE}}
 
 - System: {{SYSTEM}}, with the ASUS Tinker Board Android 11 vendor partition and this project's changes.
-- Kernel: Linux 4.19.
+- Kernel: Linux 6.1 (Rockchip develop-6.1). Graphics buffers come from dma-buf heaps.
 - Boot partition: {{BOOT}}.
 
 ## What you need
@@ -95,4 +95,5 @@ The scripts read these addresses from `manifest.json`, which the build makes fro
 ## Known issues
 
 - The landscape app drawer still drops frames: launcher3 clips themed icons on the CPU. Picking the circle icon shape helps a lot.
-- Rarely, the tablet hard hangs. The kernel keeps a log in the `kpanic` partition.
+- If the kernel panics it keeps a log in the `kpanic` partition.
+- Once, Wi-Fi failed to turn on for a whole boot; a reboot fixed it.
