@@ -1467,6 +1467,45 @@ static int rt5616_i2c_probe(struct i2c_client *i2c)
 	regmap_update_bits(rt5616->regmap, RT5616_PWR_ANLG1,
 			   RT5616_PWR_LDO_DVO_MASK, RT5616_PWR_LDO_DVO_1_2V);
 
+	/*
+	 * Boards whose audio HAL never programs the codec mixer get a usable
+	 * playback path at boot: IF1 DAC -> stereo DAC mixer -> HPO and LOUT
+	 * mixers, HP/LOUT unmuted at 0 dB.  DAPM picks these up as the
+	 * initial switch states, so they stay user-adjustable.
+	 */
+	if (of_property_read_bool(i2c->dev.of_node,
+				  "realtek,default-dac-routing")) {
+		regmap_update_bits(rt5616->regmap, RT5616_AD_DA_MIXER,
+				   RT5616_M_IF1_DAC_L | RT5616_M_IF1_DAC_R, 0);
+		regmap_update_bits(rt5616->regmap, RT5616_STO_DAC_MIXER,
+				   RT5616_M_DAC_L1_MIXL | RT5616_M_DAC_R1_MIXR,
+				   0);
+		regmap_update_bits(rt5616->regmap, RT5616_HPO_MIXER,
+				   RT5616_M_DAC1_HM, 0);
+		regmap_update_bits(rt5616->regmap, RT5616_LOUT_MIXER,
+				   RT5616_M_DAC_L1_LM | RT5616_M_DAC_R1_LM, 0);
+		regmap_write(rt5616->regmap, RT5616_HP_VOL, 0x0808);
+		regmap_write(rt5616->regmap, RT5616_LOUT_CTRL1, 0x0808);
+	}
+
+	/*
+	 * Same for capture: IN2 (BST2) -> RECMIXL/R -> ADC -> Stereo1 ADC
+	 * mixer, with the ADC boost/volume the vendor HAL used for its main
+	 * mic (+36 dB boost, 0x20 digital).
+	 */
+	if (of_property_read_bool(i2c->dev.of_node,
+				  "realtek,default-adc-routing")) {
+		regmap_update_bits(rt5616->regmap, RT5616_REC_L2_MIXER,
+				   RT5616_M_BST2_RM_L, 0);
+		regmap_update_bits(rt5616->regmap, RT5616_REC_R2_MIXER,
+				   RT5616_M_BST2_RM_R, 0);
+		regmap_update_bits(rt5616->regmap, RT5616_STO1_ADC_MIXER,
+				   RT5616_M_STO1_ADC_L1 | RT5616_M_STO1_ADC_R1,
+				   0);
+		regmap_write(rt5616->regmap, RT5616_ADC_BST_VOL, 0xf000);
+		regmap_write(rt5616->regmap, RT5616_ADC_DIG_VOL, 0x2020);
+	}
+
 	return devm_snd_soc_register_component(&i2c->dev,
 				      &soc_component_dev_rt5616,
 				      rt5616_dai, ARRAY_SIZE(rt5616_dai));
