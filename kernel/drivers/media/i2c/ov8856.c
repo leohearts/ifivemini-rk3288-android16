@@ -90,6 +90,7 @@
 #define REG_NULL			0xFFFF
 
 #define OV8856_REG_VALUE_08BIT		1
+#define OV8856_REG_SOFT_RESET		0x0103
 #define OV8856_REG_VALUE_16BIT		2
 #define OV8856_REG_VALUE_24BIT		3
 
@@ -1136,10 +1137,14 @@ static int ov8856_write_array(struct i2c_client *client,
 	u32 i;
 	int ret = 0;
 
-	for (i = 0; ret == 0 && regs[i].addr != REG_NULL; i++)
+	for (i = 0; ret == 0 && regs[i].addr != REG_NULL; i++) {
 		ret = ov8856_write_reg(client, regs[i].addr,
 					OV8856_REG_VALUE_08BIT,
 					regs[i].val);
+		/* The sensor does not answer I2C until the soft reset is done. */
+		if (!ret && regs[i].addr == OV8856_REG_SOFT_RESET)
+			usleep_range(5000, 6000);
+	}
 
 	return ret;
 }
