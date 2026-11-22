@@ -2,9 +2,6 @@ on property:sys.boot_completed=1
     chown system system /sys/class/devfreq/ffa30000.gpu/governor
     chown system system /sys/class/devfreq/ffa30000.gpu/min_freq
     chown system system /sys/class/devfreq/ffa30000.gpu/max_freq
-    # Boot finished: drop the kernel's boot deadline (rkdeadline= in bootargs),
-    # which reboots the board if Android never gets this far.
-    write /sys/module/rk_wdt_backstop/parameters/rkdeadline_cancel 1
 
 on early-boot
     # Update dm-verity state and set partition.*.verified properties

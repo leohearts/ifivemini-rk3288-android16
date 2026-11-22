@@ -161,6 +161,15 @@ static void rn5t618_power_off(void)
 static int rn5t618_restart(struct notifier_block *this,
 			    unsigned long mode, void *cmd)
 {
+	/*
+	 * A PMIC re-power also clears the SoC PMU, including PMU_SYS_REG0
+	 * where syscon-reboot-mode leaves the boot mode for the loader
+	 * ("reboot loader", "reboot recovery"). Leave those reboots to the
+	 * SoC reset (CRU) handler, which keeps the PMU registers.
+	 */
+	if (cmd && *(const char *)cmd)
+		return NOTIFY_DONE;
+
 	rn5t618_trigger_poweroff_sequence(true);
 
 	/*
