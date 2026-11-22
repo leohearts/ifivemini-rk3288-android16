@@ -1,7 +1,7 @@
 #!/bin/bash
 # make-release.sh <inputs-dir> [DATE]
 # Builds release/ifive-mini4s-android16-gsi-<DATE>.zip from:
-#   out/kernel-gsi-release/kernel.img   (./build-kernel.sh)
+#   out/kernel-gsi-6.1/kernel.img       (./build-kernel.sh)
 #   release-build/resource-release-gsi.img (./release-build/build-resource.sh)
 #   <inputs-dir>/super.img       GSI super (system = an Android 16 GSI, vendor = Tinker Board A11 vendor;
 #                                the vendor region is patched with vendor-changes/ while packaging)
@@ -27,7 +27,7 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd); TOP=$(cd "$HERE/.." && pwd)
 IN=${1:?inputs dir}; DATE=${2:-$(date +%F)}
 NAME=ifive-mini4s-android16-gsi-$DATE
-KRN=$TOP/out/kernel-gsi-release/kernel.img
+KRN=$TOP/out/kernel-gsi-6.1/kernel.img
 RES=$HERE/resource-release-gsi.img
 LOADER=$HERE/loader/RK3288UbootLoader_V2.30.10.bin
 for f in $KRN $RES $LOADER $IN/super.img $IN/ramdisk.img $IN/metadata.img $IN/userdata-head-zero.img; do [ -f "$f" ] || { echo "STOP: missing $f"; exit 3; }; done

@@ -34,7 +34,9 @@ These are the parts that make it boot on this tablet, and then drop fewer frames
 
 | What | Where | Result |
 |---|---|---|
-| Linux 4.19 with drivers for this board: touch, Wi-Fi, audio, camera, charging, sensors | `kernel/` | it boots, and the hardware works |
+| Linux 6.1 (Rockchip `develop-6.1`) with drivers for this board: touch, Wi-Fi, audio, camera, charging, sensors | `kernel/` | it boots, and the hardware works. Up to release 2026-11-15-r3 the kernel was 4.19 |
+| Graphics buffers from dma-buf heaps instead of ION: gralloc 4.0 rebuilt from the Rockchip `android14-rockchip` midgard gralloc | `gralloc/`, `vendor-changes/` | 6.1 has no ION; SurfaceFlinger, the GPU, the camera and the video codecs share buffers through `/dev/dma_heap/` |
+| ART uses the CMC garbage collector (6.1 has `userfaultfd`) | kernel config | the Java heap reserves 1x its size instead of 2x: YouTube's address space 2771 MiB → 2083 MiB, it no longer aborts on a GPU allocation |
 | DDR runs at 456 MHz instead of the loader's 396 MHz while the screen is on, and at 396 MHz while no display is scanning out | kernel + `init.rk3288.rc` | shade animation jank 42% → 34% |
 | RK3288 timer as tick broadcast, so high-resolution timers exist at all | device tree | SurfaceFlinger missed frames 423-733 → 0-44 per test |
 | HWC rotates the landscape wallpaper with RGA instead of handing the whole screen to the GPU | `hwc/` | landscape app drawer jank 68% → 44% |
@@ -62,7 +64,9 @@ These are the parts that make it boot on this tablet, and then drop fewer frames
 - The landscape app drawer drops about 65% of its frames with the stock Launcher3: it clips every themed icon on the CPU, every frame (Skia turns off GPU path rendering on Mali-T). The Launcher3 from the release brings it to 12-17%.
 - The landscape notification shade drops about half of its frames. Most of each slow frame is SystemUI's own work on its UI thread.
 - The battery level comes from the PMIC's fuel gauge. The device tree also lists a CW2015 gauge, but nothing answers at its address on this board; the node stays because the loader uses it for off-mode charging.
-- Rarely, the tablet hard hangs. The cause is still unknown. The kernel keeps a log in the `kpanic` partition; `scripts/parse-logdump.py` reads it.
+- On 4.19 the tablet rarely hard hung; on 6.1 it has not been seen yet. If the kernel panics it writes its log to the `kpanic` partition; `scripts/parse-logdump.py` reads it.
+- Once, Wi-Fi failed to turn on for a whole boot (`mmc2: tried to HW reset card, got error -2`). It has not come back since; the kernel logs which check rejected the card if it does.
+- The first DDR rate change after the screen turns on sometimes misses every vblank; the driver retries it a second later.
 
 ## Building
 
@@ -89,7 +93,7 @@ tar xzf vndk30.tar.gz -C hwc/hdr
 Then:
 
 ```sh
-./build-kernel.sh                         # out/kernel-gsi-release/kernel.img
+./build-kernel.sh                         # out/kernel-gsi-6.1/kernel.img, vendor-changes/lib/modules/bcmdhd.ko
 ./release-build/build-resource.sh         # release-build/resource-release-gsi.img
 (cd hwc && ./build.sh)                    # hwc/out/hwcomposer.rk30board.so
 cp hwc/out/hwcomposer.rk30board.so vendor-changes/lib/hw/
