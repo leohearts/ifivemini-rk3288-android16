@@ -13,18 +13,29 @@ RK3288, 2 GB RAM, Mali-T760, a 1536x2048 panel. The system is the LineageOS 23.2
 
 You need a Linux x86_64 PC. `rkdeveloptool` is in the package.
 
-1. Download `ifive-mini4s-android16-gsi-<date>-lineage232.zip` from [Releases](https://github.com/leohearts/ifivemini-rk3288-android16/releases), unzip, `sha256sum -c SHA256SUMS`.
-2. Power the tablet off. Hold Volume Down and plug in USB.
-3. Still on the stock Android 6? `sudo bash restore.sh`.
-   The stock partition table is too small for Android 16, so this one writes a new table first.
-4. Already on a build from here? `sudo bash flash.sh --yes`.
-   Add `--keep-userdata` to keep your apps and data. Coming from a 4.19 build with `--keep-userdata`? Run `scripts/fixup-app-dirs.sh` once afterwards (needs root): 4.19's sdcardfs left files in `Android/data` owned by `media_rw`, which apps cannot open on 6.1.
+**Files** (from [Releases](https://github.com/leohearts/ifivemini-rk3288-android16/releases))
+- `ifive-mini4s-android16-gsi-<date>-lineage232.zip`: the full package (flash.sh, restore.sh, images, loader, README).
+- `ifive-mini4s-android16-boot-magisk-v31.img`: optional Magisk 31.0 boot partition.
+- `ifive-mini4s-launcher3-icon-cache.apk`: optional Launcher3 with cached themed icons (smoother app drawer).
+
+**Flash** (unzip, power off, hold Volume Down, plug in USB)
+```sh
+sha256sum -c SHA256SUMS
+sudo bash restore.sh               # stock Android 6 or wiped tablet
+sudo bash flash.sh --yes --keep-userdata   # from an earlier build here
+```
 
 The first boot takes a few minutes and prints kernel text on the screen. That's normal.
 
-Root: write `ifive-mini4s-android16-boot-magisk-v31.img` from the same release with `./tools/rkdeveloptool wl 0x16000 <file>`, boot, then run `scripts/magisk-install-data.sh Magisk-v31.0.apk` from this repository (it uses `adb root`) and reboot. The Magisk app cannot finish the install itself on this tablet.
-
-Smoother app drawer: `adb install -r ifive-mini4s-launcher3-icon-cache.apk` from the same release. It is the stock Launcher3 with themed icons drawn once and cached. `adb shell pm uninstall-system-updates com.android.launcher3` goes back.
+**Optional**
+```sh
+./tools/rkdeveloptool wl 0x16000 ifive-mini4s-android16-boot-magisk-v31.img && ./tools/rkdeveloptool rd
+# after it boots, from a clone of this repository (uses adb root), then reboot:
+scripts/magisk-install-data.sh Magisk-v31.0.apk
+adb install -r ifive-mini4s-launcher3-icon-cache.apk
+# coming from a 4.19 build (2026-11-15-r3 or older) with --keep-userdata, once, with root:
+scripts/fixup-app-dirs.sh
+```
 
 Bricked it? The package README covers an erased partition table and a completely blank eMMC.
 
