@@ -27,7 +27,7 @@ sudo bash flash.sh --yes --keep-userdata   # from an earlier build here
 
 The first boot takes a few minutes and prints kernel text on the screen. That's normal.
 
-**Optional**
+**Magisk (Optional)**
 ```sh
 ./tools/rkdeveloptool wl 0x16000 ifive-mini4s-android16-boot-magisk-v31.img && ./tools/rkdeveloptool rd
 # after it boots, from a clone of this repository (uses adb root), then reboot:
