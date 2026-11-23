@@ -281,32 +281,6 @@ int drm_fb_helper_restore_fbdev_mode_unlocked(struct drm_fb_helper *fb_helper)
 }
 EXPORT_SYMBOL(drm_fb_helper_restore_fbdev_mode_unlocked);
 
-/*
- * Restore the fbdev console on every KMS device, synchronously. Process
- * context only. Used by the rk_wdt_backstop deadline path so the panic text
- * it prints is on screen. Returns false if no fbdev exists or a commit failed.
- */
-bool drm_fb_helper_force_kernel_mode(void)
-{
-	struct drm_fb_helper *helper;
-	bool error = false;
-
-	mutex_lock(&kernel_fb_helper_lock);
-	if (list_empty(&kernel_fb_helper_list))
-		error = true;
-	list_for_each_entry(helper, &kernel_fb_helper_list, kernel_fb_list) {
-		if (helper->dev->switch_power_state == DRM_SWITCH_POWER_OFF)
-			continue;
-		mutex_lock(&helper->lock);
-		if (drm_client_modeset_commit_locked(&helper->client))
-			error = true;
-		mutex_unlock(&helper->lock);
-	}
-	mutex_unlock(&kernel_fb_helper_lock);
-	return !error;
-}
-EXPORT_SYMBOL(drm_fb_helper_force_kernel_mode);
-
 #ifdef CONFIG_MAGIC_SYSRQ
 /* emergency restore, don't bother with error reporting */
 static void drm_fb_helper_restore_work_fn(struct work_struct *ignored)

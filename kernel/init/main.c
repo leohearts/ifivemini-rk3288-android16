@@ -25,8 +25,6 @@
 #include <linux/delay.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
-#include <linux/rk_wdt_backstop.h>
-#include <linux/rk_probe.h>
 #include <linux/initrd.h>
 #include <linux/memblock.h>
 #include <linux/acpi.h>
@@ -904,7 +902,6 @@ early_param("randomize_kstack_offset", early_randomize_kstack_offset);
 
 void __init __weak arch_call_rest_init(void)
 {
-	rk_probe_point(2);
 	rest_init();
 }
 
@@ -975,7 +972,6 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	pr_notice("%s", linux_banner);
 	early_security_init();
 	setup_arch(&command_line);
-	rk_probe_early(45);
 	setup_boot_config();
 	setup_command_line(command_line);
 	setup_nr_cpu_ids();
@@ -1026,13 +1022,10 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	 * kmem_cache_init()
 	 */
 	setup_log_buf(0);
-	rk_probe_early(46);
 	vfs_caches_init_early();
 	sort_main_extable();
 	trap_init();
-	rk_probe_early(47);
 	mm_init();
-	rk_probe_point(30);
 	poking_init();
 	ftrace_init();
 
@@ -1045,7 +1038,6 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	 * time - but meanwhile we still have a functioning scheduler.
 	 */
 	sched_init();
-	rk_probe_point(31);
 
 	if (WARN(!irqs_disabled(),
 		 "Interrupts were enabled *very* early, fixing it\n"))
@@ -1067,7 +1059,6 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	workqueue_init_early();
 
 	rcu_init();
-	rk_probe_point(32);
 
 	/* Trace events are available after this */
 	trace_init();
@@ -1079,19 +1070,14 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	/* init some links before init_ISA_irqs() */
 	early_irq_init();
 	init_IRQ();
-	rk_probe_point(33);
 	tick_init();
-	rk_probe_point(34);
 	rcu_init_nohz();
 	init_timers();
 	srcu_init();
 	hrtimers_init();
 	softirq_init();
 	timekeeping_init();
-	rk_probe_point(35);
 	time_init();
-	rk_probe_point(1);
-	rk_wdt_backstop_arm();
 
 	/* This must be after timekeeping is initialized */
 	random_init();
@@ -1593,13 +1579,8 @@ static void __init do_initcall_level(int level, char *command_line)
 			return;
 #endif
 
-	int k = 0;
-
-	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++) {
+	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
 		do_one_initcall(initcall_from_entry(fn));
-		if (level == 6)
-			rk_probe_point(1000 + ++k);
-	}
 }
 
 static void __init do_initcalls(void)
@@ -1620,7 +1601,6 @@ static void __init do_initcalls(void)
 		/* Parser modifies command_line, restore it each time */
 		strcpy(command_line, saved_command_line);
 		do_initcall_level(level, command_line);
-		rk_probe_point(4 + level);
 	}
 
 	kfree(command_line);
@@ -1777,7 +1757,6 @@ static int __ref kernel_init(void *unused)
 	do_sysctl_args();
 
 	if (ramdisk_execute_command) {
-		rk_probe_point(12);
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)
 			return 0;
@@ -1835,7 +1814,6 @@ void __init console_on_rootfs(void)
 
 static noinline void __init kernel_init_freeable(void)
 {
-	rk_probe_point(3);
 	/* Now the scheduler is fully set up and can do blocking allocations */
 	gfp_allowed_mask = __GFP_BITS_MASK;
 

@@ -14,7 +14,6 @@
 #include <linux/fs.h>
 #include <linux/vmalloc.h>
 #include <linux/sizes.h>
-#include <linux/rk_probe.h>
 
 #include <asm/cp15.h>
 #include <asm/cputype.h>
@@ -1775,9 +1774,7 @@ void __init paging_init(const struct machine_desc *mdesc)
 		 kernel_sec_start, kernel_sec_end);
 
 	prepare_page_table();
-	rk_probe_early(60);
 	map_lowmem();
-	rk_probe_early(61);
 	memblock_set_current_limit(arm_lowmem_limit);
 	pr_debug("lowmem limit is %08llx\n", (long long)arm_lowmem_limit);
 	/*
@@ -1785,9 +1782,7 @@ void __init paging_init(const struct machine_desc *mdesc)
 	 * be used
 	 */
 	map_kernel();
-	rk_probe_early(62);
 	dma_contiguous_remap();
-	rk_probe_early(63);
 	early_fixmap_shutdown();
 	devicemaps_init(mdesc);
 	kmap_init();

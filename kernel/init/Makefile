@@ -59,4 +59,3 @@ include/generated/utsversion.h: FORCE
 
 $(obj)/version-timestamp.o: include/generated/utsversion.h
 CFLAGS_version-timestamp.o := -include include/generated/utsversion.h
-obj-$(CONFIG_RK_PROBE_POINTS)  += rk_probe_points.o

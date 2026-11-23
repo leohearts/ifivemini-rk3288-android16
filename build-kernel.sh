@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the 6.1 kernel for the iFive mini 4S and pack it into a Rockchip KRNL image (kernel.img).
-# Usage: ./build-kernel.sh [gsi-6.1|gsi-6.1-decompprobe|gsi-6.1-appdtb]   (default gsi-6.1; the other two are bring-up debug builds)
+# Usage: ./build-kernel.sh [gsi-6.1]
 # Needs: an arm cross gcc (Fedora: gcc-arm-linux-gnu + binutils-arm-linux-gnu -> CROSS_COMPILE=arm-linux-gnu-;
 #        Debian: gcc-arm-linux-gnueabi -> CROSS_COMPILE=arm-linux-gnueabi-), bc, bison, flex, lz4, libssl-dev, python3.
 set -euo pipefail

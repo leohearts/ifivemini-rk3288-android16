@@ -51,5 +51,3 @@ obj-$(CONFIG_RK_ZONEINFO_PROCFS) += rk_zoneinfo_procfs.o
 obj-$(CONFIG_ROCKCHIP_MINIDUMP)	+= minidump/
 obj-$(CONFIG_PREEMPT_RT) += rockchip_rt.o
 obj-$(CONFIG_XENOMAI) += rockchip_rt.o
-obj-$(CONFIG_RK_WDT_BACKSTOP) += rk_wdt_backstop.o
-obj-$(CONFIG_RK_LOGDUMP) += rk_logdump.o

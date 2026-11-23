@@ -95,5 +95,5 @@ The scripts read these addresses from `manifest.json`, which the build makes fro
 ## Known issues
 
 - The landscape app drawer still drops frames: launcher3 clips themed icons on the CPU. Picking the circle icon shape helps a lot.
-- If the kernel panics it keeps a log in the `kpanic` partition.
+- After a kernel panic the tablet reboots in 5 s and the log is in `/sys/fs/pstore` (`dmesg-ramoops-*`, `console-ramoops-0`) until the next panic; read it with root, e.g. `adb shell su -c 'cat /sys/fs/pstore/dmesg-ramoops-*'`.
 - Once, Wi-Fi failed to turn on for a whole boot; a reboot fixed it.
