@@ -22,6 +22,8 @@ Changes since 2026-11-15-r3. The system (LineageOS 23.2 GSI, build 2026-06-20) a
 SELinux enforcing; no crashes or kernel oops; display, HWC (all layers in device composition) and screenshots; touch, power key and accelerometer; battery 95 % charging at 4.07 V; Wi-Fi off/on and ping; Bluetooth on/off; audio playback and recording; front and back camera preview; 1080p H.264 hardware decode and screen recording; deep sleep 3/3 rounds with memory intact; two reboots, each about 90 s to a connected Wi-Fi.
 
 ## Known issues
+- Upgrading from a 4.19 build with `--keep-userdata`: apps can lose access to files they made in `Android/data` (Obtainium shows an empty app list, App Manager shows negative sizes). 4.19 had sdcardfs, which left those files owned by `media_rw`; 6.1 has none. Either wipe data, or run `scripts/fixup-app-dirs.sh` from this repository once with root (needs a vendor image built after this release, which carries the tool).
+- The tablet hung or rebooted a few times on 6.1 (twice a kernel oops on an idle CPU, other times no log). The cause is not known yet.
 - Once, Wi-Fi did not turn on for a whole boot (`mmc2: tried to HW reset card, got error -2`). It has not come back; a reboot fixed it. The kernel now logs which check rejected the card.
 - Launcher swipes still drop about 10 % of frames, about the same as on 4.19.
 

@@ -18,7 +18,7 @@ You need a Linux x86_64 PC. `rkdeveloptool` is in the package.
 3. Still on the stock Android 6? `sudo bash restore.sh`.
    The stock partition table is too small for Android 16, so this one writes a new table first.
 4. Already on a build from here? `sudo bash flash.sh --yes`.
-   Add `--keep-userdata` to keep your apps and data.
+   Add `--keep-userdata` to keep your apps and data. Coming from a 4.19 build with `--keep-userdata`? Run `scripts/fixup-app-dirs.sh` once afterwards (needs root): 4.19's sdcardfs left files in `Android/data` owned by `media_rw`, which apps cannot open on 6.1.
 
 The first boot takes a few minutes and prints kernel text on the screen. That's normal.
 
@@ -64,7 +64,7 @@ These are the parts that make it boot on this tablet, and then drop fewer frames
 - The landscape app drawer drops about 65% of its frames with the stock Launcher3: it clips every themed icon on the CPU, every frame (Skia turns off GPU path rendering on Mali-T). The Launcher3 from the release brings it to 12-17%.
 - The landscape notification shade drops about half of its frames. Most of each slow frame is SystemUI's own work on its UI thread.
 - The battery level comes from the PMIC's fuel gauge. The device tree also lists a CW2015 gauge, but nothing answers at its address on this board; the node stays because the loader uses it for off-mode charging.
-- On 4.19 the tablet rarely hard hung; on 6.1 it has not been seen yet. If the kernel panics it writes its log to the `kpanic` partition; `scripts/parse-logdump.py` reads it.
+- The tablet hangs or reboots now and then on 6.1, cause not known yet. The kernel panics on a soft or hard lockup and writes its log to the `kpanic` partition; `scripts/parse-logdump.py` reads it.
 - Once, Wi-Fi failed to turn on for a whole boot (`mmc2: tried to HW reset card, got error -2`). It has not come back since; the kernel logs which check rejected the card if it does.
 - The first DDR rate change after the screen turns on sometimes misses every vblank; the driver retries it a second later.
 
