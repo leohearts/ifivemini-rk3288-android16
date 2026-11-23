@@ -62,6 +62,8 @@ These are the parts that make it boot on this tablet, and then drop fewer frames
 - **Charging**: input limit policy in the `rn5t618` driver, on by default [`kernel/`, `vendor-changes/`]. On a wall charger the input goes from 500 mA to 2 A once boot completes, while the charge is under 95% and the SoC under 70 °C. The battery temperature steps it down to 1 A at 40 °C and 500 mA at 45 °C. iFive settings (or `persist.vendor.chg.boost` `on`/`off`) overrides it.
 - **Backlight**: lowest level is duty 61, the lowest value the panel still lights at [device tree]. The brightness slider goes lower without the screen turning off.
 - **Hangs leave a log**: a CPU stuck for 10-20 s makes the kernel panic, the tablet reboots in 5 s and the log stays in `/sys/fs/pstore` [kernel config].
+- **ART uses the CMC garbage collector** (6.1 has `userfaultfd`) [kernel config]. The Java heap reserves 1x its size instead of 2x: YouTube's address space 2771 MiB → 2083 MiB, and it no longer aborts on a GPU allocation.
+- **fuse-bpf**, ported from android14-6.1 [`kernel/`]. `Android/data` and `Android/obb` go straight to the disk instead of through the FUSE daemon.
 
 ### Speed and battery
 
@@ -86,8 +88,6 @@ These are the parts that make it boot on this tablet, and then drop fewer frames
 
 ### Android system
 
-- **ART uses the CMC garbage collector** (6.1 has `userfaultfd`) [kernel config]. The Java heap reserves 1x its size instead of 2x: YouTube's address space 2771 MiB → 2083 MiB, and it no longer aborts on a GPU allocation.
-- **fuse-bpf**, ported from android14-6.1 [`kernel/`]. `Android/data` and `Android/obb` go straight to the disk instead of through the FUSE daemon.
 - **SELinux enforcing** [device tree, `vendor-changes/`]. Wi-Fi, charging, display, audio and cameras work with it on.
 - **`adb root` under enforcing**: AOSP's userdebug rule `permissive su`, which the GSI leaves out [`scripts/patch-identity.sh`]. Before, adbd exited and adb was gone until reboot.
 - **Lock screen**: software gatekeeper and keymaster instead of the Rockchip OP-TEE ones (the board has no TEE) [`gatekeeper/`, `keymaster/`, `vendor-changes/`]. A PIN, pattern or password can be set and unlocked; before, a PIN could be set but never verified.
