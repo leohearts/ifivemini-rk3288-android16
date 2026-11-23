@@ -14,6 +14,7 @@
 #include <linux/sched/signal.h>
 #include <linux/uio.h>
 #include <linux/miscdevice.h>
+#include <linux/namei.h>
 #include <linux/pagemap.h>
 #include <linux/file.h>
 #include <linux/slab.h>
@@ -237,6 +238,11 @@ void fuse_queue_forget(struct fuse_conn *fc, struct fuse_forget_link *forget,
 		       u64 nodeid, u64 nlookup)
 {
 	struct fuse_iqueue *fiq = &fc->iq;
+
+	if (nodeid == 0) {
+		kfree(forget);
+		return;
+	}
 
 	forget->forget_one.nodeid = nodeid;
 	forget->forget_one.nlookup = nlookup;
@@ -475,6 +481,7 @@ static void fuse_args_to_req(struct fuse_req *req, struct fuse_args *args)
 {
 	req->in.h.opcode = args->opcode;
 	req->in.h.nodeid = args->nodeid;
+	req->in.h.padding = args->error_in;
 	req->args = args;
 	if (args->is_ext)
 		req->in.h.total_extlen = args->in_args[args->ext_idx].size / 8;
@@ -1925,6 +1932,43 @@ static ssize_t fuse_dev_do_write(struct fuse_dev *fud,
 	else
 		err = copy_out_args(cs, req->args, nbytes);
 	fuse_copy_finish(cs);
+
+	if (!err && req->in.h.opcode == FUSE_CANONICAL_PATH && !oh.error) {
+		char *path = (char *)req->args->out_args[0].value;
+
+		if (req->args->out_args[0].size == 0) {
+			req->out.h.error = -EBADMSG;
+		} else {
+			/* NUL-terminate inside the page; size<=PATH_MAX by construction */
+			path[min_t(unsigned int, req->args->out_args[0].size, PATH_MAX) - 1] = 0;
+			req->out.h.error =
+				kern_path(path, 0, req->args->canonical_path);
+		}
+	}
+
+	if (!err && (req->in.h.opcode == FUSE_LOOKUP ||
+		     req->in.h.opcode == (FUSE_LOOKUP | FUSE_POSTFILTER)) &&
+		req->args->out_args[1].size == sizeof(struct fuse_entry_bpf_out)) {
+		struct fuse_entry_bpf_out *febo = (struct fuse_entry_bpf_out *)
+				req->args->out_args[1].value;
+		struct fuse_entry_bpf *feb = container_of(febo, struct fuse_entry_bpf, out);
+
+		if (febo->backing_action == FUSE_ACTION_REPLACE) {
+			struct file *bf = fget(febo->backing_fd);
+
+			if (bf) {
+				if (bf->f_inode->i_sb->s_magic == FUSE_SUPER_MAGIC ||
+				    bf->f_inode->i_sb->s_stack_depth >=
+						FILESYSTEM_MAX_STACK_DEPTH) {
+					fput(bf);
+					bf = ERR_PTR(-ELOOP);
+				}
+			}
+			feb->backing_file = bf;
+		}
+		if (febo->bpf_action == FUSE_ACTION_REPLACE)
+			feb->bpf_file = fget(febo->bpf_fd);
+	}
 
 	spin_lock(&fpq->lock);
 	clear_bit(FR_LOCKED, &req->flags);
