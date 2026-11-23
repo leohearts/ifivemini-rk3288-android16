@@ -22,18 +22,28 @@ You need a Linux x86_64 PC. `rkdeveloptool` is in the package.
 ```sh
 sha256sum -c SHA256SUMS
 sudo bash restore.sh               # stock Android 6 or wiped tablet
+# or
 sudo bash flash.sh --yes --keep-userdata   # from an earlier build here
 ```
 
 The first boot takes a few minutes and prints kernel text on the screen. That's normal.
 
-**Magisk (Optional)**
+**Optional**
+
+- Fix launcher lag
+```bash
+adb install -r ifive-mini4s-launcher3-icon-cache.apk
+```
+
+- Magisk
 ```sh
 ./tools/rkdeveloptool wl 0x16000 ifive-mini4s-android16-boot-magisk-v31.img && ./tools/rkdeveloptool rd
 # after it boots, from a clone of this repository (uses adb root), then reboot:
 scripts/magisk-install-data.sh Magisk-v31.0.apk
-adb install -r ifive-mini4s-launcher3-icon-cache.apk
-# coming from a 4.19 build (2026-11-15-r3 or older) with --keep-userdata, once, with root:
+```
+
+- coming from a 4.19 build (2026-11-15-r3 or older) with --keep-userdata, once, with root:
+```
 scripts/fixup-app-dirs.sh
 ```
 
