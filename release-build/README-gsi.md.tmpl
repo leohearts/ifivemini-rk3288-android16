@@ -41,6 +41,8 @@ sudo bash flash.sh --yes --keep-userdata   # keeps your apps and data
 
 `--dry-run` prints every command and writes nothing.
 
+Coming from a build with Linux 4.19 (2026-11-15-r3 or older) and keeping data? Run `scripts/fixup-app-dirs.sh` from the repository once after the first boot (needs root: `adb root` or Magisk). 4.19 had sdcardfs, which left files in `Android/data` owned by `media_rw`; on 6.1 apps cannot open them (Obtainium shows an empty list, App Manager negative sizes). The script asks Android (vold `fixupAppDir`) to repair every app's folder. Wiping data instead also works.
+
 Both scripts write in small pieces and read every piece back. If USB drops halfway, run the same command again and it continues where it stopped (`--fresh` starts over). The first boot takes a few minutes and shows kernel text on the screen.
 
 ## Root
@@ -95,5 +97,6 @@ The scripts read these addresses from `manifest.json`, which the build makes fro
 ## Known issues
 
 - The landscape app drawer still drops frames: launcher3 clips themed icons on the CPU. Picking the circle icon shape helps a lot.
+- The tablet hangs or reboots now and then, cause not known yet. A stuck CPU makes the kernel panic, so these hangs leave a log (see below).
 - After a kernel panic the tablet reboots in 5 s and the log is in `/sys/fs/pstore` (`dmesg-ramoops-*`, `console-ramoops-0`) until the next panic; read it with root, e.g. `adb shell su -c 'cat /sys/fs/pstore/dmesg-ramoops-*'`.
 - Once, Wi-Fi failed to turn on for a whole boot; a reboot fixed it.
