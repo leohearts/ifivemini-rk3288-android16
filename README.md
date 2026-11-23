@@ -51,34 +51,55 @@ Bricked it? The package README covers an erased partition table and a completely
 
 ## What's different from just flashing a GSI
 
-These are the parts that make it boot on this tablet, and then drop fewer frames.
+These are the parts that make it boot on this tablet, and then drop fewer frames. Each line: what changed, then what you get. The folder where it lives is in brackets.
 
-| What | Where | Result |
-|---|---|---|
-| Linux 6.1 (Rockchip `develop-6.1`) with drivers for this board: touch, Wi-Fi, audio, camera, charging, sensors | `kernel/` | it boots, and the hardware works. Up to release 2026-11-15-r3 the kernel was 4.19 |
-| Graphics buffers from dma-buf heaps instead of ION: gralloc 4.0 rebuilt from the Rockchip `android14-rockchip` midgard gralloc | `gralloc/`, `vendor-changes/` | 6.1 has no ION; SurfaceFlinger, the GPU, the camera and the video codecs share buffers through `/dev/dma_heap/` |
-| ART uses the CMC garbage collector (6.1 has `userfaultfd`) | kernel config | the Java heap reserves 1x its size instead of 2x: YouTube's address space 2771 MiB → 2083 MiB, it no longer aborts on a GPU allocation |
-| DDR runs at 456 MHz instead of the loader's 396 MHz while the screen is on, and at 396 MHz while no display is scanning out | kernel + `init.rk3288.rc` | shade animation jank 42% → 34% |
-| RK3288 timer as tick broadcast, so high-resolution timers exist at all | device tree | SurfaceFlinger missed frames 423-733 → 0-44 per test |
-| HWC rotates the landscape wallpaper with RGA instead of handing the whole screen to the GPU | `hwc/` | landscape app drawer jank 68% → 44% |
-| HWC keeps unchanged bottom layers composed when there are more layers than display windows | `hwc/` | landscape shade jank 72% → 47% |
-| HWC checks every layer before two of them share a display window | `hwc/` | no more vertical stripes, no more black screen after screen off/on |
-| Three framebuffers instead of two | `vendor-changes/build.prop` | recents opened from an app jank 78% → 43% |
-| Rockchip Power HAL (`android.hardware.power-service.rockchip`) | `vendor-changes/` | Android finds `IPower`. Without it, early builds logged it missing and SurfaceFlinger started later |
-| Charger input limit policy in the `rn5t618` driver (on by default) | `kernel/`, `vendor-changes/` | the charger input goes from 500 mA to 2 A on a wall charger once boot completes, while the charge is under 95% and the SoC under 70 °C; the battery temperature steps it down to 1 A at 40 °C and 500 mA at 45 °C. iFive settings (or `persist.vendor.chg.boost` `on`/`off`) overrides it |
-| The tablet's own name in `build.prop` | `vendor-changes/`, `scripts/patch-identity.sh` | Settings and apps show "iFive mini 4S" |
-| SELinux enforcing | device tree | Wi-Fi, charging, display and audio work with SELinux on |
-| `adb root` works under enforcing: AOSP's userdebug rule `permissive su`, which the GSI leaves out | `scripts/patch-identity.sh` | before: adbd exited and USB/wireless adb were gone until reboot |
-| HWC leaves frames that SurfaceFlinger composed on the GPU alone | `hwc/` | grayscale, night light and extra dim stay on (before: only while the shade was moving) |
-| Lowest backlight level is duty 61, the lowest value the panel still lights at | device tree | brightness slider goes lower without the screen turning off |
-| No `ro.hdmi.device_type` (the Tinker Board vendor declared a CEC playback box) | `vendor-changes/build.prop` | the `HdmiCecLocalDevicePlayback` wakelock no longer keeps the tablet from suspending |
-| Software gatekeeper and keymaster instead of the Rockchip OP-TEE ones (the board has no TEE) | `gatekeeper/`, `keymaster/`, `vendor-changes/` | lock-screen PIN, pattern and password can be set and unlocked; before, a PIN could be set but never verified |
-| Quota stays on for `/data`: the GSI's fs_mgr turned it off on every boot because the tablet has no file encryption (TrebleDroid patch 0015) | `scripts/patch-fsmgr-quota.py`, `scripts/patch-identity.sh` | apps such as Recorder can create their `Android/data` folder; before, vold could not set the folder's project ID and the app crashed |
-| vold reads the vendor fstab (`androidboot.fstab_suffix=rk30board.emmc`) | device tree bootargs | quota, reserved space and the microSD slot are known to vold; before, vold found no fstab |
-| Flash scripts that write in small verified pieces | `release-build/` | a dropped USB connection resumes instead of starting over |
-| Kernel suspend turns the logic power domain, PLLs and 24 MHz clock off, with DDR in self-refresh (the stock firmware's `ARMOFF_LOGDP` mode; code from the ChromeOS veyron kernel) | `kernel/arch/arm/mach-rockchip/` | before, suspend only turned the CPUs off |
-| Deep Doze without a significant-motion sensor: a vendor overlay sets `config_autoPowerModeUseMotionSensor` to false | `overlays/deep-doze/`, `vendor-changes/` | the tablet reaches deep Doze about 2.5 minutes after the screen goes off unplugged; before, only Battery Saver got it there |
-| "iFive settings" on the Settings home page (System card): deep Doze, kernel deep sleep, DDR frequency (456/396 MHz), charger input, and a link to phh's TrebleDroid settings, whose own home-page entry is hidden (`<component-override>`) | `apps/ifive-settings/`, `vendor-changes/` | each one can be turned off without adb; deep Doze takes effect after a reboot, the others at once |
+### Kernel and hardware
+
+- **Linux 6.1** (Rockchip `develop-6.1`) with drivers for this board: touch, Wi-Fi, audio, cameras, charging, sensors [`kernel/`]. Up to release 2026-11-15-r3 the kernel was 4.19.
+- **Wi-Fi**: the Rockchip `bcmdhd` driver built for 6.1 as a module, installed into the vendor partition [`kernel/`, `vendor-changes/`]. Connects to WPA3 5 GHz networks.
+- **Audio**: the RT5616 codec gets the same default speaker and microphone routing as on 4.19 [`kernel/`]. Before, recordings were silent.
+- **Cameras**: front (GC2145) and back (OV8856) cameras work through the Rockchip CIF and ISP drivers [`kernel/`].
+- **Charging**: input limit policy in the `rn5t618` driver, on by default [`kernel/`, `vendor-changes/`]. On a wall charger the input goes from 500 mA to 2 A once boot completes, while the charge is under 95% and the SoC under 70 °C. The battery temperature steps it down to 1 A at 40 °C and 500 mA at 45 °C. iFive settings (or `persist.vendor.chg.boost` `on`/`off`) overrides it.
+- **Backlight**: lowest level is duty 61, the lowest value the panel still lights at [device tree]. The brightness slider goes lower without the screen turning off.
+- **Hangs leave a log**: a CPU stuck for 10-20 s makes the kernel panic, the tablet reboots in 5 s and the log stays in `/sys/fs/pstore` [kernel config].
+
+### Speed and battery
+
+- **CPU frequency**: `cpufreq-dt` with the `schedutil` governor, 126-1608 MHz [kernel config, `vendor-changes/`].
+- **GPU frequency**: 100-600 MHz, with a 60 °C thermal switch-on point and a 1200 mW budget [device tree]. Without them the GPU stayed at 100 MHz.
+- **DDR**: 456 MHz instead of the loader's 396 MHz while the screen is on, 396 MHz while it is off [kernel, `init.rk3288.rc`]. Shade animation jank 42% → 34%.
+- **Timers**: RK3288 timer as tick broadcast, so high-resolution timers exist at all [device tree]. SurfaceFlinger missed frames 423-733 → 0-44 per test.
+- **Deep sleep**: logic power domain, PLLs and the 24 MHz clock off, DDR in self-refresh (the stock firmware's `ARMOFF_LOGDP` mode; code from the ChromeOS veyron kernel) [`kernel/arch/arm/mach-rockchip/`]. Before, suspend only turned the CPUs off.
+- **Deep Doze** without a significant-motion sensor: a vendor overlay sets `config_autoPowerModeUseMotionSensor` to false [`overlays/deep-doze/`, `vendor-changes/`]. Unplugged, the tablet reaches deep Doze about 2.5 minutes after the screen goes off.
+- **No CEC wakelock**: `ro.hdmi.device_type` removed (the Tinker Board vendor declared a CEC playback box) [`vendor-changes/build.prop`]. `HdmiCecLocalDevicePlayback` no longer keeps the tablet awake.
+- **Rockchip Power HAL** (`android.hardware.power-service.rockchip`) [`vendor-changes/`]. Android finds `IPower`; before, SurfaceFlinger started later.
+
+### Graphics and display
+
+- **dma-buf heaps instead of ION**: gralloc 4.0 rebuilt from the Rockchip `android14-rockchip` midgard gralloc [`gralloc/`, `vendor-changes/`]. 6.1 has no ION; SurfaceFlinger, the GPU, the cameras and the video codecs share buffers through `/dev/dma_heap/`.
+- **HWC** (hardware composer) [`hwc/`]:
+  - rotates the landscape wallpaper with RGA instead of handing the whole screen to the GPU: landscape app drawer jank 68% → 44%.
+  - keeps unchanged bottom layers composed when there are more layers than display windows: landscape shade jank 72% → 47%.
+  - checks every layer before two of them share a display window: no more vertical stripes, no black screen after screen off/on.
+  - leaves frames that SurfaceFlinger composed on the GPU alone: grayscale, night light and extra dim stay on.
+- **Three framebuffers** instead of two [`vendor-changes/build.prop`]. Recents opened from an app: jank 78% → 43%.
+
+### Android system
+
+- **ART uses the CMC garbage collector** (6.1 has `userfaultfd`) [kernel config]. The Java heap reserves 1x its size instead of 2x: YouTube's address space 2771 MiB → 2083 MiB, and it no longer aborts on a GPU allocation.
+- **fuse-bpf**, ported from android14-6.1 [`kernel/`]. `Android/data` and `Android/obb` go straight to the disk instead of through the FUSE daemon.
+- **SELinux enforcing** [device tree, `vendor-changes/`]. Wi-Fi, charging, display, audio and cameras work with it on.
+- **`adb root` under enforcing**: AOSP's userdebug rule `permissive su`, which the GSI leaves out [`scripts/patch-identity.sh`]. Before, adbd exited and adb was gone until reboot.
+- **Lock screen**: software gatekeeper and keymaster instead of the Rockchip OP-TEE ones (the board has no TEE) [`gatekeeper/`, `keymaster/`, `vendor-changes/`]. A PIN, pattern or password can be set and unlocked; before, a PIN could be set but never verified.
+- **Quota on `/data`**: the GSI's fs_mgr turned it off on every boot because the tablet has no file encryption (TrebleDroid patch 0015) [`scripts/patch-fsmgr-quota.py`, `scripts/patch-identity.sh`]. Apps such as Recorder can create their `Android/data` folder.
+- **vold reads the vendor fstab** (`androidboot.fstab_suffix=rk30board.emmc`) [device tree bootargs]. Quota, reserved space and the microSD slot are known to vold.
+- **Name**: "iFive mini 4S" in `build.prop` [`vendor-changes/`, `scripts/patch-identity.sh`].
+- **iFive settings** on the Settings home page (System card): deep Doze, kernel deep sleep, DDR frequency (456/396 MHz), charger input, and a link to phh's TrebleDroid settings, whose own entry is hidden [`apps/ifive-settings/`, `vendor-changes/`]. Each takes effect at once except deep Doze (after a reboot).
+
+### Flashing
+
+- **Scripts that write in small verified pieces** [`release-build/`]. A dropped USB connection resumes instead of starting over.
+- **`scripts/fixup-app-dirs.sh`**: after upgrading from 4.19 with data kept, asks Android (vold `fixupAppDir`) to give `Android/data` files back to their apps.
 
 ## Not perfect
 
